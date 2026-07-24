@@ -57,10 +57,16 @@ func New() (*Runtime, error) {
 	}, nil
 }
 
-func (r *Runtime) Run(task string) (string, error) {
+func (r *Runtime) Stream(ctx context.Context, prompt string) (<-chan providers.StreamEvent, error) {
+	system := r.agent.BuildSystemPrompt()
+
+	return r.provider.StreamChat(ctx, system, prompt)
+}
+
+func (r *Runtime) Run(prompt string) (string, error) {
     systemPrompt := r.agent.BuildSystemPrompt()
 
-    response, err := r.provider.Chat(context.Background(), systemPrompt, task)
+    response, err := r.provider.Chat(context.Background(), systemPrompt, prompt)
     if err != nil {
         return "", fmt.Errorf("model call failed: %w", err)
     }
@@ -68,13 +74,13 @@ func (r *Runtime) Run(task string) (string, error) {
     return response, nil
 }
 
-func Run(task string) (string, error) {
+func Run(prompt string) (string, error) {
     rt, err := New()
     if err != nil {
         return "", fmt.Errorf("create runtime: %w", err)
     }
 
-    return rt.Run(task)
+    return rt.Run(prompt)
 }
 
 // newProvider selects and constructs a ModelProvider based on

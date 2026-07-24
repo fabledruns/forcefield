@@ -10,5 +10,6 @@ import "context"
 // given a system prompt and a user prompt, return the model's reply as
 // plain text.
 type ModelProvider interface {
-	Chat(ctx context.Context, system string, prompt string) (string, error)
+		  Chat(ctx context.Context, system string, prompt string) (string, error)
+	StreamChat(ctx context.Context, system string, prompt string) (<-chan StreamEvent, error)
 }
