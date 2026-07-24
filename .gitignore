@@ -1,0 +1,21 @@
+# Binaries
+ff
+*.exe
+
+# Build
+bin/
+dist/
+
+# Go
+vendor/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Forcefield
+.forcefield/
