@@ -3,8 +3,7 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 // asciiBanner is a hand-built block-letter rendering of "FORCEFIELD",
-// shown as a splash screen before the first message is sent, the same
-// convention Claude Code and OpenCode use on startup. Every line is
+// shown as a splash screen before the first message is sent. Every line is
 // exactly asciiBannerWidth columns wide by construction.
 const asciiBanner = `
 ███████╗ ██████╗ ██████╗  ██████╗███████╗███████╗██╗███████╗██╗     ██████╗
@@ -32,7 +31,7 @@ var (
 
 // renderBanner centers the FORCEFIELD splash (art + tagline) within the
 // given width. It's shown in place of the transcript only while the
-// conversation is empty — see conversation.renderTranscript.
+// conversation is empty, see conversation.renderTranscript.
 func renderBanner(width int) string {
 	if width < asciiBannerWidth {
 		return renderCompactBanner(width)

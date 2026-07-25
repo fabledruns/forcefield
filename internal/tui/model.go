@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"forcefield/internal/config"
+	"forcefield/internal/providers"
+	"forcefield/internal/runtime"
 )
 
 // minTranscriptHeight is the smallest the scrollable transcript area is
@@ -31,6 +34,9 @@ const (
 // runtime.Run, exactly like `ff run` would for a single message. See the
 // package doc for what it deliberately does not add.
 type model struct {
+	runtime *runtime.Runtime
+	stream  <-chan providers.StreamEvent
+
 	agentName    string
 	providerName string
 	modelName    string
@@ -60,6 +66,11 @@ func newModel(cfg *config.Config) model {
 	spin.Spinner = spinner.Dot
 	spin.Style = spinnerStyle
 
+	r, err := runtime.New()
+	if err != nil {
+		panic(fmt.Sprintf("failed to initialize runtime: %v", err))
+	}
+
 	return model{
 		agentName:    cfg.Agent.Name,
 		providerName: cfg.Model.Provider,
@@ -67,6 +78,7 @@ func newModel(cfg *config.Config) model {
 		input:        input,
 		spinner:      spin,
 		viewport:     viewport.New(0, 0),
+		runtime:      r,
 	}
 }
 
@@ -90,16 +102,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	case responseMsg:
+	case streamChunkMsg:
+		if msg.Text == "" {
+			return m, waitForChunk(m.stream)
+		}
+
+		if len(m.entries) == 0 ||
+			m.entries[len(m.entries)-1].Role != roleAssistant {
+
+			m.entries = append(m.entries, chatEntry{
+				Role: roleAssistant,
+			})
+		}
+
+		m.entries[len(m.entries)-1].Content += msg.Text
+
+		m.refreshTranscript()
+
+		return m, waitForChunk(m.stream)
+
+	case streamDoneMsg:
 		m.waiting = false
-		m.entries = append(m.entries, chatEntry{Role: roleAssistant, Content: string(msg)})
+		m.stream = nil
 		m.refreshTranscript()
 		return m, nil
 
-	case errMsg:
+	case streamErrMsg:
 		m.waiting = false
-		m.entries = append(m.entries, chatEntry{Role: roleError, Content: msg.Error()})
+
+		m.entries = append(m.entries, chatEntry{
+			Role: roleError,
+			Content: msg.err.Error(),
+		})
+
+		m.stream = nil
+
 		m.refreshTranscript()
+
 		return m, nil
 
 	case spinner.TickMsg:
@@ -152,7 +191,20 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.waiting = true
 		m.refreshTranscript()
 
-		return m, tea.Batch(m.spinner.Tick, runTask(task))
+		stream, err := m.runtime.Stream(context.Background(), task)
+		if err != nil {
+			m.waiting = false
+			m.entries = append(m.entries, chatEntry{Role: roleError, Content: fmt.Sprintf("stream failed: %v", err)})
+			m.refreshTranscript()
+			return m, nil
+		}
+
+		m.stream = stream
+
+		return m, tea.Batch(
+			m.spinner.Tick,
+			waitForChunk(stream),
+		)
 	}
 
 	var cmd tea.Cmd

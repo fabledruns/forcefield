@@ -1,7 +1,8 @@
 package providers
 
 type StreamEvent struct {
-    Token string
-    Done  bool
-    Err   error
+    Text     string
+    Thinking string
+    Done     bool
+    Err      error
 }

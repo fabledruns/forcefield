@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // OllamaProvider talks to a local Ollama server's /api/chat endpoint.
@@ -63,65 +64,30 @@ type ollamaStreamResponse struct {
 
 // Chat sends the system and user prompts to Ollama and returns the
 // model's reply text.
+//
+// IMPORTANT: Only used for non-streaming chat. For streaming, use StreamChat instead.
 func (o *OllamaProvider) Chat(ctx context.Context, system string, prompt string) (string, error) {
-	reqBody := ollamaChatRequest{
-		Model: o.Model,
-		Messages: []ollamaMessage{
-			{ Role: "system", Content: system },
-			{ Role: "user", Content: prompt },
-		},
-		Stream: false,
-	}
+	stream, err := o.StreamChat(ctx, system, prompt)
+    if err != nil {
+        return "", err
+    }
 
-	payload, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("encode ollama request: %w", err)
-	}
+    var out strings.Builder
 
-	url := o.Endpoint + "/api/chat"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return "", fmt.Errorf("build request to %s: %w", url, err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
+    for event := range stream {
+        if event.Err != nil {
+            return "", event.Err
+        }
 
-	resp, err := o.client.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf(
-			"could not reach Ollama at %s (is `ollama serve` running?): %w",
-			o.Endpoint, err,
-		)
-	}
-	defer resp.Body.Close()
+        out.WriteString(event.Text)
+    }
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read ollama response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf(
-			"ollama returned status %d for model %q: %s",
-			resp.StatusCode, o.Model, string(body),
-		)
-	}
-
-	var chatResp ollamaChatResponse
-	if err := json.Unmarshal(body, &chatResp); err != nil {
-		return "", fmt.Errorf("parse ollama response: %w", err)
-	}
-
-	if chatResp.Error != "" {
-		return "", fmt.Errorf("ollama error: %s", chatResp.Error)
-	}
-
-	if chatResp.Message.Content == "" {
-		return "", fmt.Errorf("ollama returned an empty response for model %q", o.Model)
-	}
-
-	return chatResp.Message.Content, nil
+    return out.String(), nil
 }
 
+// StreamChat sends the system and user prompts to Ollama and returns a channel
+// that emits StreamEvent objects as the model generates its reply. The channel
+// is closed when the model is done or if an error occurs.
 func (o *OllamaProvider) StreamChat(ctx context.Context, system string, prompt string) (<-chan StreamEvent, error) {
 	reqBody := ollamaChatRequest{
 		Model: o.Model,
@@ -177,6 +143,9 @@ func (o *OllamaProvider) StreamChat(ctx context.Context, system string, prompt s
 
 			err := decoder.Decode(&chunk)
 			if err == io.EOF {
+				events <- StreamEvent{
+					Err: io.ErrUnexpectedEOF,
+				}
 				return
 			}
 
@@ -196,12 +165,14 @@ func (o *OllamaProvider) StreamChat(ctx context.Context, system string, prompt s
 			}
 
 			if chunk.Message.Thinking != "" {
-				fmt.Print(chunk.Message.Thinking)
+				events <- StreamEvent{
+					Thinking: chunk.Message.Thinking,
+				}
 			}
 
 			if chunk.Message.Content != "" {
 				events <- StreamEvent{
-					Token: chunk.Message.Content,
+					Text: chunk.Message.Content,
 				}
 			}
 

@@ -24,6 +24,6 @@ func main() {
 			log.Fatal(event.Err)
 		}
 
-		fmt.Print(event.Token)
+		fmt.Print(event.Text)
 	}
 }
