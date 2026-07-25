@@ -15,19 +15,19 @@ import (
 
 // Runtime is the main execution point for Forcefield.
 type Runtime struct {
-    cfg 	 *config.Config
-    provider providers.ModelProvider
-    agent    *agent.Agent
+	cfg      *config.Config
+	provider providers.ModelProvider
+	agent    *agent.Agent
 }
 
-// type ChatRequest struct {
-//     Messages []Message
-//     SystemPrompt string
-//     Provider string
-//     Model string
-//     Tools []Tool
-// }
-func New() (*Runtime, error) { 
+//	type ChatRequest struct {
+//	    Messages []Message
+//	    SystemPrompt string
+//	    Provider string
+//	    Model string
+//	    Tools []Tool
+//	}
+func New() (*Runtime, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
@@ -57,6 +57,48 @@ func New() (*Runtime, error) {
 	}, nil
 }
 
+// CurrentModel returns the name of the model currently in use.
+func (r *Runtime) CurrentModel() string { return r.cfg.Model.Name }
+
+// CurrentProvider returns the name of the provider currently in use.
+func (r *Runtime) CurrentProvider() string { return r.cfg.Model.Provider }
+
+// SetModel switches the active model, keeping the current provider and
+// endpoint, and takes effect starting with the next request. It rebuilds
+// the provider rather than mutating it in place, since ModelProvider
+// implementations are constructed once with their model baked in.
+func (r *Runtime) SetModel(name string) error {
+	if name == "" {
+		return fmt.Errorf("model name cannot be empty")
+	}
+	cfg := *r.cfg
+	cfg.Model.Name = name
+	provider, err := newProvider(&cfg)
+	if err != nil {
+		return err
+	}
+	r.cfg = &cfg
+	r.provider = provider
+	return nil
+}
+
+// SetProvider switches the active provider, keeping the current model
+// name, and takes effect starting with the next request.
+func (r *Runtime) SetProvider(name string) error {
+	if name == "" {
+		return fmt.Errorf("provider name cannot be empty")
+	}
+	cfg := *r.cfg
+	cfg.Model.Provider = name
+	provider, err := newProvider(&cfg)
+	if err != nil {
+		return err
+	}
+	r.cfg = &cfg
+	r.provider = provider
+	return nil
+}
+
 func (r *Runtime) Stream(ctx context.Context, prompt string) (<-chan providers.StreamEvent, error) {
 	system := r.agent.BuildSystemPrompt()
 
@@ -64,23 +106,23 @@ func (r *Runtime) Stream(ctx context.Context, prompt string) (<-chan providers.S
 }
 
 func (r *Runtime) Run(prompt string) (string, error) {
-    systemPrompt := r.agent.BuildSystemPrompt()
+	systemPrompt := r.agent.BuildSystemPrompt()
 
-    response, err := r.provider.Chat(context.Background(), systemPrompt, prompt)
-    if err != nil {
-        return "", fmt.Errorf("model call failed: %w", err)
-    }
+	response, err := r.provider.Chat(context.Background(), systemPrompt, prompt)
+	if err != nil {
+		return "", fmt.Errorf("model call failed: %w", err)
+	}
 
-    return response, nil
+	return response, nil
 }
 
 func Run(prompt string) (string, error) {
-    rt, err := New()
-    if err != nil {
-        return "", fmt.Errorf("create runtime: %w", err)
-    }
+	rt, err := New()
+	if err != nil {
+		return "", fmt.Errorf("create runtime: %w", err)
+	}
 
-    return rt.Run(prompt)
+	return rt.Run(prompt)
 }
 
 // newProvider selects and constructs a ModelProvider based on

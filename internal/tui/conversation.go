@@ -12,6 +12,7 @@ const (
 	roleUser role = iota
 	roleAssistant
 	roleError
+	roleSystem // output from a slash command, e.g. /help or /model
 )
 
 // chatEntry is one turn in the visible transcript: something the user
@@ -33,6 +34,8 @@ func (e chatEntry) render(width int) string {
 		label = assistantLabelStyle.Render("Forcefield")
 	case roleError:
 		label = errorLabelStyle.Render("Error")
+	case roleSystem:
+		label = systemLabelStyle.Render("System")
 	}
 
 	body := messageBodyStyle.Width(width).Render(e.Content)

@@ -9,12 +9,12 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 var (
-	colorAccent    = lipgloss.Color("#FF3B3B") 
-	colorAssistant = lipgloss.Color("#FF3B3B") 
-	colorMuted     = lipgloss.Color("#7A7A7A") 
-	colorError     = lipgloss.Color("#FF6B6B") 
-	colorBorder    = lipgloss.Color("#f8a7a7") 
-	colorText      = lipgloss.Color("#EAEAEA") 
+	colorAccent    = lipgloss.Color("#FF3B3B")
+	colorAssistant = lipgloss.Color("#FF3B3B")
+	colorMuted     = lipgloss.Color("#7A7A7A")
+	colorError     = lipgloss.Color("#FF6B6B")
+	colorBorder    = lipgloss.Color("#f8a7a7")
+	colorText      = lipgloss.Color("#EAEAEA")
 )
 
 var (
@@ -36,8 +36,12 @@ var (
 				Foreground(colorAssistant)
 
 	errorLabelStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorError)
+
+	systemLabelStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(colorError)
+				Foreground(colorMuted)
 
 	messageBodyStyle = lipgloss.NewStyle().
 				Foreground(colorText)

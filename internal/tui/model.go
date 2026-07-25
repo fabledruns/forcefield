@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"forcefield/internal/command"
 	"forcefield/internal/config"
 	"forcefield/internal/providers"
 	"forcefield/internal/runtime"
@@ -34,8 +35,9 @@ const (
 // runtime.Run, exactly like `ff run` would for a single message. See the
 // package doc for what it deliberately does not add.
 type model struct {
-	runtime *runtime.Runtime
-	stream  <-chan providers.StreamEvent
+	runtime  *runtime.Runtime
+	registry *command.Registry
+	stream   <-chan providers.StreamEvent
 
 	agentName    string
 	providerName string
@@ -79,6 +81,7 @@ func newModel(cfg *config.Config) model {
 		spinner:      spin,
 		viewport:     viewport.New(0, 0),
 		runtime:      r,
+		registry:     newRegistry(),
 	}
 }
 
@@ -131,7 +134,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.waiting = false
 
 		m.entries = append(m.entries, chatEntry{
-			Role: roleError,
+			Role:    roleError,
 			Content: msg.err.Error(),
 		})
 
@@ -185,9 +188,20 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if task == "" {
 			return m, nil
 		}
+		m.input.Reset()
+
+		if isCommand, err := command.Dispatch(&m, m.registry, task); isCommand {
+			if err != nil {
+				m.entries = append(m.entries, chatEntry{Role: roleError, Content: err.Error()})
+			}
+			m.refreshTranscript()
+			if m.quitting {
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 
 		m.entries = append(m.entries, chatEntry{Role: roleUser, Content: task})
-		m.input.Reset()
 		m.waiting = true
 		m.refreshTranscript()
 
