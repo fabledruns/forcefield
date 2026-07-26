@@ -20,13 +20,6 @@ type Runtime struct {
 	agent    *agent.Agent
 }
 
-//	type ChatRequest struct {
-//	    Messages []Message
-//	    SystemPrompt string
-//	    Provider string
-//	    Model string
-//	    Tools []Tool
-//	}
 func New() (*Runtime, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -57,16 +50,11 @@ func New() (*Runtime, error) {
 	}, nil
 }
 
-// CurrentModel returns the name of the model currently in use.
-func (r *Runtime) CurrentModel() string { return r.cfg.Model.Name }
-
-// CurrentProvider returns the name of the provider currently in use.
-func (r *Runtime) CurrentProvider() string { return r.cfg.Model.Provider }
+func (r *Runtime) CurrentModel()    string { return r.cfg.Model.Name     } // CurrentModel returns the name of the model currently in use.
+func (r *Runtime) CurrentProvider() string { return r.cfg.Model.Provider } // CurrentProvider returns the name of the provider currently in use.
 
 // SetModel switches the active model, keeping the current provider and
-// endpoint, and takes effect starting with the next request. It rebuilds
-// the provider rather than mutating it in place, since ModelProvider
-// implementations are constructed once with their model baked in.
+// endpoint, and takes effect starting with the next request.
 func (r *Runtime) SetModel(name string) error {
 	if name == "" {
 		return fmt.Errorf("model name cannot be empty")
@@ -99,21 +87,38 @@ func (r *Runtime) SetProvider(name string) error {
 	return nil
 }
 
-func (r *Runtime) Stream(ctx context.Context, prompt string) (<-chan providers.StreamEvent, error) {
-	system := r.agent.BuildSystemPrompt()
+func (r *Runtime) buildMessages(prompt string) []providers.Message {
+    return []providers.Message{
+        {
+            Role:    providers.SystemRole,
+            Content: r.agent.BuildSystemPrompt(),
+        },
+        {
+            Role:    providers.UserRole,
+            Content: prompt,
+        },
+    }
+}
 
-	return r.provider.StreamChat(ctx, system, prompt)
+func (r *Runtime) Stream(ctx context.Context, prompt string) (<-chan providers.StreamEvent, error) {
+	messages := r.buildMessages(prompt)
+
+	return r.provider.StreamChat(ctx, messages, nil)
 }
 
 func (r *Runtime) Run(prompt string) (string, error) {
-	systemPrompt := r.agent.BuildSystemPrompt()
+	messages := r.buildMessages(prompt)
 
-	response, err := r.provider.Chat(context.Background(), systemPrompt, prompt)
+	response, err := r.provider.Chat(
+		context.Background(),
+		messages,
+		nil,
+	)
 	if err != nil {
 		return "", fmt.Errorf("model call failed: %w", err)
 	}
 
-	return response, nil
+	return response.Content, nil
 }
 
 func Run(prompt string) (string, error) {

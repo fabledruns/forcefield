@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"forcefield/internal/tools"
 	"io"
 	"net/http"
 	"strings"
@@ -66,36 +67,44 @@ type ollamaStreamResponse struct {
 // model's reply text.
 //
 // IMPORTANT: Only used for non-streaming chat. For streaming, use StreamChat instead.
-func (o *OllamaProvider) Chat(ctx context.Context, system string, prompt string) (string, error) {
-	stream, err := o.StreamChat(ctx, system, prompt)
+func (o *OllamaProvider) Chat(ctx context.Context, messages []Message, tools []tools.Definition) (Response, error) {
+    stream, err := o.StreamChat(ctx, messages, tools)
     if err != nil {
-        return "", err
+        return Response{}, err
     }
 
     var out strings.Builder
 
     for event := range stream {
         if event.Err != nil {
-            return "", event.Err
+            return Response{}, event.Err
         }
 
         out.WriteString(event.Text)
     }
 
-    return out.String(), nil
+    return Response{
+        Content: out.String(),
+    }, nil
 }
-
 // StreamChat sends the system and user prompts to Ollama and returns a channel
 // that emits StreamEvent objects as the model generates its reply. The channel
 // is closed when the model is done or if an error occurs.
-func (o *OllamaProvider) StreamChat(ctx context.Context, system string, prompt string) (<-chan StreamEvent, error) {
+func (o *OllamaProvider) StreamChat(ctx context.Context, messages []Message, tools []tools.Definition) (<-chan StreamEvent, error) {
+	ollamaMessages := make([]ollamaMessage, 0, len(messages))
+	_ = tools // TODO: pass tools to Ollama when it supports them
+
+	for _, msg := range messages {
+		ollamaMessages = append(ollamaMessages, ollamaMessage{
+			Role:    string(msg.Role),
+			Content: msg.Content,
+		})
+	}
+
 	reqBody := ollamaChatRequest{
-		Model: o.Model,
-		Messages: []ollamaMessage{
-			{ Role: "system", Content: system },
-			{ Role: "user", Content: prompt },
-		},
-		Stream: true,
+		Model:    o.Model,
+		Messages: ollamaMessages,
+		Stream:   true,
 	}
 
 	payload, err := json.Marshal(reqBody)

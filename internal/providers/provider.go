@@ -4,12 +4,15 @@
 // later without touching agent or runtime code.
 package providers
 
-import "context"
+import (
+	"context"
+	"forcefield/internal/tools"
+)
 
 // ModelProvider is the minimal contract any model backend must satisfy:
 // given a system prompt and a user prompt, return the model's reply as
 // plain text.
 type ModelProvider interface {
-		  Chat(ctx context.Context, system string, prompt string) (string, error)
-	StreamChat(ctx context.Context, system string, prompt string) (<-chan StreamEvent, error)
+          Chat(ctx context.Context, messages []Message, tools []tools.Definition) (Response, error)
+    StreamChat(ctx context.Context, messages []Message, tools []tools.Definition) (<-chan StreamEvent, error)
 }
