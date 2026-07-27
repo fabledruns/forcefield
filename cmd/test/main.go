@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 
@@ -9,21 +8,21 @@ import (
 )
 
 func main() {
+	fmt.Println("1. Creating runtime")
+
 	rt, err := runtime.New()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	events, err := rt.Stream(context.Background(), "Say hello in five words.")
+	fmt.Println("2. Running prompt")
+
+	resp, err := rt.Run("What files are in the current directory and what is my current path?")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	for event := range events {
-		if event.Err != nil {
-			log.Fatal(event.Err)
-		}
+	fmt.Println("3. Got response")
 
-		fmt.Print(event.Text)
-	}
+	fmt.Printf("%+v\n", resp)
 }

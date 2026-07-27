@@ -1,8 +1,6 @@
 // Package agent defines the Agent type: an identity (name + base system
 // prompt) plus whatever skills have been loaded for it. It knows how to
-// combine those into the final system prompt sent to a model. It does not
-// know about config files, HTTP, or the model provider — those are wired
-// together by the runtime package.
+// combine those into the final system prompt sent to a model.
 package agent
 
 import "strings"

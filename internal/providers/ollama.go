@@ -9,7 +9,6 @@ import (
 	"forcefield/internal/tools"
 	"io"
 	"net/http"
-	"strings"
 )
 
 // OllamaProvider talks to a local Ollama server's /api/chat endpoint.
@@ -25,7 +24,7 @@ func NewOllamaProvider(endpoint, model string) *OllamaProvider {
 	return &OllamaProvider{
 		Endpoint: endpoint,
 		Model:    model,
-		client: &http.Client{},
+		client:   &http.Client{},
 	}
 }
 
@@ -33,12 +32,39 @@ func NewOllamaProvider(endpoint, model string) *OllamaProvider {
 type ollamaMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+
+	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	Name       string `json:"name,omitempty"`
+}
+
+type ollamaTool struct {
+	Type     string         `json:"type"`
+	Function ollamaFunction `json:"function"`
+}
+
+type ollamaFunction struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
+type ollamaToolCall struct {
+	ID 	     string         	`json:"id"`
+	Function ollamaFunctionCall `json:"function"`
+}
+
+type ollamaFunctionCall struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
 }
 
 // ollamaChatRequest is the request body for POST /api/chat.
 type ollamaChatRequest struct {
 	Model    string          `json:"model"`
 	Messages []ollamaMessage `json:"messages"`
+	Tools    []ollamaTool    `json:"tools,omitempty"`
 	Stream   bool            `json:"stream"`
 }
 
@@ -46,21 +72,26 @@ type ollamaChatRequest struct {
 // /api/chat response body.
 type ollamaChatResponse struct {
 	Message struct {
-		Content string `json:"content"`
+		Content   string           `json:"content"`
+		Thinking  string           `json:"thinking"`
+		ToolCalls []ollamaToolCall `json:"tool_calls"`
 	} `json:"message"`
+
+	Done  bool   `json:"done"`
 	Error string `json:"error"`
 }
 
 // ollamaStreamResponse is the relevant subset of Ollama's streaming
 // /api/chat response body. Each chunk is a JSON object with this shape.
 type ollamaStreamResponse struct {
-    Message struct {
-        Content  string `json:"content"`
-		Thinking string `json:"thinking"`
-    } `json:"message"`
+	Message struct {
+		Content   string           `json:"content"`
+		Thinking  string           `json:"thinking"`
+		ToolCalls []ollamaToolCall `json:"tool_calls"`
+	} `json:"message"`
 
-    Done  bool   `json:"done"`
-    Error string `json:"error"`
+	Done  bool   `json:"done"`
+	Error string `json:"error"`
 }
 
 // Chat sends the system and user prompts to Ollama and returns the
@@ -68,42 +99,82 @@ type ollamaStreamResponse struct {
 //
 // IMPORTANT: Only used for non-streaming chat. For streaming, use StreamChat instead.
 func (o *OllamaProvider) Chat(ctx context.Context, messages []Message, tools []tools.Definition) (Response, error) {
-    stream, err := o.StreamChat(ctx, messages, tools)
-    if err != nil {
-        return Response{}, err
-    }
-
-    var out strings.Builder
-
-    for event := range stream {
-        if event.Err != nil {
-            return Response{}, event.Err
-        }
-
-        out.WriteString(event.Text)
-    }
-
-    return Response{
-        Content: out.String(),
-    }, nil
-}
-// StreamChat sends the system and user prompts to Ollama and returns a channel
-// that emits StreamEvent objects as the model generates its reply. The channel
-// is closed when the model is done or if an error occurs.
-func (o *OllamaProvider) StreamChat(ctx context.Context, messages []Message, tools []tools.Definition) (<-chan StreamEvent, error) {
-	ollamaMessages := make([]ollamaMessage, 0, len(messages))
-	_ = tools // TODO: pass tools to Ollama when it supports them
-
-	for _, msg := range messages {
-		ollamaMessages = append(ollamaMessages, ollamaMessage{
-			Role:    string(msg.Role),
-			Content: msg.Content,
-		})
-	}
+	ollamaMessages := toOllamaMessages(messages)
+	ollamaTools := toOllamaTools(tools)
 
 	reqBody := ollamaChatRequest{
 		Model:    o.Model,
 		Messages: ollamaMessages,
+		Tools:    ollamaTools,
+		Stream:   false,
+	}
+
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return Response{}, fmt.Errorf("encode ollama request: %w", err)
+	}
+
+	url := o.Endpoint + "/api/chat"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return Response{}, fmt.Errorf("build request to %s: %w", url, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := o.client.Do(httpReq)
+	if err != nil {
+		return Response{}, fmt.Errorf(
+			"could not reach Ollama at %s (is `ollama serve` running?): %w",
+			o.Endpoint, err,
+		)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return Response{}, fmt.Errorf(
+			"ollama returned status %d for model %q: %s",
+			resp.StatusCode,
+			o.Model,
+			string(body),
+		)
+	}
+
+	var chatResp ollamaChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		return Response{}, fmt.Errorf("decode ollama response: %w", err)
+	}
+
+	if chatResp.Error != "" {
+		return Response{}, errors.New(chatResp.Error)
+	}
+
+	toolCalls := make([]ToolCall, 0, len(chatResp.Message.ToolCalls))
+	for _, tc := range chatResp.Message.ToolCalls {
+		toolCalls = append(toolCalls, ToolCall{
+			ID: 	   tc.ID,
+			Name:      tc.Function.Name,
+			Arguments: tc.Function.Arguments,
+		})
+	}
+
+	return Response{
+		Content:   chatResp.Message.Content,
+		ToolCalls: toolCalls,
+	}, nil
+}
+
+// StreamChat sends the system and user prompts to Ollama and returns a channel
+// that emits StreamEvent objects as the model generates its reply. The channel
+// is closed when the model is done or if an error occurs.
+func (o *OllamaProvider) StreamChat(ctx context.Context, messages []Message, tools []tools.Definition) (<-chan StreamEvent, error) {
+	ollamaMessages := toOllamaMessages(messages)
+	ollamaTools := toOllamaTools(tools)
+
+	reqBody := ollamaChatRequest{
+		Model:    o.Model,
+		Messages: ollamaMessages,
+		Tools:    ollamaTools,
 		Stream:   true,
 	}
 
@@ -196,4 +267,47 @@ func (o *OllamaProvider) StreamChat(ctx context.Context, messages []Message, too
 	}()
 
 	return events, nil
+}
+
+// Helper conversions
+func toOllamaMessages(messages []Message) []ollamaMessage {
+	ollamaMessages := make([]ollamaMessage, 0, len(messages))
+	for _, msg := range messages {
+		var toolCalls []ollamaToolCall
+		if len(msg.ToolCalls) > 0 {
+			toolCalls = make([]ollamaToolCall, 0, len(msg.ToolCalls))
+			for _, tc := range msg.ToolCalls {
+				toolCalls = append(toolCalls, ollamaToolCall{
+					Function: ollamaFunctionCall{
+						Name:      tc.Name,
+						Arguments: tc.Arguments,
+					},
+				})
+			}
+		}
+
+		ollamaMessages = append(ollamaMessages, ollamaMessage{
+			Role:       string(msg.Role),
+			Content:    msg.Content,
+			ToolCalls:  toolCalls,
+			ToolCallID: msg.ToolCallID,
+			Name:       msg.Name,
+		})
+	}
+	return ollamaMessages
+}
+
+func toOllamaTools(tools []tools.Definition) []ollamaTool {
+	ollamaTools := make([]ollamaTool, 0, len(tools))
+	for _, tool := range tools {
+		ollamaTools = append(ollamaTools, ollamaTool{
+			Type: "function",
+			Function: ollamaFunction{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.InputSchema,
+			},
+		})
+	}
+	return ollamaTools
 }

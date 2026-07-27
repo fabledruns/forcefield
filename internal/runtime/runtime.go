@@ -11,6 +11,8 @@ import (
 	"forcefield/internal/config"
 	"forcefield/internal/providers"
 	"forcefield/internal/skills"
+	"forcefield/internal/tools"
+	"forcefield/internal/tools/builtin"
 )
 
 // Runtime is the main execution point for Forcefield.
@@ -18,6 +20,7 @@ type Runtime struct {
 	cfg      *config.Config
 	provider providers.ModelProvider
 	agent    *agent.Agent
+	manager  *tools.Manager
 }
 
 func New() (*Runtime, error) {
@@ -43,10 +46,16 @@ func New() (*Runtime, error) {
 		return nil, err
 	}
 
+	manager, err := builtin.NewManager()
+	if err != nil {
+		return nil, fmt.Errorf("create tool manager: %w", err)
+	}
+
 	return &Runtime{
 		cfg:      cfg,
 		provider: provider,
 		agent:    a,
+		manager:  manager,
 	}, nil
 }
 
@@ -103,28 +112,55 @@ func (r *Runtime) buildMessages(prompt string) []providers.Message {
 func (r *Runtime) Stream(ctx context.Context, prompt string) (<-chan providers.StreamEvent, error) {
 	messages := r.buildMessages(prompt)
 
-	return r.provider.StreamChat(ctx, messages, nil)
+	return r.provider.StreamChat(ctx, messages, r.manager.Definitions())
 }
 
-func (r *Runtime) Run(prompt string) (string, error) {
+func (r *Runtime) Run(prompt string) (providers.Response, error) {
 	messages := r.buildMessages(prompt)
 
-	response, err := r.provider.Chat(
-		context.Background(),
-		messages,
-		nil,
-	)
-	if err != nil {
-		return "", fmt.Errorf("model call failed: %w", err)
-	}
+	for {
+		response, err := r.provider.Chat(
+			context.Background(),
+			messages,
+			r.manager.Definitions(),
+		)
+		if err != nil {
+			return providers.Response{}, fmt.Errorf("model call failed: %w", err)
+		}
 
-	return response.Content, nil
+		if len(response.ToolCalls) == 0 {
+			return response, nil
+		}
+
+		messages = append(messages, providers.Message{
+			Role:      providers.AssistantRole,
+			ToolCalls: response.ToolCalls,
+		})
+
+		for _, tc := range response.ToolCalls {
+			result, err := r.manager.Execute(
+				context.Background(),
+				tc.Name,
+				tc.Arguments,
+			)
+			if err != nil {
+				return providers.Response{}, err
+			}
+
+			messages = append(messages, providers.Message{
+				Role:       providers.ToolRole,
+				Name:       tc.Name,
+				Content:    result.Content,
+				ToolCallID: tc.ID,
+			})
+		}
+	}
 }
 
-func Run(prompt string) (string, error) {
+func Run(prompt string) (providers.Response, error) {
 	rt, err := New()
 	if err != nil {
-		return "", fmt.Errorf("create runtime: %w", err)
+		return providers.Response{}, fmt.Errorf("create runtime: %w", err)
 	}
 
 	return rt.Run(prompt)
