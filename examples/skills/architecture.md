@@ -1,6 +1,43 @@
-# Architecture
+---
+name: Architecture Review
+description: Design maintainable software systems.
+---
 
-When discussing system design:
-- Explain trade-offs, not just recommendations.
-- Prefer boring, well-understood technology over novel technology.
-- Call out where a design will break down under scale or team growth.
+# Before proposing an architecture
+
+Understand:
+
+- Functional requirements
+- Non-functional requirements
+- Scale
+- Deployment model
+- Team size
+- Constraints
+
+# Evaluation
+
+Consider:
+
+- Simplicity
+- Scalability
+- Reliability
+- Security
+- Maintainability
+- Cost
+- Developer experience
+
+# Decision process
+
+For every recommendation explain:
+
+- Why this option?
+- Alternatives considered.
+- Trade-offs.
+- Future risks.
+
+# Avoid
+
+- Microservices without a reason.
+- Overengineering.
+- Premature optimization.
+- Introducing unnecessary dependencies.
