@@ -13,7 +13,6 @@ import (
 
 	"forcefield/internal/command"
 	"forcefield/internal/config"
-	"forcefield/internal/providers"
 	"forcefield/internal/runtime"
 )
 
@@ -31,13 +30,13 @@ const (
 )
 
 // model is Forcefield's interactive chat state. It is a thin presentation
-// layer: it renders a transcript and forwards each submitted message to
-// runtime.Run, exactly like `ff run` would for a single message. See the
-// package doc for what it deliberately does not add.
+// layer: it renders a transcript and forwards each submitted message through
+// the runtime's streaming agent loop. See the package doc for what it
+// deliberately does not add.
 type model struct {
 	runtime  *runtime.Runtime
 	registry *command.Registry
-	stream   <-chan providers.StreamEvent
+	stream   <-chan runtime.Event
 
 	agentName    string
 	providerName string
@@ -50,13 +49,14 @@ type model struct {
 
 	width, height int
 	waiting       bool // true while a runTask command is in flight
+	status        string
 	quitting      bool
 	ready         bool // true once the first WindowSizeMsg has arrived
 }
 
 // newModel builds the initial chat model. cfg is only used to label the
-// session header (which agent/provider/model it's talking to) — the
-// actual call still goes through runtime.Run, which loads config itself.
+// session header (which agent/provider/model it's talking to); requests use
+// the Runtime created below.
 func newModel(cfg *config.Config) model {
 	input := textinput.New()
 	input.Placeholder = "Ask Forcefield something…"
@@ -105,33 +105,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	case streamChunkMsg:
-		if msg.Text == "" {
-			return m, waitForChunk(m.stream)
+	case streamEventMsg:
+		switch msg.Event.Type {
+		case runtime.EventText:
+			if msg.Event.Text == "" {
+				return m, waitForChunk(m.stream)
+			}
+			m.status = ""
+			m.appendAssistantText(msg.Event.Text)
+		case runtime.EventThinking:
+			// Provider thinking content remains available to other runtime
+			// consumers. The terminal presents a concise, transient status.
+			if msg.Event.Thinking == "" {
+				m.status = "Thinking"
+			}
+		case runtime.EventToolStart:
+			m.finishAssistantStream()
+			m.status = formatToolStart(msg.Event.ToolCall)
+		case runtime.EventToolFinish:
+			m.status = ""
+			m.appendActivity(formatToolFinish(msg.Event.ToolResult))
 		}
-
-		if len(m.entries) == 0 ||
-			m.entries[len(m.entries)-1].Role != roleAssistant {
-
-			m.entries = append(m.entries, chatEntry{
-				Role: roleAssistant,
-			})
-		}
-
-		m.entries[len(m.entries)-1].Content += msg.Text
 
 		m.refreshTranscript()
-
 		return m, waitForChunk(m.stream)
 
 	case streamDoneMsg:
 		m.waiting = false
 		m.stream = nil
+		m.status = ""
+		m.finishAssistantStream()
 		m.refreshTranscript()
 		return m, nil
 
 	case streamErrMsg:
 		m.waiting = false
+		m.status = ""
+		m.finishAssistantStream()
 
 		m.entries = append(m.entries, chatEntry{
 			Role:    roleError,
@@ -167,6 +177,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, inputCmd)
 
 	return m, tea.Batch(cmds...)
+}
+
+func (m *model) appendAssistantText(text string) {
+	if len(m.entries) == 0 || m.entries[len(m.entries)-1].Role != roleAssistant {
+		m.entries = append(m.entries, chatEntry{Role: roleAssistant, Streaming: true})
+	}
+	m.entries[len(m.entries)-1].Content += text
+}
+
+func (m *model) finishAssistantStream() {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Role == roleAssistant && m.entries[i].Streaming {
+			m.entries[i].Streaming = false
+			return
+		}
+	}
+}
+
+func (m *model) appendActivity(text string) {
+	if text == "" {
+		return
+	}
+	m.entries = append(m.entries, chatEntry{Role: roleActivity, Content: text})
 }
 
 // handleKey processes keyboard input: global shortcuts first, then
@@ -292,7 +325,11 @@ func (m model) renderFooter() string {
 
 	status := "enter send · esc quit"
 	if m.waiting {
-		status = fmt.Sprintf("%s thinking…", m.spinner.View())
+		activity := m.status
+		if activity == "" {
+			activity = "Working"
+		}
+		status = fmt.Sprintf("%s %s", m.spinner.View(), activity)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, inputBox, helpStyle.Render(status))

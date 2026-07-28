@@ -6,6 +6,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
@@ -59,7 +60,7 @@ func New() (*Runtime, error) {
 	}, nil
 }
 
-func (r *Runtime) CurrentModel()    string { return r.cfg.Model.Name     } // CurrentModel returns the name of the model currently in use.
+func (r *Runtime) CurrentModel() string    { return r.cfg.Model.Name }     // CurrentModel returns the name of the model currently in use.
 func (r *Runtime) CurrentProvider() string { return r.cfg.Model.Provider } // CurrentProvider returns the name of the provider currently in use.
 
 // SetModel switches the active model, keeping the current provider and
@@ -97,54 +98,135 @@ func (r *Runtime) SetProvider(name string) error {
 }
 
 func (r *Runtime) buildMessages(prompt string) []providers.Message {
-    return []providers.Message{
-        {
-            Role:    providers.SystemRole,
-            Content: r.agent.BuildSystemPrompt(),
-        },
-        {
-            Role:    providers.UserRole,
-            Content: prompt,
-        },
-    }
+	return []providers.Message{
+		{
+			Role:    providers.SystemRole,
+			Content: r.agent.BuildSystemPrompt(),
+		},
+		{
+			Role:    providers.UserRole,
+			Content: prompt,
+		},
+	}
 }
 
-func (r *Runtime) Stream(ctx context.Context, prompt string) (<-chan providers.StreamEvent, error) {
-	messages := r.buildMessages(prompt)
+// StreamChat runs the agent loop and emits its structured events as they
+// happen. Model text, tool calls, tool results, and the final response all
+// flow through this single execution path.
+func (r *Runtime) StreamChat(ctx context.Context, prompt string) (<-chan Event, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("stream context cannot be nil")
+	}
 
-	return r.provider.StreamChat(ctx, messages, r.manager.Definitions())
+	events := make(chan Event)
+	go func() {
+		defer close(events)
+		r.run(ctx, r.buildMessages(prompt), func(event Event) bool {
+			select {
+			case events <- event:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		})
+	}()
+
+	return events, nil
 }
 
+// Stream is kept as a compatibility alias for StreamChat.
+func (r *Runtime) Stream(ctx context.Context, prompt string) (<-chan Event, error) {
+	return r.StreamChat(ctx, prompt)
+}
+
+// Run executes the same streaming agent loop as StreamChat and returns its
+// final response after consuming the emitted events.
 func (r *Runtime) Run(prompt string) (providers.Response, error) {
-	messages := r.buildMessages(prompt)
+	return r.RunContext(context.Background(), prompt)
+}
 
+// RunContext is Run with caller-controlled cancellation and deadlines.
+func (r *Runtime) RunContext(ctx context.Context, prompt string) (providers.Response, error) {
+	events, err := r.StreamChat(ctx, prompt)
+	if err != nil {
+		return providers.Response{}, err
+	}
+
+	for event := range events {
+		switch event.Type {
+		case EventDone:
+			if event.Response == nil {
+				return providers.Response{}, fmt.Errorf("runtime completed without a response")
+			}
+			return *event.Response, nil
+		case EventError:
+			return providers.Response{}, event.Err
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return providers.Response{}, err
+	}
+	return providers.Response{}, fmt.Errorf("runtime stopped without a completion event")
+}
+
+// run is the only agent loop. It turns provider chunks into runtime events,
+// executes requested tools, appends their results to the conversation, and
+// repeats until a model turn does not request a tool.
+func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit func(Event) bool) {
 	for {
-		response, err := r.provider.Chat(
-			context.Background(),
-			messages,
-			r.manager.Definitions(),
-		)
+		response, err := r.runModelTurn(ctx, messages, emit)
 		if err != nil {
-			return providers.Response{}, fmt.Errorf("model call failed: %w", err)
+			emit(Event{Type: EventError, Err: err})
+			return
 		}
 
 		if len(response.ToolCalls) == 0 {
-			return response, nil
+			emit(Event{Type: EventDone, Response: &response})
+			return
 		}
 
 		messages = append(messages, providers.Message{
 			Role:      providers.AssistantRole,
+			Content:   response.Content,
 			ToolCalls: response.ToolCalls,
 		})
 
 		for _, tc := range response.ToolCalls {
+			call := tc
+			if !emit(Event{Type: EventToolStart, ToolCall: &call}) {
+				return
+			}
+
+			started := time.Now()
 			result, err := r.manager.Execute(
-				context.Background(),
+				ctx,
 				tc.Name,
 				tc.Arguments,
 			)
 			if err != nil {
-				return providers.Response{}, err
+				emit(Event{Type: EventToolFinish, ToolResult: &ToolResult{
+					ToolCallID: tc.ID,
+					Name:       tc.Name,
+					Arguments:  tc.Arguments,
+					Success:    false,
+					Duration:   time.Since(started),
+					Err:        err,
+				}})
+				emit(Event{Type: EventError, Err: fmt.Errorf("execute tool %q: %w", tc.Name, err)})
+				return
+			}
+
+			if !emit(Event{Type: EventToolFinish, ToolResult: &ToolResult{
+				ToolCallID: tc.ID,
+				Name:       tc.Name,
+				Arguments:  tc.Arguments,
+				Content:    result.Content,
+				IsError:    result.IsError,
+				Success:    !result.IsError,
+				Duration:   time.Since(started),
+			}}) {
+				return
 			}
 
 			messages = append(messages, providers.Message{
@@ -155,6 +237,46 @@ func (r *Runtime) Run(prompt string) (providers.Response, error) {
 			})
 		}
 	}
+}
+
+// runModelTurn streams one provider response and returns the assembled model
+// response. It deliberately knows nothing about tool execution.
+func (r *Runtime) runModelTurn(ctx context.Context, messages []providers.Message, emit func(Event) bool) (providers.Response, error) {
+	if !emit(Event{Type: EventThinking}) {
+		return providers.Response{}, context.Canceled
+	}
+
+	stream, err := r.provider.StreamChat(ctx, messages, r.manager.Definitions())
+	if err != nil {
+		return providers.Response{}, fmt.Errorf("model call failed: %w", err)
+	}
+
+	var response providers.Response
+	for event := range stream {
+		if event.Err != nil {
+			return providers.Response{}, fmt.Errorf("model stream failed: %w", event.Err)
+		}
+
+		if event.Thinking != "" {
+			if !emit(Event{Type: EventThinking, Thinking: event.Thinking}) {
+				return providers.Response{}, context.Canceled
+			}
+		}
+
+		if event.Text != "" {
+			response.Content += event.Text
+			if !emit(Event{Type: EventText, Text: event.Text}) {
+				return providers.Response{}, context.Canceled
+			}
+		}
+
+		response.ToolCalls = append(response.ToolCalls, event.ToolCalls...)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return providers.Response{}, err
+	}
+	return response, nil
 }
 
 func Run(prompt string) (providers.Response, error) {

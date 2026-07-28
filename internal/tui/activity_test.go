@@ -1,0 +1,43 @@
+package tui
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"forcefield/internal/providers"
+	"forcefield/internal/runtime"
+)
+
+func TestFormatToolStartIncludesUsefulArguments(t *testing.T) {
+	got := formatToolStart(&providers.ToolCall{
+		Name:      "read_file",
+		Arguments: map[string]any{"path": "README.md"},
+	})
+	if got != "Running read_file README.md" {
+		t.Errorf("formatToolStart() = %q", got)
+	}
+}
+
+func TestFormatToolFinishSummarizesListFiles(t *testing.T) {
+	got := formatToolFinish(&runtime.ToolResult{
+		Name:     "list_files",
+		Content:  "README.md\ncmd/\ninternal/",
+		Success:  true,
+		Duration: 150 * time.Millisecond,
+	})
+	if got != "✓ Found 3 entries (150ms)" {
+		t.Errorf("formatToolFinish() = %q", got)
+	}
+}
+
+func TestFormatToolFinishDoesNotExposeLargeFailureOutput(t *testing.T) {
+	got := formatToolFinish(&runtime.ToolResult{
+		Name:    "read_file",
+		Content: strings.Repeat("x", 200),
+		Success: false,
+	})
+	if len(got) > 160 || !strings.HasPrefix(got, "✕ read_file failed: ") {
+		t.Errorf("formatToolFinish() = %q", got)
+	}
+}

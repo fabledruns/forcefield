@@ -46,6 +46,9 @@ var (
 	messageBodyStyle = lipgloss.NewStyle().
 				Foreground(colorText)
 
+	activityStyle = lipgloss.NewStyle().
+			Foreground(colorMuted)
+
 	helpStyle = lipgloss.NewStyle().
 			Foreground(colorMuted)
 

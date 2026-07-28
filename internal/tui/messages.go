@@ -1,28 +1,29 @@
 package tui
 
 import (
-	"forcefield/internal/providers"
+	"forcefield/internal/runtime"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-type streamChunkMsg struct{ Text string }
+type streamEventMsg struct{ Event runtime.Event }
 type streamDoneMsg struct{}
 type streamErrMsg struct{ err error }
 
-func waitForChunk(stream <-chan providers.StreamEvent) tea.Cmd {
+func waitForChunk(stream <-chan runtime.Event) tea.Cmd {
 	return func() tea.Msg {
 		event, ok := <-stream
 		if !ok {
 			return streamDoneMsg{}
 		}
 
-		if event.Err != nil {
+		if event.Type == runtime.EventError || event.Err != nil {
 			return streamErrMsg{err: event.Err}
 		}
-
-		return streamChunkMsg{
-			Text: event.Text,
+		if event.Type == runtime.EventDone {
+			return streamDoneMsg{}
 		}
+
+		return streamEventMsg{Event: event}
 	}
 }

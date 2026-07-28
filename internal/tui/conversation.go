@@ -11,6 +11,7 @@ type role int
 const (
 	roleUser role = iota
 	roleAssistant
+	roleActivity
 	roleError
 	roleSystem // output from a slash command, e.g. /help or /model
 )
@@ -19,8 +20,9 @@ const (
 // typed, a reply from the model, or an error that happened while getting
 // one. Errors are rendered inline rather than crashing the session.
 type chatEntry struct {
-	Role    role
-	Content string
+	Role      role
+	Content   string
+	Streaming bool
 }
 
 // render turns a chatEntry into its final styled, word-wrapped form.
@@ -32,6 +34,10 @@ func (e chatEntry) render(width int) string {
 		label = userLabelStyle.Render("You")
 	case roleAssistant:
 		label = assistantLabelStyle.Render("Forcefield")
+		body := renderMarkdown(e.Content, width, e.Streaming)
+		return fmt.Sprintf("%s\n%s", label, body)
+	case roleActivity:
+		return activityStyle.Width(width).Render(e.Content)
 	case roleError:
 		label = errorLabelStyle.Render("Error")
 	case roleSystem:

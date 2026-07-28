@@ -9,10 +9,9 @@ import (
 	"forcefield/internal/tools"
 )
 
-// ModelProvider is the minimal contract any model backend must satisfy:
-// given a system prompt and a user prompt, return the model's reply as
-// plain text.
+// ModelProvider streams one model turn. The runtime owns the agent loop so
+// every provider has one execution primitive regardless of how callers
+// consume the final answer.
 type ModelProvider interface {
-          Chat(ctx context.Context, messages []Message, tools []tools.Definition) (Response, error)
-    StreamChat(ctx context.Context, messages []Message, tools []tools.Definition) (<-chan StreamEvent, error)
+	StreamChat(ctx context.Context, messages []Message, tools []tools.Definition) (<-chan StreamEvent, error)
 }
