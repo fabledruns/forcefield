@@ -22,6 +22,7 @@ type Runtime struct {
 	provider providers.ModelProvider
 	agent    *agent.Agent
 	manager  *tools.Manager
+	skills   *skills.Store
 }
 
 func New() (*Runtime, error) {
@@ -35,12 +36,17 @@ func New() (*Runtime, error) {
 		return nil, fmt.Errorf("resolve forcefield home: %w", err)
 	}
 
-	skillsText, err := skills.Load(forcefieldHome)
+	// Build the skill store once for the lifetime of this Runtime. 
+	skillStore, err := skills.New(forcefieldHome)
 	if err != nil {
-		return nil, fmt.Errorf("load skills: %w", err)
+		return nil, fmt.Errorf("load skill store: %w", err)
 	}
 
-	a := agent.New(cfg.Agent.Name, cfg.Agent.SystemPrompt, skillsText)
+	a := agent.New(
+		cfg.Agent.Name,
+		cfg.Agent.SystemPrompt,
+		skills.FormatCatalog(skillStore.Catalog()),
+	)
 
 	provider, err := newProvider(cfg)
 	if err != nil {
@@ -51,12 +57,16 @@ func New() (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create tool manager: %w", err)
 	}
+	if err := manager.Register(newLoadSkillTool(skillStore)); err != nil {
+		return nil, fmt.Errorf("register load_skill tool: %w", err)
+	}
 
 	return &Runtime{
 		cfg:      cfg,
 		provider: provider,
 		agent:    a,
 		manager:  manager,
+		skills:   skillStore,
 	}, nil
 }
 
