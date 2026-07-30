@@ -1,28 +1,17 @@
 package main
 
 import (
-	"fmt"
+	"forcefield/internal/session"
 	"log"
-
-	"forcefield/internal/runtime"
 )
 
 func main() {
-	fmt.Println("1. Creating runtime")
+	s := session.New()
 
-	rt, err := runtime.New()
-	if err != nil {
+	s.AddMessage("user", "hello")
+	s.AddMessage("assistant", "hi 👋")
+
+	if err := s.Save(); err != nil {
 		log.Fatal(err)
 	}
-
-	fmt.Println("2. Running prompt")
-
-	resp, err := rt.Run("What files are in the current directory and what is my current path?")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println("3. Got response")
-
-	fmt.Printf("%+v\n", resp)
 }

@@ -75,7 +75,7 @@ func TestStreamChatExecutesToolsAndContinuesGeneration(t *testing.T) {
 	provider := &scriptedProvider{turns: testTurns()}
 	runtime := newTestRuntime(provider)
 
-	events, err := runtime.StreamChat(context.Background(), "use a tool")
+	events, err := runtime.StreamChat(context.Background(), []providers.Message{{Role: providers.UserRole, Content: "use a tool"}})
 	if err != nil {
 		t.Fatalf("StreamChat() error = %v", err)
 	}
@@ -134,7 +134,7 @@ func TestRunUsesStreamingAgentLoop(t *testing.T) {
 	provider := &scriptedProvider{turns: testTurns()}
 	runtime := newTestRuntime(provider)
 
-	response, err := runtime.Run("use a tool")
+	response, err := runtime.Run([]providers.Message{{Role: providers.UserRole, Content: "use a tool"}})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}

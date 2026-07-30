@@ -4,16 +4,17 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"forcefield/internal/config"
+	"forcefield/internal/session"
 )
 
-func Start() error {
+func Start(sess *session.Session) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
 
 	program := tea.NewProgram(
-		newModel(cfg),
+		newModel(cfg, sess),
 		tea.WithAltScreen(),       
 		tea.WithMouseCellMotion(), 
 	)

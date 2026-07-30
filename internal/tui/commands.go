@@ -7,23 +7,15 @@ import (
 	"forcefield/internal/command/builtin"
 )
 
-// newRegistry builds the set of slash commands available in the
-// interactive chat. It's called once, when the session starts (see
-// newModel) — command lookup during the session is then just an O(1)
-// map read inside the Registry.
-//
-// Adding a command means adding one line here (plus its own file under
-// command/builtin); nothing else in this package needs to change.
+// newRegistry builds the set of slash commands available in the interactive chat.
 func newRegistry() *command.Registry {
 	reg := command.NewRegistry()
 	reg.Register(builtin.NewExit())
 	reg.Register(builtin.NewClear())
 	reg.Register(builtin.NewModel())
 	reg.Register(builtin.NewProvider())
-	// Help needs to see the registry it's part of, so it's constructed
-	// (not registered) last, after everything it should list already
-	// has a home in reg.
 	reg.Register(builtin.NewHelp(reg))
+	reg.Register(builtin.NewSessions())
 	return reg
 }
 

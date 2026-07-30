@@ -14,6 +14,7 @@ import (
 	"forcefield/internal/command"
 	"forcefield/internal/config"
 	"forcefield/internal/runtime"
+	"forcefield/internal/session"
 )
 
 // minTranscriptHeight is the smallest the scrollable transcript area is
@@ -35,8 +36,11 @@ const (
 // deliberately does not add.
 type model struct {
 	runtime  *runtime.Runtime
+	session  *session.Session
 	registry *command.Registry
 	stream   <-chan runtime.Event
+
+	assistantBuffer strings.Builder
 
 	agentName    string
 	providerName string
@@ -57,7 +61,7 @@ type model struct {
 // newModel builds the initial chat model. cfg is only used to label the
 // session header (which agent/provider/model it's talking to); requests use
 // the Runtime created below.
-func newModel(cfg *config.Config) model {
+func newModel(cfg *config.Config, sess *session.Session) model {
 	input := textinput.New()
 	input.Placeholder = "Ask Forcefield something…"
 	input.Prompt = "› "
@@ -73,6 +77,26 @@ func newModel(cfg *config.Config) model {
 		panic(fmt.Sprintf("failed to initialize runtime: %v", err))
 	}
 
+	entries := make([]chatEntry, 0, len(sess.Messages))
+
+	for _, msg := range sess.Messages {
+		var entryRole role
+
+		switch msg.Role {
+		case "user":
+			entryRole = roleUser
+		case "assistant":
+			entryRole = roleAssistant
+		default:
+			continue
+		}
+
+		entries = append(entries, chatEntry{
+			Role:    entryRole,
+			Content: msg.Content,
+		})
+	}
+
 	return model{
 		agentName:    cfg.Agent.Name,
 		providerName: cfg.Model.Provider,
@@ -81,6 +105,8 @@ func newModel(cfg *config.Config) model {
 		spinner:      spin,
 		viewport:     viewport.New(0, 0),
 		runtime:      r,
+		entries: 	  entries,
+		session: 	  sess,
 		registry:     newRegistry(),
 	}
 }
@@ -113,6 +139,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.status = ""
 			m.appendAssistantText(msg.Event.Text)
+			m.assistantBuffer.WriteString(msg.Event.Text)
 		case runtime.EventThinking:
 			// Provider thinking content remains available to other runtime
 			// consumers. The terminal presents a concise, transient status.
@@ -135,6 +162,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stream = nil
 		m.status = ""
 		m.finishAssistantStream()
+		if text := strings.TrimSpace(m.assistantBuffer.String()); text != "" {
+			m.session.AddMessage("assistant", text)
+			_ = m.session.Save()
+		}
+
+		m.assistantBuffer.Reset()
 		m.refreshTranscript()
 		return m, nil
 
@@ -235,10 +268,22 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		m.entries = append(m.entries, chatEntry{Role: roleUser, Content: task})
+		m.session.AddMessage("user", task)
+
+		if err := m.session.Save(); err != nil {
+			m.entries = append(m.entries, chatEntry{
+				Role:    roleError,
+				Content: fmt.Sprintf("failed to save session: %v", err),
+			})
+		}
+
 		m.waiting = true
 		m.refreshTranscript()
 
-		stream, err := m.runtime.Stream(context.Background(), task)
+		stream, err := m.runtime.Stream(
+			context.Background(),
+			m.session.ProviderMessages(),
+		)
 		if err != nil {
 			m.waiting = false
 			m.entries = append(m.entries, chatEntry{Role: roleError, Content: fmt.Sprintf("stream failed: %v", err)})

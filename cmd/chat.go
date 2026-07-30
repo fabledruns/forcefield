@@ -3,6 +3,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
+	"forcefield/internal/session"
 	"forcefield/internal/tui"
 )
 
@@ -16,7 +17,7 @@ scrollable, persistent session instead of one command per question.`,
 	Args: cobra.NoArgs,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return tui.Start()
+		return tui.Start(session.New())
 	},
 }
 

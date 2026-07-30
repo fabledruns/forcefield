@@ -107,23 +107,23 @@ func (r *Runtime) SetProvider(name string) error {
 	return nil
 }
 
-func (r *Runtime) buildMessages(prompt string) []providers.Message {
-	return []providers.Message{
+func (r *Runtime) buildMessages(history []providers.Message) []providers.Message {
+	messages := []providers.Message{
 		{
 			Role:    providers.SystemRole,
 			Content: r.agent.BuildSystemPrompt(),
 		},
-		{
-			Role:    providers.UserRole,
-			Content: prompt,
-		},
 	}
+
+	messages = append(messages, history...)
+
+	return messages
 }
 
 // StreamChat runs the agent loop and emits its structured events as they
 // happen. Model text, tool calls, tool results, and the final response all
 // flow through this single execution path.
-func (r *Runtime) StreamChat(ctx context.Context, prompt string) (<-chan Event, error) {
+func (r *Runtime) StreamChat(ctx context.Context, messages []providers.Message) (<-chan Event, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("stream context cannot be nil")
 	}
@@ -131,7 +131,7 @@ func (r *Runtime) StreamChat(ctx context.Context, prompt string) (<-chan Event, 
 	events := make(chan Event)
 	go func() {
 		defer close(events)
-		r.run(ctx, r.buildMessages(prompt), func(event Event) bool {
+		r.run(ctx, r.buildMessages(messages), func(event Event) bool {
 			select {
 			case events <- event:
 				return true
@@ -145,19 +145,19 @@ func (r *Runtime) StreamChat(ctx context.Context, prompt string) (<-chan Event, 
 }
 
 // Stream is kept as a compatibility alias for StreamChat.
-func (r *Runtime) Stream(ctx context.Context, prompt string) (<-chan Event, error) {
-	return r.StreamChat(ctx, prompt)
+func (r *Runtime) Stream(ctx context.Context, messages []providers.Message) (<-chan Event, error) {
+	return r.StreamChat(ctx, messages)
 }
 
 // Run executes the same streaming agent loop as StreamChat and returns its
 // final response after consuming the emitted events.
-func (r *Runtime) Run(prompt string) (providers.Response, error) {
-	return r.RunContext(context.Background(), prompt)
+func (r *Runtime) Run(messages []providers.Message) (providers.Response, error) {
+	return r.RunContext(context.Background(), messages)
 }
 
 // RunContext is Run with caller-controlled cancellation and deadlines.
-func (r *Runtime) RunContext(ctx context.Context, prompt string) (providers.Response, error) {
-	events, err := r.StreamChat(ctx, prompt)
+func (r *Runtime) RunContext(ctx context.Context, messages []providers.Message) (providers.Response, error) {
+	events, err := r.StreamChat(ctx, messages)
 	if err != nil {
 		return providers.Response{}, err
 	}
@@ -289,13 +289,13 @@ func (r *Runtime) runModelTurn(ctx context.Context, messages []providers.Message
 	return response, nil
 }
 
-func Run(prompt string) (providers.Response, error) {
+func Run(messages []providers.Message) (providers.Response, error) {
 	rt, err := New()
 	if err != nil {
 		return providers.Response{}, fmt.Errorf("create runtime: %w", err)
 	}
 
-	return rt.Run(prompt)
+	return rt.Run(messages)
 }
 
 // newProvider selects and constructs a ModelProvider based on

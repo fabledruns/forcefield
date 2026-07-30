@@ -1,66 +1,162 @@
 # Forcefield (`ff`)
 
-A minimal, local-first CLI harness for running AI agents against a local
-model. This is a **prototype**, not a framework: it proves one idea — that
-config + skills + a model call is enough to feel like a real agent harness
-— and nothing more.
+## Overview
 
-## What it does
+Forcefield is a local-first command line tool for running AI agents. It uses a local model provider, agent instructions, skills, tools, and sessions.
+Forcefield runs as a single binary.
 
-```
-ff run "explain this repository"
-```
+It does not require:
 
-1. Loads `~/.forcefield/config.yaml` (created automatically on first run)
-2. Loads every `.md` file in `~/.forcefield/skills/`
-3. Appends the skills to the agent's system prompt
-4. Sends the system prompt + your task to a local Ollama model
-5. Prints the response
+- A user account
+- A cloud service
+- Remote data processing
+- Telemetry
 
-That's the entire loop. No memory, no tools, no planning, no multi-agent,
-no RAG. Just the harness.
+Forcefield is under active development. Features and interfaces can change.
 
-## Requirements
+---
 
-- Go 1.22+
-- [Ollama](https://ollama.com) running locally with a model pulled
+# Main Features
 
-## Build
+Forcefield provides:
+
+- Local model execution through Ollama
+- Interactive terminal interface
+- Streaming responses
+- Agent skills
+- Agent tools
+- Session storage
+- Session recovery
+- Model provider abstraction
+
+---
+
+# Requirements
+
+Before you use Forcefield, make sure that you have:
+
+- Go version 1.22 or later
+- Ollama installed
+- A local model installed
+
+Example:
 
 ```bash
-go mod tidy      # resolves and downloads gopkg.in/yaml.v3
+ollama pull ornith:9b
+```
+
+---
+
+# Build
+
+To build Forcefield, run:
+
+```bash
 go build -o ff ./cmd/ff
 ```
 
-This produces a single binary, `ff`, in the current directory. Move it
-onto your `$PATH` if you want it available everywhere:
+The command creates the `ff` executable.
+
+---
+
+# Start Forcefield
+
+Run:
 
 ```bash
-mv ff /usr/local/bin/ff
+./ff
 ```
 
-## Configure Ollama
+Forcefield starts the interactive terminal interface.
 
-Make sure Ollama is installed and running, and that you've pulled a model:
+Example:
 
-```bash
-ollama serve            # if not already running as a background service
-ollama pull llama3
+```text
+> explain this repository
 ```
 
-Forcefield talks to Ollama's `/api/chat` endpoint at
-`http://localhost:11434` by default — this matches Ollama's default
-listen address, so most users won't need to change anything.
+---
 
-## Configuration file
+# System Operation
 
-On first run, `ff` creates `~/.forcefield/config.yaml`:
+Forcefield processes a request in the following order:
+
+```text
+User Input
+    |
+    v
+Command Handler
+    |
+    v
+Agent Runtime
+    |
+    +-- Skills
+    |
+    +-- Memory
+    |
+    +-- Tools
+    |
+    v
+Model Provider
+    |
+    v
+Response
+```
+
+The runtime separates each function.
+
+This allows each part to be changed without changing the complete system.
+
+---
+
+# Commands
+
+Forcefield supports these commands:
+
+```text
+/help
+Shows available commands.
+```
+
+```text
+/sessions
+Shows stored sessions.
+```
+
+```text
+/resume <session-id>
+Loads a previous session.
+```
+
+```text
+/tools
+Shows available tools.
+```
+
+```text
+/memory
+Manages agent memory.
+```
+
+---
+
+# Configuration
+
+Forcefield creates the configuration file during the first run.
+
+Location:
+
+```text
+~/.forcefield/config.yaml
+```
+
+Example:
 
 ```yaml
 model:
   provider: ollama
   endpoint: http://localhost:11434
-  name: llama3
+  name: ornith:9b
 
 agent:
   name: default
@@ -68,89 +164,166 @@ agent:
     You are a helpful coding assistant.
 ```
 
-Edit `model.name` to match whatever you've pulled in Ollama (e.g.
-`llama3.1:8b`, `qwen2.5-coder:7b`, `mistral`), and edit
-`agent.system_prompt` to change the agent's base persona.
+The configuration file defines:
 
-## Skills
+- Model provider
+- Model endpoint
+- Model name
+- Agent instructions
 
-Skills are plain Markdown files dropped into `~/.forcefield/skills/`.
-Every `.md` file in that directory is loaded and appended to the system
-prompt on every run, sorted by filename.
+---
 
-Example files are provided under `examples/skills/` in this repo — copy
-them in to try it out:
+# Skills
 
-```bash
-mkdir -p ~/.forcefield/skills
-cp examples/skills/*.md ~/.forcefield/skills/
+Skills are Markdown files.
+
+Skills provide additional instructions for the agent.
+
+Location:
+
+```text
+~/.forcefield/skills/
 ```
 
-```markdown
-# Go
+Example:
 
-You are an expert Go developer.
-Always prefer idiomatic Go.
-Avoid unnecessary abstractions.
-Prefer composition over inheritance.
+```md
+# Go Development
+
+Use the Go language standard.
+
+Prefer simple designs.
+
+Use clear error handling.
 ```
 
-There's no frontmatter, no metadata, no selective loading — every skill
-file always applies. That's a deliberate simplification for this
-prototype, not a final design.
+Forcefield loads all Markdown skill files during agent startup.
 
-## Run it
+---
 
-```bash
-ff run "explain this repository"
+# Tools
+
+Tools allow the agent to perform actions.
+
+Built-in tools include:
+
+```text
+read_file
+write_file
+list_files
+shell
 ```
 
-```bash
-ff run "write a haiku about goroutines"
+A tool can:
+
+- Receive input from the agent
+- Perform an operation
+- Return a result
+
+---
+
+# Sessions
+
+Forcefield saves chat sessions locally.
+
+Session files are stored at:
+
+```text
+.forcefield/sessions/
 ```
 
-If Ollama isn't running, `ff` fails with a clear message telling you so,
-rather than a raw connection-refused stack trace.
+Example:
 
-## Project structure
-
+```text
+.forcefield/
+└── sessions/
+    ├── session-a.json
+    └── session-b.json
 ```
+
+Use `/sessions` to view saved sessions.
+
+Use `/resume` to continue a previous session.
+
+---
+
+# Project Structure
+
+```text
 forcefield/
 ├── cmd/
 │   └── ff/
-│       └── main.go          # CLI entrypoint, arg parsing, no business logic
+│       └── main.go
+
 ├── internal/
-│   ├── agent/                # Agent type: combines base prompt + skills
-│   ├── config/                # Loads/creates ~/.forcefield/config.yaml
-│   ├── providers/             # ModelProvider interface + Ollama implementation
-│   ├── skills/                 # Loads and concatenates *.md skill files
-│   └── runtime/                # Wires the above together for one `run`
-├── examples/
-│   └── skills/                 # Example skill files to copy into ~/.forcefield/skills
-├── go.mod
-└── README.md
+│   ├── agent/
+│   │   Agent runtime
+│   │
+│   ├── command/
+│   │   Command handling
+│   │
+│   ├── config/
+│   │   Configuration handling
+│   │
+│   ├── providers/
+│   │   Model providers
+│   │
+│   ├── runtime/
+│   │   Agent execution
+│   │
+│   ├── session/
+│   │   Session storage
+│   │
+│   ├── skills/
+│   │   Skill loading
+│   │
+│   ├── tools/
+│   │   Tool system
+│   │
+│   └── tui/
+│       Terminal interface
+│
+└── examples/
+    └── skills/
 ```
 
-Roughly 500 lines of Go, no third-party dependency beyond a YAML parser.
+---
 
-## Extending this later
+# Design Rules
 
-The seams are intentionally in place for exactly the features this
-prototype does *not* implement:
+Forcefield follows these rules:
 
-- **Another model provider**: implement `providers.ModelProvider`
-  (`Chat(system, prompt string) (string, error)`) and add a `case` in
-  `runtime.newProvider`. Nothing else changes.
-- **Tool calling**: would live as a new step between "call model" and
-  "print response" in `runtime.Run`, likely requiring the provider
-  interface to grow a richer response type than a plain string.
-- **Memory**: would be a new package read/written by `runtime.Run`
-  before/after the model call — the current single-shot flow doesn't
-  need it, but the seam is exactly there.
-- **Per-skill selection instead of load-everything**: would live in the
-  `skills` package alone; nothing outside it needs to know skills went
-  from "always all" to "selected."
+- Keep the runtime small.
+- Keep components separate.
+- Store user data locally.
+- Allow replacement of models and tools.
+- Avoid unnecessary system requirements.
 
-None of that is built here on purpose — this prototype exists to answer
-one question: does the *harness itself* feel useful before any of that
-complexity is added?
+---
+
+# Future Development
+
+Planned features:
+
+- Improved session selection
+- Tool permission control
+- Improved memory system
+- Additional model providers
+- Agent profiles
+- Plugin support
+- Improved agent planning
+
+---
+
+# Purpose
+
+Forcefield provides a simple runtime for local AI agents.
+
+The model provides intelligence.
+
+The tools provide actions.
+
+The skills provide instructions.
+
+The runtime connects these components.
+```
