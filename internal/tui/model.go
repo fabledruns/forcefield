@@ -40,7 +40,7 @@ type model struct {
 	registry *command.Registry
 	stream   <-chan runtime.Event
 
-	assistantBuffer strings.Builder
+	assistantBuffer string
 
 	agentName    string
 	providerName string
@@ -139,7 +139,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.status = ""
 			m.appendAssistantText(msg.Event.Text)
-			m.assistantBuffer.WriteString(msg.Event.Text)
+			m.assistantBuffer += msg.Event.Text
 		case runtime.EventThinking:
 			// Provider thinking content remains available to other runtime
 			// consumers. The terminal presents a concise, transient status.
@@ -162,12 +162,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stream = nil
 		m.status = ""
 		m.finishAssistantStream()
-		if text := strings.TrimSpace(m.assistantBuffer.String()); text != "" {
+		if text := strings.TrimSpace(m.assistantBuffer); text != "" {
 			m.session.AddMessage("assistant", text)
 			_ = m.session.Save()
 		}
 
-		m.assistantBuffer.Reset()
+		m.assistantBuffer = ""
 		m.refreshTranscript()
 		return m, nil
 
