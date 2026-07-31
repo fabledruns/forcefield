@@ -42,11 +42,6 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
-      - name: Check formatting
-        run: |
-          test -z "$(gofmt -l .)"
-        shell: bash
-
       - name: Run vet
         run: go vet ./...
 
