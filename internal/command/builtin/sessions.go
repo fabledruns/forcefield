@@ -16,9 +16,13 @@ func NewSessions() *Sessions { return &Sessions{} }
 
 func (Sessions) Name() string 		 { return "sessions" }
 func (Sessions) Aliases() []string 	 { return []string{"s"} }
-func (Sessions) Description() string { return "List saved chat sessions." }
+func (Sessions) Description() string { return "Switch between saved chat sessions." }
 func (Sessions) Usage() string 		 { return "/sessions" }
 
+// Execute loads the saved sessions once and hands them to the TUI's
+// session picker. Loading stays here (in a package with no Bubble Tea
+// dependency); the picker is only responsible for selection, not for
+// reading sessions off disk.
 func (s *Sessions) Execute(ctx command.Context, _ []string) error {
 	sessions, err := session.List()
 	if err != nil {
@@ -36,36 +40,16 @@ func (s *Sessions) Execute(ctx command.Context, _ []string) error {
 		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
 	})
 
-	var b strings.Builder
-
-	b.WriteString("Sessions:\n\n")
-
-	for i, sess := range sessions {
-		title := sessionTitle(sess)
-
-		fmt.Fprintf(
-			&b,
-			"  %d. %s\n",
-			i+1,
-			sess.ID,
-		)
-
-		fmt.Fprintf(
-			&b,
-			"     %s\n",
-			title,
-		)
-
-		fmt.Fprintf(
-			&b,
-			"     %d messages • updated %s\n\n",
-			len(sess.Messages),
-			formatTime(sess.UpdatedAt),
-		)
-	}
-
-	ctx.Println("%s", strings.TrimRight(b.String(), "\n"))
+	ctx.OpenSessionPicker(sessions)
 	return nil
+}
+
+// SessionTitle returns a short preview of s: its first non-empty user
+// message, truncated, or a placeholder if it has none. Exported so the
+// TUI's session picker can reuse the exact same preview logic instead
+// of duplicating it.
+func SessionTitle(s session.Session) string {
+	return sessionTitle(s)
 }
 
 func sessionTitle(s session.Session) string {
@@ -82,6 +66,12 @@ func sessionTitle(s session.Session) string {
 	}
 
 	return "(empty session)"
+}
+
+// FormatTime returns a short human-readable relative time (e.g. "5m
+// ago"), reused by the TUI session picker.
+func FormatTime(t time.Time) string {
+	return formatTime(t)
 }
 
 func formatTime(t time.Time) string {

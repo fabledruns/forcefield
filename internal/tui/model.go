@@ -51,6 +51,11 @@ type model struct {
 	input    textinput.Model
 	spinner  spinner.Model
 
+	// picker is non-nil while the /sessions modal is open. It owns
+	// nothing beyond its own selection state; switching the active
+	// session is still handled by the model.
+	picker *sessionPicker
+
 	width, height int
 	waiting       bool // true while a runTask command is in flight
 	status        string
@@ -77,6 +82,27 @@ func newModel(cfg *config.Config, sess *session.Session) model {
 		panic(fmt.Sprintf("failed to initialize runtime: %v", err))
 	}
 
+	entries := sessionEntries(sess)
+
+	return model{
+		agentName:    cfg.Agent.Name,
+		providerName: cfg.Model.Provider,
+		modelName:    cfg.Model.Name,
+		input:        input,
+		spinner:      spin,
+		viewport:     viewport.New(0, 0),
+		runtime:      r,
+		entries: 	  entries,
+		session: 	  sess,
+		registry:     newRegistry(),
+	}
+}
+
+// sessionEntries converts a session's saved messages into the transcript
+// entries the viewport renders. Both the initial model construction and
+// switching sessions via the picker go through this single function, so
+// the conversion logic never has to be kept in sync in two places.
+func sessionEntries(sess *session.Session) []chatEntry {
 	entries := make([]chatEntry, 0, len(sess.Messages))
 
 	for _, msg := range sess.Messages {
@@ -97,18 +123,7 @@ func newModel(cfg *config.Config, sess *session.Session) model {
 		})
 	}
 
-	return model{
-		agentName:    cfg.Agent.Name,
-		providerName: cfg.Model.Provider,
-		modelName:    cfg.Model.Name,
-		input:        input,
-		spinner:      spin,
-		viewport:     viewport.New(0, 0),
-		runtime:      r,
-		entries: 	  entries,
-		session: 	  sess,
-		registry:     newRegistry(),
-	}
+	return entries
 }
 
 // Init satisfies tea.Model. There's nothing to load asynchronously at
@@ -129,6 +144,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.picker != nil {
+			return m.handlePickerKey(msg)
+		}
 		return m.handleKey(msg)
 
 	case streamEventMsg:
@@ -304,6 +322,74 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// handlePickerKey processes keys while the /sessions modal is open. It
+// never touches the runtime or transcript directly except on Enter,
+// where it hands off to switchToSession.
+func (m model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyUp:
+		m.picker.moveUp()
+		return m, nil
+
+	case tea.KeyDown:
+		m.picker.moveDown()
+		return m, nil
+
+	case tea.KeyEsc:
+		m.picker = nil
+		return m, nil
+
+	case tea.KeyEnter:
+		selected := m.picker.selected()
+		m.picker = nil
+		return m.switchToSession(selected.ID)
+	}
+
+	switch msg.String() {
+	case "k":
+		m.picker.moveUp()
+	case "j":
+		m.picker.moveDown()
+	case "q":
+		m.picker = nil
+	}
+	return m, nil
+}
+
+// switchToSession loads the session with id from disk and replaces the
+// active in-memory session, transcript, and viewport in place. It never
+// spawns a new runtime or restarts the program: the same runtime keeps
+// running, just pointed at different conversation history from here on.
+func (m model) switchToSession(id string) (tea.Model, tea.Cmd) {
+	if m.session != nil && id == m.session.ID {
+		return m, nil // already the active session; nothing to do
+	}
+
+	sess, err := session.Load(id)
+	if err != nil {
+		m.entries = append(m.entries, chatEntry{
+			Role:    roleError,
+			Content: fmt.Sprintf("failed to load session: %v", err),
+		})
+		m.refreshTranscript()
+		return m, nil
+	}
+
+	// A stream from the previous session is no longer relevant once we've
+	// switched conversations; drop it rather than let it keep appending
+	// to the new transcript.
+	m.stream = nil
+	m.waiting = false
+	m.status = ""
+	m.assistantBuffer = ""
+
+	m.session = sess
+	m.entries = sessionEntries(sess)
+	m.refreshTranscript()
+
+	return m, nil
+}
+
 // layout recomputes the viewport and input widths/heights after a resize.
 func (m *model) layout() {
 	transcriptHeight := m.height - headerHeight - footerHeight
@@ -347,6 +433,10 @@ func (m model) View() string {
 	}
 	if !m.ready {
 		return "Starting Forcefield…\n"
+	}
+
+	if m.picker != nil {
+		return m.picker.view(m.width, m.height)
 	}
 
 	return lipgloss.JoinVertical(

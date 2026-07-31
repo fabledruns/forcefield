@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"forcefield/internal/command"
+	"forcefield/internal/session"
 )
 
 // fakeContext is a minimal in-memory command.Context, used to test
@@ -19,6 +20,8 @@ type fakeContext struct {
 
 	setModelErr    error
 	setProviderErr error
+
+	pickedSessions []session.Session
 }
 
 func (f *fakeContext) Println(format string, args ...any) {
@@ -43,6 +46,10 @@ func (f *fakeContext) SetProvider(name string) error {
 	}
 	f.provider = name
 	return nil
+}
+
+func (f *fakeContext) OpenSessionPicker(sessions []session.Session) {
+	f.pickedSessions = sessions
 }
 
 func TestExit(t *testing.T) {

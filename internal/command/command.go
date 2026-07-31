@@ -13,6 +13,8 @@
 // instance of it at startup.
 package command
 
+import "forcefield/internal/session"
+
 // Context is the set of operations a Command is allowed to perform on
 // the session. It exists so commands never need to know about Bubble
 // Tea, the runtime, or any other concrete type — only this interface.
@@ -26,6 +28,7 @@ type Context interface {
 	Provider() 				 string
 	SetModel(name string) 	 error
 	SetProvider(name string) error
+	OpenSessionPicker(sessions []session.Session)
 }
 
 // Command is a single slash command. Implementations are independent,

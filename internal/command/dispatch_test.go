@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"forcefield/internal/session"
 )
 
 // fakeContext is an in-memory Context used across tests in this package.
@@ -19,6 +21,8 @@ type fakeContext struct {
 
 	setModelErr    error
 	setProviderErr error
+
+	pickedSessions []session.Session
 }
 
 func (f *fakeContext) Println(format string, args ...any) {
@@ -41,6 +45,9 @@ func (f *fakeContext) SetProvider(name string) error {
 	}
 	f.provider = name
 	return nil
+}
+func (f *fakeContext) OpenSessionPicker(sessions []session.Session) {
+	f.pickedSessions = sessions
 }
 
 // echoCommand records the args it was called with and can be told to fail.

@@ -5,6 +5,7 @@ import (
 
 	"forcefield/internal/command"
 	"forcefield/internal/command/builtin"
+	"forcefield/internal/session"
 )
 
 // newRegistry builds the set of slash commands available in the interactive chat.
@@ -66,4 +67,10 @@ func (m *model) SetProvider(name string) error {
 	}
 	m.providerName = name
 	return nil
+}
+
+// OpenSessionPicker opens the /sessions modal over sessions, which the
+// caller already loaded from disk. It never reads sessions itself.
+func (m *model) OpenSessionPicker(sessions []session.Session) {
+	m.picker = newSessionPicker(sessions, m.session.ID)
 }

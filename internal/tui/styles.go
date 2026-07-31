@@ -60,3 +60,29 @@ var (
 	spinnerStyle = lipgloss.NewStyle().
 			Foreground(colorAccent)
 )
+
+var (
+	pickerBorderStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(colorBorder).
+				Padding(1, 2)
+
+	pickerTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorAccent)
+
+	pickerActiveStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorAccent)
+
+	pickerSelectedStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorText).
+				Background(lipgloss.Color("#3A1414"))
+
+	pickerMetaStyle = lipgloss.NewStyle().
+				Foreground(colorMuted)
+
+	pickerHelpStyle = lipgloss.NewStyle().
+				Foreground(colorMuted)
+)
