@@ -8,8 +8,8 @@ on:
     branches:
       - main
   schedule:
-    # Every Saturday at 19:24 UTC
     - cron: "24 19 * * 6"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,20 +17,26 @@ permissions:
   actions: read
   packages: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analyze:
     name: Analyze Go
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4

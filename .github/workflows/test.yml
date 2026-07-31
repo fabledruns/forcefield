@@ -11,10 +11,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Go ${{ matrix.go-version }} • ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
 
     strategy:
       fail-fast: false
@@ -24,17 +29,18 @@ jobs:
           - windows-latest
           - macos-latest
         go-version:
-          - "1.25"
+          - "1.26.4"
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7.0.0
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Download dependencies
         run: go mod download
@@ -49,4 +55,4 @@ jobs:
         run: go test -v ./...
 
       - name: Build Forcefield
-        run: go build -v -o ff .
+        run: go build -v ./...
