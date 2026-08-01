@@ -11,12 +11,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // defaultNvidiaTimeout bounds how long a single request to NVIDIA NIM may
 // take before it's aborted.
-const defaultNvidiaTimeout = 60 * time.Second
+const defaultNvidiaTimeout = 0
 
 // NvidiaProvider talks to NVIDIA NIM's OpenAI-compatible Chat Completions
 // API at https://integrate.api.nvidia.com/v1.
