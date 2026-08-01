@@ -49,6 +49,8 @@ func (f *fakeContext) SetProvider(name string) error {
 func (f *fakeContext) OpenSessionPicker(sessions []session.Session) {
 	f.pickedSessions = sessions
 }
+func (f *fakeContext) OpenProviderPicker() {}
+func (f *fakeContext) OpenModelPicker()    {}
 
 // echoCommand records the args it was called with and can be told to fail.
 type echoCommand struct {

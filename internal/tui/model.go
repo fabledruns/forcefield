@@ -56,6 +56,11 @@ type model struct {
 	// session is still handled by the model.
 	picker *sessionPicker
 
+	// selectPicker is non-nil while the /provider or /model modal is
+	// open. Like picker, it owns nothing beyond its own selection
+	// state.
+	selectPicker *selectPicker
+
 	width, height int
 	waiting       bool // true while a runTask command is in flight
 	status        string
@@ -146,6 +151,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.picker != nil {
 			return m.handlePickerKey(msg)
+		}
+		if m.selectPicker != nil {
+			return m.handleSelectPickerKey(msg)
 		}
 		return m.handleKey(msg)
 
@@ -356,6 +364,44 @@ func (m model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleSelectPickerKey processes keys while the /provider or /model
+// modal is open. On Enter it hands off to chooseProvider or
+// chooseModel depending on which one is open.
+func (m model) handleSelectPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyUp:
+		m.selectPicker.moveUp()
+		return m, nil
+
+	case tea.KeyDown:
+		m.selectPicker.moveDown()
+		return m, nil
+
+	case tea.KeyEsc:
+		m.selectPicker = nil
+		return m, nil
+
+	case tea.KeyEnter:
+		opt := m.selectPicker.selected()
+		scope := m.selectPicker.scope
+		m.selectPicker = nil
+		if scope == scopeProvider {
+			return m.chooseProvider(opt.ID)
+		}
+		return m.chooseModel(opt.ID)
+	}
+
+	switch msg.String() {
+	case "k":
+		m.selectPicker.moveUp()
+	case "j":
+		m.selectPicker.moveDown()
+	case "q":
+		m.selectPicker = nil
+	}
+	return m, nil
+}
+
 // switchToSession loads the session with id from disk and replaces the
 // active in-memory session, transcript, and viewport in place. It never
 // spawns a new runtime or restarts the program: the same runtime keeps
@@ -437,6 +483,9 @@ func (m model) View() string {
 
 	if m.picker != nil {
 		return m.picker.view(m.width, m.height)
+	}
+	if m.selectPicker != nil {
+		return m.selectPicker.view(m.width, m.height)
 	}
 
 	return lipgloss.JoinVertical(

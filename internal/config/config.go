@@ -102,6 +102,26 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
+// Save writes the config back to config.yaml. APIKey is never
+// round-tripped (it's tagged yaml:"-" and always sourced from the
+// environment), so it's never written to disk.
+func (c *Config) Save() error {
+	path, err := Path()
+	if err != nil {
+		return err
+	}
+
+	out, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return fmt.Errorf("write config file %s: %w", path, err)
+	}
+	return nil
+}
+
 // validate performs minimal sanity checks so failures surface early with a
 // clear message instead of deep inside an HTTP call.
 func (c *Config) validate() error {

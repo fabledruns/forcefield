@@ -3,8 +3,11 @@ package tui
 import (
 	"fmt"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"forcefield/internal/command"
 	"forcefield/internal/command/builtin"
+	"forcefield/internal/providers"
 	"forcefield/internal/session"
 )
 
@@ -73,4 +76,55 @@ func (m *model) SetProvider(name string) error {
 // caller already loaded from disk. It never reads sessions itself.
 func (m *model) OpenSessionPicker(sessions []session.Session) {
 	m.picker = newSessionPicker(sessions, m.session.ID)
+}
+
+// OpenProviderPicker opens the /provider modal.
+func (m *model) OpenProviderPicker() {
+	m.selectPicker = newProviderPicker(m.providerName)
+}
+
+// OpenModelPicker opens the /model modal, scoped to the currently
+// active provider.
+func (m *model) OpenModelPicker() {
+	m.selectPicker = newModelPicker(m.providerName, m.modelName)
+}
+
+// chooseProvider switches to the provider with the given ID and prints
+// a confirmation. Unless the new provider has zero or more than one
+// known model, it also opens the model picker automatically, so
+// picking a provider never leaves the user stuck on a stale model.
+func (m model) chooseProvider(id string) (tea.Model, tea.Cmd) {
+	if err := m.SetProvider(id); err != nil {
+		m.entries = append(m.entries, chatEntry{Role: roleError, Content: err.Error()})
+		m.refreshTranscript()
+		return m, nil
+	}
+	m.Println("✓ Provider: %s", providers.DisplayName(id))
+
+	if p, ok := providers.ByID(id); ok {
+		switch len(p.Models) {
+		case 0:
+			// No known models for this provider; leave the model as-is.
+		case 1:
+			return m.chooseModel(p.Models[0].ID)
+		default:
+			m.selectPicker = newModelPicker(id, m.modelName)
+		}
+	}
+
+	m.refreshTranscript()
+	return m, nil
+}
+
+// chooseModel switches to the model with the given ID and prints a
+// confirmation.
+func (m model) chooseModel(id string) (tea.Model, tea.Cmd) {
+	if err := m.SetModel(id); err != nil {
+		m.entries = append(m.entries, chatEntry{Role: roleError, Content: err.Error()})
+		m.refreshTranscript()
+		return m, nil
+	}
+	m.Println("✓ Model: %s", providers.ModelDisplayName(m.providerName, id))
+	m.refreshTranscript()
+	return m, nil
 }

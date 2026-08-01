@@ -22,6 +22,9 @@ type fakeContext struct {
 	setProviderErr error
 
 	pickedSessions []session.Session
+
+	openedProviderPicker bool
+	openedModelPicker    bool
 }
 
 func (f *fakeContext) Println(format string, args ...any) {
@@ -52,6 +55,9 @@ func (f *fakeContext) OpenSessionPicker(sessions []session.Session) {
 	f.pickedSessions = sessions
 }
 
+func (f *fakeContext) OpenProviderPicker() { f.openedProviderPicker = true }
+func (f *fakeContext) OpenModelPicker()    { f.openedModelPicker = true }
+
 func TestExit(t *testing.T) {
 	ctx := &fakeContext{}
 	if err := NewExit().Execute(ctx, nil); err != nil {
@@ -72,13 +78,16 @@ func TestClear(t *testing.T) {
 	}
 }
 
-func TestModel_NoArgsReportsCurrent(t *testing.T) {
+func TestModel_NoArgsOpensPicker(t *testing.T) {
 	ctx := &fakeContext{model: "qwen3:8b"}
 	if err := NewModel().Execute(ctx, nil); err != nil {
 		t.Fatalf("Model.Execute returned an error: %v", err)
 	}
-	if len(ctx.lines) != 1 || !strings.Contains(ctx.lines[0], "qwen3:8b") {
-		t.Fatalf("ctx.lines = %v, want a line mentioning the current model", ctx.lines)
+	if !ctx.openedModelPicker {
+		t.Fatal("Model.Execute with no args did not open the model picker")
+	}
+	if len(ctx.lines) != 0 {
+		t.Fatalf("ctx.lines = %v, want no lines when opening the picker", ctx.lines)
 	}
 }
 
@@ -106,13 +115,16 @@ func TestModel_RejectsTooManyArgs(t *testing.T) {
 	}
 }
 
-func TestProvider_NoArgsReportsCurrent(t *testing.T) {
+func TestProvider_NoArgsOpensPicker(t *testing.T) {
 	ctx := &fakeContext{provider: "ollama"}
 	if err := NewProvider().Execute(ctx, nil); err != nil {
 		t.Fatalf("Provider.Execute returned an error: %v", err)
 	}
-	if len(ctx.lines) != 1 || !strings.Contains(ctx.lines[0], "ollama") {
-		t.Fatalf("ctx.lines = %v, want a line mentioning the current provider", ctx.lines)
+	if !ctx.openedProviderPicker {
+		t.Fatal("Provider.Execute with no args did not open the provider picker")
+	}
+	if len(ctx.lines) != 0 {
+		t.Fatalf("ctx.lines = %v, want no lines when opening the picker", ctx.lines)
 	}
 }
 

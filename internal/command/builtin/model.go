@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"forcefield/internal/command"
+	"forcefield/internal/providers"
 )
 
 // Model is the /model command. With no arguments it reports the active
@@ -20,7 +21,7 @@ func (Model) Usage() string       { return "/model [name]" }
 
 func (Model) Execute(ctx command.Context, args []string) error {
 	if len(args) == 0 {
-		ctx.Println("Current model: %s", ctx.Model())
+		ctx.OpenModelPicker()
 		return nil
 	}
 	if len(args) > 1 {
@@ -31,6 +32,6 @@ func (Model) Execute(ctx command.Context, args []string) error {
 	if err := ctx.SetModel(name); err != nil {
 		return fmt.Errorf("switch model: %w", err)
 	}
-	ctx.Println("Switched model to %s", name)
+	ctx.Println("✓ Model: %s", providers.ModelDisplayName(ctx.Provider(), name))
 	return nil
 }

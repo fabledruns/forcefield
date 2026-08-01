@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"forcefield/internal/command"
+	"forcefield/internal/providers"
 )
 
 // Provider is the /provider command. With no arguments it reports the
@@ -20,7 +21,7 @@ func (Provider) Usage() string       { return "/provider [name]" }
 
 func (Provider) Execute(ctx command.Context, args []string) error {
 	if len(args) == 0 {
-		ctx.Println("Current provider: %s", ctx.Provider())
+		ctx.OpenProviderPicker()
 		return nil
 	}
 	if len(args) > 1 {
@@ -31,6 +32,6 @@ func (Provider) Execute(ctx command.Context, args []string) error {
 	if err := ctx.SetProvider(name); err != nil {
 		return fmt.Errorf("switch provider: %w", err)
 	}
-	ctx.Println("Switched provider to %s", name)
+	ctx.Println("✓ Provider: %s", providers.DisplayName(name))
 	return nil
 }

@@ -29,6 +29,8 @@ type Context interface {
 	SetModel(name string) 	 error
 	SetProvider(name string) error
 	OpenSessionPicker(sessions []session.Session)
+	OpenProviderPicker()
+	OpenModelPicker()
 }
 
 // Command is a single slash command. Implementations are independent,

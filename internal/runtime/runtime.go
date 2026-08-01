@@ -85,22 +85,34 @@ func (r *Runtime) SetModel(name string) error {
 	if err != nil {
 		return err
 	}
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
 	r.cfg = &cfg
 	r.provider = provider
 	return nil
 }
 
 // SetProvider switches the active provider, keeping the current model
-// name, and takes effect starting with the next request.
+// name, and takes effect starting with the next request. If the
+// provider is registered, its default endpoint is adopted too, so
+// switching providers never leaves the endpoint pointed at the
+// previous one.
 func (r *Runtime) SetProvider(name string) error {
 	if name == "" {
 		return fmt.Errorf("provider name cannot be empty")
 	}
 	cfg := *r.cfg
 	cfg.Model.Provider = name
+	if info, ok := providers.ByID(name); ok {
+		cfg.Model.Endpoint = info.Endpoint
+	}
 	provider, err := newProvider(&cfg)
 	if err != nil {
 		return err
+	}
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("save config: %w", err)
 	}
 	r.cfg = &cfg
 	r.provider = provider
@@ -307,9 +319,13 @@ func newProvider(cfg *config.Config) (providers.ModelProvider, error) {
 		return providers.NewOllamaProvider(cfg.Model.Endpoint, cfg.Model.Name), nil
 	case "nvidia":
 		return providers.NewNvidiaProvider("https://integrate.api.nvidia.com/v1", cfg.Model.Name, cfg.Model.APIKey, nil), nil
+	case "lmstudio":
+		// LM Studio exposes the same OpenAI-compatible chat completions
+		// API as NVIDIA NIM, just unauthenticated and local.
+		return providers.NewNvidiaProvider(cfg.Model.Endpoint, cfg.Model.Name, "", nil), nil
 	default:
 		return nil, fmt.Errorf(
-			"unsupported model provider %q (only \"ollama\" and \"nvidia\" are supported in this prototype)",
+			"unsupported model provider %q (only \"ollama\", \"lmstudio\", and \"nvidia\" are supported in this prototype)",
 			cfg.Model.Provider,
 		)
 	}

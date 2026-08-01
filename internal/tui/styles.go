@@ -63,7 +63,7 @@ var (
 
 var (
 	pickerBorderStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
+				Border(lipgloss.NormalBorder()).
 				BorderForeground(colorBorder).
 				Padding(1, 2)
 
