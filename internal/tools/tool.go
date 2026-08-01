@@ -1,4 +1,7 @@
 // Package tools defines the core abstractions for Forcefield's tool system.
+// It provides the Tool interface, which represents an action that can be invoked by the model, 
+// and the Result struct, which contains the output of a tool execution. Additionally, it defines the Definition struct, which 
+// describes a tool without exposing its implementation details.
 package tools
 
 import "context"

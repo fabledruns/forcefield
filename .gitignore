@@ -12,6 +12,7 @@ vendor/
 # IDE
 .vscode/
 .idea/
+.env
 
 # OS
 .DS_Store
@@ -19,3 +20,6 @@ Thumbs.db
 
 # Forcefield
 .forcefield/
+
+# Claude
+.claude/

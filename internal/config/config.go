@@ -18,6 +18,7 @@ type Model struct {
 	Provider string `yaml:"provider"`
 	Endpoint string `yaml:"endpoint"`
 	Name     string `yaml:"name"`
+	APIKey   string `yaml:"-"`
 }
 
 // Agent describes the default agent's identity and base system prompt.
@@ -95,6 +96,8 @@ func Load() (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config at %s: %w", path, err)
 	}
+
+	cfg.Model.APIKey = os.Getenv("NVIDIA_API_KEY")
 
 	return &cfg, nil
 }

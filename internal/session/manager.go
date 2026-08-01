@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
+// New creates a new session with a unique ID and initializes its timestamps and message list.
 func New() *Session {
 	now := time.Now()
 
@@ -20,6 +21,8 @@ func New() *Session {
 	}
 }
 
+// Save persists the session to a JSON file in the .forcefield/sessions directory, 
+// updating the UpdatedAt timestamp.
 func (s *Session) Save() error {
 	s.UpdatedAt = time.Now()
 
@@ -38,6 +41,7 @@ func (s *Session) Save() error {
 	return os.WriteFile(path, data, 0644)
 }
 
+// AddMessage adds a new message to the session and updates the UpdatedAt timestamp.
 func (s *Session) AddMessage(role, content string) {
 	s.Messages = append(s.Messages, Message{
 		Role:    role,
@@ -48,6 +52,8 @@ func (s *Session) AddMessage(role, content string) {
 	s.UpdatedAt = time.Now()
 }
 
+// Load retrieves a session from a JSON file based on its ID, 
+// returning an error if the file does not exist or cannot be read.
 func Load(id string) (*Session, error) {
 	path := filepath.Join(".", ".forcefield", "sessions", id+".json")
 
@@ -65,6 +71,8 @@ func Load(id string) (*Session, error) {
 	return &s, nil
 }
 
+// List retrieves a list of all sessions from the .forcefield/sessions directory,
+// returning an error if the directory cannot be read.
 func List() ([]Session, error) {
 	dir := filepath.Join(".", ".forcefield", "sessions")
 

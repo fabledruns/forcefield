@@ -305,9 +305,11 @@ func newProvider(cfg *config.Config) (providers.ModelProvider, error) {
 	switch cfg.Model.Provider {
 	case "ollama":
 		return providers.NewOllamaProvider(cfg.Model.Endpoint, cfg.Model.Name), nil
+	case "nvidia":
+		return providers.NewNvidiaProvider("https://integrate.api.nvidia.com/v1", cfg.Model.Name, cfg.Model.APIKey, nil), nil
 	default:
 		return nil, fmt.Errorf(
-			"unsupported model provider %q (only \"ollama\" is supported in this prototype)",
+			"unsupported model provider %q (only \"ollama\" and \"nvidia\" are supported in this prototype)",
 			cfg.Model.Provider,
 		)
 	}
