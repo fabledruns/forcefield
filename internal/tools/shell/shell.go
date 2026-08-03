@@ -25,7 +25,7 @@ const defaultTimeout = 30 * time.Second
 // timed out). Without it, a killed process whose children keep a pipe fd
 // open (e.g. a backgrounded grandchild) could make Wait block forever
 // even though the command itself is long dead.
-const waitDelay = 5 * time.Second
+const waitDelay = time.Second
 
 // Shell executes arbitrary shell commands inside the current project
 // directory (or a caller-specified working directory), capturing stdout
