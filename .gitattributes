@@ -1,0 +1,3 @@
+Makefile linguist-language=Makefile
+flake.nix linguist-language=Nix
+*.nix linguist-language=Nix
