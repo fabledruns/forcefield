@@ -8,7 +8,7 @@ func TestNewManager_RegistersAllBuiltins(t *testing.T) {
 		t.Fatalf("NewManager() unexpected error: %v", err)
 	}
 
-	want := []string{"read_file", "write_file", "list_files", "pwd"}
+	want := []string{"read_file", "write_file", "list_files", "pwd", "shell"}
 	for _, name := range want {
 		found := false
 		for _, tool := range m.List() {

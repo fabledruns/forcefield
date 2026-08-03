@@ -6,7 +6,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
@@ -18,11 +17,12 @@ import (
 
 // Runtime is the main execution point for Forcefield.
 type Runtime struct {
-	cfg      *config.Config
-	provider providers.ModelProvider
-	agent    *agent.Agent
-	manager  *tools.Manager
-	skills   *skills.Store
+	cfg       *config.Config
+	provider  providers.ModelProvider
+	agent     *agent.Agent
+	manager   *tools.Manager
+	skills    *skills.Store
+	scheduler *scheduler
 }
 
 func New() (*Runtime, error) {
@@ -62,11 +62,12 @@ func New() (*Runtime, error) {
 	}
 
 	return &Runtime{
-		cfg:      cfg,
-		provider: provider,
-		agent:    a,
-		manager:  manager,
-		skills:   skillStore,
+		cfg:       cfg,
+		provider:  provider,
+		agent:     a,
+		manager:   manager,
+		skills:    skillStore,
+		scheduler: newScheduler(manager, DefaultSchedulerConfig),
 	}, nil
 }
 
@@ -214,43 +215,20 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 			ToolCalls: response.ToolCalls,
 		})
 
-		for _, tc := range response.ToolCalls {
-			call := tc
-			if !emit(Event{Type: EventToolStart, ToolCall: &call}) {
-				return
-			}
+		// Independent tool calls from a single model turn run concurrently
+		// via the scheduler (bounded concurrency, retries, per-tool
+		// timeouts, live progress events). Results come back in the same
+		// order as response.ToolCalls regardless of completion order, so
+		// the conversation history stays deterministic.
+		results := r.scheduler.Run(ctx, response.ToolCalls, emit)
 
-			started := time.Now()
-			result, err := r.manager.Execute(
-				ctx,
-				tc.Name,
-				tc.Arguments,
-			)
-			if err != nil {
-				emit(Event{Type: EventToolFinish, ToolResult: &ToolResult{
-					ToolCallID: tc.ID,
-					Name:       tc.Name,
-					Arguments:  tc.Arguments,
-					Success:    false,
-					Duration:   time.Since(started),
-					Err:        err,
-				}})
-				emit(Event{Type: EventError, Err: fmt.Errorf("execute tool %q: %w", tc.Name, err)})
-				return
-			}
+		if ctx.Err() != nil {
+			emit(Event{Type: EventError, Err: ctx.Err()})
+			return
+		}
 
-			if !emit(Event{Type: EventToolFinish, ToolResult: &ToolResult{
-				ToolCallID: tc.ID,
-				Name:       tc.Name,
-				Arguments:  tc.Arguments,
-				Content:    result.Content,
-				IsError:    result.IsError,
-				Success:    !result.IsError,
-				Duration:   time.Since(started),
-			}}) {
-				return
-			}
-
+		for i, tc := range response.ToolCalls {
+			result := results[i]
 			messages = append(messages, providers.Message{
 				Role:       providers.ToolRole,
 				Name:       tc.Name,

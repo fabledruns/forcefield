@@ -25,7 +25,7 @@ func TestFormatToolFinishSummarizesListFiles(t *testing.T) {
 		Content:  "README.md\ncmd/\ninternal/",
 		Success:  true,
 		Duration: 150 * time.Millisecond,
-	})
+	}, runtime.EventToolFinish)
 	if got != "✓ Found 3 entries (150ms)" {
 		t.Errorf("formatToolFinish() = %q", got)
 	}
@@ -36,7 +36,7 @@ func TestFormatToolFinishDoesNotExposeLargeFailureOutput(t *testing.T) {
 		Name:    "read_file",
 		Content: strings.Repeat("x", 200),
 		Success: false,
-	})
+	}, runtime.EventToolFailed)
 	if len(got) > 160 || !strings.HasPrefix(got, "✕ read_file failed: ") {
 		t.Errorf("formatToolFinish() = %q", got)
 	}

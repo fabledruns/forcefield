@@ -21,13 +21,37 @@ func formatToolStart(call *providers.ToolCall) string {
 	return fmt.Sprintf("Running %s", call.Name)
 }
 
-func formatToolFinish(result *runtime.ToolResult) string {
+// formatToolProgress renders a single streamed output line (e.g. one line
+// of shell stdout/stderr) as a live-updating status line.
+func formatToolProgress(progress *runtime.ToolProgress) string {
+	if progress == nil {
+		return ""
+	}
+	line := shortResult(progress.Data)
+	if line == "" {
+		return fmt.Sprintf("Running %s…", progress.Name)
+	}
+	return fmt.Sprintf("Running %s │ %s", progress.Name, line)
+}
+
+func formatToolFinish(result *runtime.ToolResult, eventType runtime.EventType) string {
 	if result == nil {
 		return "✕ Tool failed"
 	}
 
+	if eventType == runtime.EventToolCancelled {
+		message := fmt.Sprintf("⊘ %s cancelled", result.Name)
+		if summary := shortResult(result.Content); summary != "" {
+			return message + ": " + summary
+		}
+		return message
+	}
+
 	if !result.Success {
 		message := fmt.Sprintf("✕ %s failed", result.Name)
+		if result.Attempt > 1 {
+			message += fmt.Sprintf(" (after %d attempts)", result.Attempt)
+		}
 		if result.Err != nil {
 			return message + ": " + result.Err.Error()
 		}

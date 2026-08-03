@@ -13,6 +13,7 @@ import (
 
 	"forcefield/internal/command"
 	"forcefield/internal/config"
+	"forcefield/internal/providers"
 	"forcefield/internal/runtime"
 	"forcefield/internal/session"
 )
@@ -50,6 +51,13 @@ type model struct {
 	viewport viewport.Model
 	input    textinput.Model
 	spinner  spinner.Model
+
+	// activeTools maps a running tool call's ID to the index of its live
+	// status line in entries, so concurrent tool calls (the scheduler may
+	// run several at once) each get their own line that's updated in
+	// place as progress events arrive, instead of clobbering a single
+	// shared status string.
+	activeTools map[string]int
 
 	// picker is non-nil while the /sessions modal is open. It owns
 	// nothing beyond its own selection state; switching the active
@@ -100,6 +108,7 @@ func newModel(cfg *config.Config, sess *session.Session) model {
 		entries: 	  entries,
 		session: 	  sess,
 		registry:     newRegistry(),
+		activeTools:  make(map[string]int),
 	}
 }
 
@@ -174,10 +183,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case runtime.EventToolStart:
 			m.finishAssistantStream()
-			m.status = formatToolStart(msg.Event.ToolCall)
-		case runtime.EventToolFinish:
-			m.status = ""
-			m.appendActivity(formatToolFinish(msg.Event.ToolResult))
+			m.startToolActivity(msg.Event.ToolCall)
+		case runtime.EventToolProgress:
+			m.updateToolActivity(msg.Event.ToolProgress)
+		case runtime.EventToolFinish, runtime.EventToolFailed, runtime.EventToolCancelled:
+			m.finishToolActivity(msg.Event.ToolResult, msg.Event.Type)
 		}
 
 		m.refreshTranscript()
@@ -187,6 +197,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.waiting = false
 		m.stream = nil
 		m.status = ""
+		m.activeTools = make(map[string]int)
 		m.finishAssistantStream()
 		if text := strings.TrimSpace(m.assistantBuffer); text != "" {
 			m.session.AddMessage("assistant", text)
@@ -200,6 +211,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamErrMsg:
 		m.waiting = false
 		m.status = ""
+		m.activeTools = make(map[string]int)
 		m.finishAssistantStream()
 
 		m.entries = append(m.entries, chatEntry{
@@ -252,6 +264,65 @@ func (m *model) finishAssistantStream() {
 			return
 		}
 	}
+}
+
+// startToolActivity adds a new live status line for a tool call that just
+// started, tracked by ToolCallID so later progress/finish events for this
+// same call (which may be interleaved with events from other concurrently
+// running calls) update the right line.
+func (m *model) startToolActivity(call *providers.ToolCall) {
+	if call == nil {
+		return
+	}
+	m.entries = append(m.entries, chatEntry{Role: roleActivity, Content: formatToolStart(call)})
+	m.activeTools[call.ID] = len(m.entries) - 1
+}
+
+// updateToolActivity refreshes a running tool's status line with its
+// latest streamed output (e.g. the most recent line of shell stdout).
+func (m *model) updateToolActivity(progress *runtime.ToolProgress) {
+	if progress == nil {
+		return
+	}
+	idx, ok := m.activeTools[progress.ToolCallID]
+	if !ok || idx >= len(m.entries) {
+		return
+	}
+	m.entries[idx].Content = formatToolProgress(progress)
+}
+
+// finishToolActivity replaces a tool's live status line with its final
+// outcome and stops tracking it as active.
+func (m *model) finishToolActivity(result *runtime.ToolResult, eventType runtime.EventType) {
+	if result == nil {
+		return
+	}
+	text := formatToolFinish(result, eventType)
+	if idx, ok := m.activeTools[result.ToolCallID]; ok && idx < len(m.entries) {
+		m.entries[idx].Content = text
+	} else {
+		m.appendActivity(text)
+	}
+	delete(m.activeTools, result.ToolCallID)
+}
+
+// activeToolStatus summarizes currently running tool calls for the footer.
+// With one tool running it shows that tool's own status line; with several
+// it shows a count so the footer stays a single line regardless of how
+// many calls the scheduler has in flight.
+func (m *model) activeToolStatus() string {
+	if len(m.activeTools) == 0 {
+		return ""
+	}
+	if len(m.activeTools) == 1 {
+		for id, idx := range m.activeTools {
+			_ = id
+			if idx < len(m.entries) {
+				return m.entries[idx].Content
+			}
+		}
+	}
+	return fmt.Sprintf("Running %d tools", len(m.activeTools))
 }
 
 func (m *model) appendActivity(text string) {
@@ -428,6 +499,7 @@ func (m model) switchToSession(id string) (tea.Model, tea.Cmd) {
 	m.waiting = false
 	m.status = ""
 	m.assistantBuffer = ""
+	m.activeTools = make(map[string]int)
 
 	m.session = sess
 	m.entries = sessionEntries(sess)
@@ -509,7 +581,10 @@ func (m model) renderFooter() string {
 
 	status := "enter send · esc quit"
 	if m.waiting {
-		activity := m.status
+		activity := m.activeToolStatus()
+		if activity == "" {
+			activity = m.status
+		}
 		if activity == "" {
 			activity = "Working"
 		}

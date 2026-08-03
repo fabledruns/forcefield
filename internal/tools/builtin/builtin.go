@@ -16,6 +16,7 @@ func Register(m *tools.Manager) error {
 		filesystem.NewWriteFile(),
 		filesystem.NewListFiles(),
 		shell.NewPWD(),
+		shell.NewShell(),
 	}
 
 	for _, t := range all {
