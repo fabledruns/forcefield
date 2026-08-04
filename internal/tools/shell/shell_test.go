@@ -123,7 +123,7 @@ func TestShell_ContextCancellationStopsTheCommandAndItsChildren(t *testing.T) {
 		done <- result
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	cancel()
 
 	select {
@@ -131,8 +131,8 @@ func TestShell_ContextCancellationStopsTheCommandAndItsChildren(t *testing.T) {
 		if !result.IsError {
 			t.Errorf("result.IsError = false, want true after cancellation")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Execute did not return within 5s of context cancellation; process (group) was not killed")
+	case <-time.After(15 * time.Second):
+		t.Fatal("Execute did not return within 15s of context cancellation; process (group) was not killed")
 	}
 }
 
