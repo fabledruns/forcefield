@@ -50,7 +50,7 @@ func newTestRuntime(p providers.ModelProvider) *Runtime {
 		provider:  p,
 		agent:     agent.New("test", "system", ""),
 		manager:   manager,
-		scheduler: newScheduler(manager, DefaultSchedulerConfig),
+		scheduler: newScheduler(manager, nil, nil, DefaultSchedulerConfig),
 	}
 }
 

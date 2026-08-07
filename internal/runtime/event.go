@@ -17,6 +17,7 @@ const (
 	EventToolFinish
 	EventToolFailed
 	EventToolCancelled
+	EventToolDenied
 	EventDone
 	EventError
 )

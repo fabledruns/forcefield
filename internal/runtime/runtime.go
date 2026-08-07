@@ -9,6 +9,7 @@ import (
 
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
+	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
 	"forcefield/internal/skills"
 	"forcefield/internal/tools"
@@ -36,7 +37,7 @@ func New() (*Runtime, error) {
 		return nil, fmt.Errorf("resolve forcefield home: %w", err)
 	}
 
-	// Build the skill store once for the lifetime of this Runtime. 
+	// Build the skill store once for the lifetime of this Runtime.
 	skillStore, err := skills.New(forcefieldHome)
 	if err != nil {
 		return nil, fmt.Errorf("load skill store: %w", err)
@@ -61,14 +62,40 @@ func New() (*Runtime, error) {
 		return nil, fmt.Errorf("register load_skill tool: %w", err)
 	}
 
+	permManager, err := permissions.NewManager(permissions.NewConfigStore())
+	if err != nil {
+		return nil, fmt.Errorf("load permissions: %w", err)
+	}
+
+	// StdinAsker is the default interactive surface for "ask" decisions.
+	// It works out of the box for "ff run" and any other plain-terminal
+	// entry point; the TUI replaces it via SetPermissionAsker with one
+	// that renders an in-app modal instead of writing to raw stdin.
+	asker := permissions.NewStdinAsker()
+
 	return &Runtime{
 		cfg:       cfg,
 		provider:  provider,
 		agent:     a,
 		manager:   manager,
 		skills:    skillStore,
-		scheduler: newScheduler(manager, DefaultSchedulerConfig),
+		scheduler: newScheduler(manager, permManager, asker, DefaultSchedulerConfig),
 	}, nil
+}
+
+// SetPermissionAsker replaces how "ask" permission decisions are
+// resolved. The default (set in New) prompts on stdin/stdout, which
+// isn't usable once something like the TUI has taken over the terminal;
+// callers with their own interactive surface should call this before the
+// first StreamChat/Run.
+func (r *Runtime) SetPermissionAsker(asker permissions.Asker) {
+	r.scheduler.asker = asker
+}
+
+// Permissions returns the runtime's permission manager, e.g. for a
+// "/permissions" command that lists or edits the current rules.
+func (r *Runtime) Permissions() *permissions.Manager {
+	return r.scheduler.permissions
 }
 
 func (r *Runtime) CurrentModel() string    { return r.cfg.Model.Name }     // CurrentModel returns the name of the model currently in use.

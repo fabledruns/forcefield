@@ -27,10 +27,21 @@ type Agent struct {
 	SystemPrompt string `yaml:"system_prompt"`
 }
 
+// Permissions configures whether tool invocations run automatically or
+// require interactive approval. Default applies to any tool without an
+// explicit entry in Tools. Valid values (for Default and every entry in
+// Tools) are "allow", "deny", and "ask"; see internal/permissions for how
+// they're interpreted.
+type Permissions struct {
+	Default string            `yaml:"default"`
+	Tools   map[string]string `yaml:"tools"`
+}
+
 // Config is the top-level shape of config.yaml.
 type Config struct {
-	Model Model `yaml:"model"`
-	Agent Agent `yaml:"agent"`
+	Model       Model       `yaml:"model"`
+	Agent       Agent       `yaml:"agent"`
+	Permissions Permissions `yaml:"permissions"`
 }
 
 const defaultConfigTemplate = `model:
@@ -42,6 +53,16 @@ agent:
   name: default
   system_prompt: |
     You are a helpful coding assistant.
+
+permissions:
+  default: ask
+
+  tools:
+    read_file: allow
+    list_files: allow
+    pwd: allow
+    write_file: ask
+    shell: ask
 `
 
 // Dir returns the Forcefield home directory (~/.forcefield), creating it
@@ -134,5 +155,27 @@ func (c *Config) validate() error {
 	if c.Model.Name == "" {
 		return fmt.Errorf("model.name is required (e.g. \"llama3\")")
 	}
+
+	if err := validatePermissionValue("permissions.default", c.Permissions.Default); err != nil {
+		return err
+	}
+	for tool, value := range c.Permissions.Tools {
+		if err := validatePermissionValue(fmt.Sprintf("permissions.tools.%s", tool), value); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+// validatePermissionValue checks a raw permissions string without
+// depending on internal/permissions, which itself depends on this
+// package to load and save config.yaml. "" is valid and means "ask".
+func validatePermissionValue(field, value string) error {
+	switch value {
+	case "", "allow", "deny", "ask":
+		return nil
+	default:
+		return fmt.Errorf("%s must be \"allow\", \"deny\", or \"ask\" (got %q)", field, value)
+	}
 }

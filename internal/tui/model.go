@@ -13,6 +13,7 @@ import (
 
 	"forcefield/internal/command"
 	"forcefield/internal/config"
+	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
 	"forcefield/internal/runtime"
 	"forcefield/internal/session"
@@ -69,6 +70,10 @@ type model struct {
 	// state.
 	selectPicker *selectPicker
 
+	// permissionPrompt is non-nil while a tool's "ask" permission
+	// decision is awaiting an answer. See permission.go and asker.go.
+	permissionPrompt *permissionPrompt
+
 	width, height int
 	waiting       bool // true while a runTask command is in flight
 	status        string
@@ -78,8 +83,10 @@ type model struct {
 
 // newModel builds the initial chat model. cfg is only used to label the
 // session header (which agent/provider/model it's talking to); requests use
-// the Runtime created below.
-func newModel(cfg *config.Config, sess *session.Session) model {
+// the Runtime created below. asker resolves interactive "ask" permission
+// decisions via the permission modal instead of the runtime's stdin
+// default, which isn't usable once bubbletea has taken over the terminal.
+func newModel(cfg *config.Config, sess *session.Session, asker permissions.Asker) model {
 	input := textinput.New()
 	input.Placeholder = "Ask Forcefield something…"
 	input.Prompt = "› "
@@ -94,6 +101,7 @@ func newModel(cfg *config.Config, sess *session.Session) model {
 	if err != nil {
 		panic(fmt.Sprintf("failed to initialize runtime: %v", err))
 	}
+	r.SetPermissionAsker(asker)
 
 	entries := sessionEntries(sess)
 
@@ -105,8 +113,8 @@ func newModel(cfg *config.Config, sess *session.Session) model {
 		spinner:      spin,
 		viewport:     viewport.New(0, 0),
 		runtime:      r,
-		entries: 	  entries,
-		session: 	  sess,
+		entries:      entries,
+		session:      sess,
 		registry:     newRegistry(),
 		activeTools:  make(map[string]int),
 	}
@@ -158,6 +166,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.permissionPrompt != nil {
+			if next, handled := m.handlePermissionKey(msg.String()); handled {
+				return next, nil
+			}
+			return m, nil // swallow other keys while the prompt is open
+		}
 		if m.picker != nil {
 			return m.handlePickerKey(msg)
 		}
@@ -165,6 +179,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleSelectPickerKey(msg)
 		}
 		return m.handleKey(msg)
+
+	case permissionRequestMsg:
+		m.permissionPrompt = &permissionPrompt{request: msg.request, respond: msg.respond}
+		m.appendActivity(m.permissionPrompt.summary())
+		m.refreshTranscript()
+		return m, nil
 
 	case streamEventMsg:
 		switch msg.Event.Type {
@@ -577,6 +597,11 @@ func (m model) renderHeader() string {
 }
 
 func (m model) renderFooter() string {
+	if m.permissionPrompt != nil {
+		promptBox := inputBorderStyle.Width(m.width - 2).Render(m.permissionPrompt.footerPrompt())
+		return lipgloss.JoinVertical(lipgloss.Left, promptBox, helpStyle.Render("waiting for your answer"))
+	}
+
 	inputBox := inputBorderStyle.Width(m.width - 2).Render(m.input.View())
 
 	status := "enter send · esc quit"

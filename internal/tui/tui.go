@@ -13,11 +13,15 @@ func Start(sess *session.Session) error {
 		return err
 	}
 
+	asker := &tuiAsker{}
+	m := newModel(cfg, sess, asker)
+
 	program := tea.NewProgram(
-		newModel(cfg, sess),
-		tea.WithAltScreen(),       
-		tea.WithMouseCellMotion(), 
+		m,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 	)
+	asker.program = program
 
 	_, err = program.Run()
 	return err

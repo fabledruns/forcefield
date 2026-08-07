@@ -2,10 +2,12 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
 	"forcefield/internal/tools"
 )
@@ -38,12 +40,19 @@ var DefaultSchedulerConfig = SchedulerConfig{
 // ordering *between* batches (i.e. between model turns) is preserved
 // naturally because the runtime only asks for the next batch once the
 // previous one has fully finished.
+//
+// The scheduler is also the single central place permission checks happen
+// (see checkPermission below). Tool implementations never see the
+// permission manager and have no way to know it exists; the scheduler
+// decides whether execute() ever gets called at all.
 type scheduler struct {
-	manager *tools.Manager
-	cfg     SchedulerConfig
+	manager     *tools.Manager
+	permissions *permissions.Manager
+	asker       permissions.Asker
+	cfg         SchedulerConfig
 }
 
-func newScheduler(manager *tools.Manager, cfg SchedulerConfig) *scheduler {
+func newScheduler(manager *tools.Manager, perms *permissions.Manager, asker permissions.Asker, cfg SchedulerConfig) *scheduler {
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 1
 	}
@@ -53,7 +62,7 @@ func newScheduler(manager *tools.Manager, cfg SchedulerConfig) *scheduler {
 	if cfg.BaseBackoff <= 0 {
 		cfg.BaseBackoff = 200 * time.Millisecond
 	}
-	return &scheduler{manager: manager, cfg: cfg}
+	return &scheduler{manager: manager, permissions: perms, asker: asker, cfg: cfg}
 }
 
 // Run executes calls with up to cfg.MaxConcurrency running at once and
@@ -136,6 +145,10 @@ func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit fu
 		}
 		emit(Event{Type: EventToolFailed, ToolResult: &result})
 		return result
+	}
+
+	if denied, result := s.checkPermission(ctx, call, emit); denied {
+		return *result
 	}
 
 	meta := tools.MetadataOf(tool)
@@ -253,6 +266,80 @@ func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit fu
 		Err:        lastErr,
 	}
 	emit(Event{Type: EventToolFailed, ToolResult: &result})
+	return result
+}
+
+// checkPermission is the single central permission check every tool call
+// passes through before it's allowed to execute. It never touches the
+// tool itself, only the call's name and arguments, so tool implementations
+// stay entirely unaware permissions exist.
+func (s *scheduler) checkPermission(ctx context.Context, call providers.ToolCall, emit func(Event) bool) (denied bool, result *ToolResult) {
+	if s.permissions == nil {
+		return false, nil // no permission manager configured: fail open
+	}
+
+	decision := s.permissions.Check(call.Name)
+
+	if decision == permissions.Allow {
+		return false, nil
+	}
+
+	if decision == permissions.Ask {
+		resolved, err := s.resolveAsk(ctx, call)
+		if err != nil {
+			result := s.deniedResult(call, fmt.Sprintf("permission prompt failed: %v", err))
+			emit(Event{Type: EventToolDenied, ToolResult: result})
+			return true, result
+		}
+		if resolved == permissions.Allow {
+			return false, nil
+		}
+	}
+
+	// decision == permissions.Deny, or an "ask" that resolved to deny.
+	result = s.deniedResult(call, fmt.Sprintf("permission denied for tool %q", call.Name))
+	emit(Event{Type: EventToolDenied, ToolResult: result})
+	return true, result
+}
+
+// resolveAsk runs the interactive "ask" flow for a single tool call: it
+// prompts via s.asker and, for an "always allow"/"always deny" answer,
+// persists the new rule so future calls to this tool skip the prompt.
+func (s *scheduler) resolveAsk(ctx context.Context, call providers.ToolCall) (permissions.Decision, error) {
+	if s.asker == nil {
+		// No interactive surface available (e.g. non-interactive
+		// automation): fail closed rather than silently executing.
+		return permissions.Deny, fmt.Errorf("tool %q requires approval but no permission prompt is configured", call.Name)
+	}
+
+	prompt, err := s.asker.Ask(ctx, permissions.Request{Tool: call.Name, Arguments: call.Arguments})
+	if err != nil {
+		return permissions.Deny, err
+	}
+
+	if prompt.Persist() {
+		if err := s.permissions.Update(call.Name, prompt.Decision()); err != nil {
+			// The in-memory decision below still applies to this call;
+			// only persistence failed. Surface it via the returned error
+			// is tempting but would incorrectly deny this call, so it's
+			// swallowed here - a future "/permissions" view is the right
+			// place to report it.
+			_ = err
+		}
+	}
+
+	return prompt.Decision(), nil
+}
+
+func (s *scheduler) deniedResult(call providers.ToolCall, reason string) *ToolResult {
+	result := &ToolResult{
+		ToolCallID: call.ID,
+		Name:       call.Name,
+		Arguments:  call.Arguments,
+		Success:    false,
+		IsError:    true,
+		Content:    reason,
+	}
 	return result
 }
 

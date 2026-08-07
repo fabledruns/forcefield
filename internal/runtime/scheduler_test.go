@@ -54,7 +54,7 @@ func TestScheduler_RunsIndependentCallsConcurrently(t *testing.T) {
 		&slowTool{name: "a", release: release, started: started},
 		&slowTool{name: "b", release: release, started: started},
 	)
-	s := newScheduler(manager, SchedulerConfig{MaxConcurrency: 2, MaxRetries: 0, BaseBackoff: time.Millisecond})
+	s := newScheduler(manager, nil, nil, SchedulerConfig{MaxConcurrency: 2, MaxRetries: 0, BaseBackoff: time.Millisecond})
 
 	calls := []providers.ToolCall{
 		{ID: "1", Name: "a"},
@@ -92,7 +92,7 @@ func TestScheduler_PreservesResultOrderRegardlessOfCompletionOrder(t *testing.T)
 	slow := &fixedResultTool{name: "slow", delay: 30 * time.Millisecond}
 
 	manager := newTestManager(t, slow, fast)
-	s := newScheduler(manager, SchedulerConfig{MaxConcurrency: 4, MaxRetries: 0, BaseBackoff: time.Millisecond})
+	s := newScheduler(manager, nil, nil, SchedulerConfig{MaxConcurrency: 4, MaxRetries: 0, BaseBackoff: time.Millisecond})
 
 	calls := []providers.ToolCall{
 		{ID: "1", Name: "slow"},
@@ -145,7 +145,7 @@ func (t *flakyTool) Execute(_ context.Context, _ map[string]any) (tools.Result, 
 func TestScheduler_RetriesRetryableFailures(t *testing.T) {
 	flaky := &flakyTool{failuresLeft: 1, meta: tools.Metadata{Retryable: true}}
 	manager := newTestManager(t, flaky)
-	s := newScheduler(manager, SchedulerConfig{MaxConcurrency: 1, MaxRetries: 2, BaseBackoff: time.Millisecond})
+	s := newScheduler(manager, nil, nil, SchedulerConfig{MaxConcurrency: 1, MaxRetries: 2, BaseBackoff: time.Millisecond})
 
 	results := s.Run(context.Background(), []providers.ToolCall{{ID: "1", Name: "flaky"}}, func(Event) bool { return true })
 	if len(results) != 1 || results[0].IsError || results[0].Content != "ok" {
@@ -159,7 +159,7 @@ func TestScheduler_RetriesRetryableFailures(t *testing.T) {
 func TestScheduler_DoesNotRetryNonRetryableFailures(t *testing.T) {
 	flaky := &flakyTool{failuresLeft: 100, meta: tools.Metadata{Retryable: false}}
 	manager := newTestManager(t, flaky)
-	s := newScheduler(manager, SchedulerConfig{MaxConcurrency: 1, MaxRetries: 3, BaseBackoff: time.Millisecond})
+	s := newScheduler(manager, nil, nil, SchedulerConfig{MaxConcurrency: 1, MaxRetries: 3, BaseBackoff: time.Millisecond})
 
 	results := s.Run(context.Background(), []providers.ToolCall{{ID: "1", Name: "flaky"}}, func(Event) bool { return true })
 	if len(results) != 1 || !results[0].IsError || results[0].Attempt != 1 {
@@ -172,7 +172,7 @@ func TestScheduler_OneFailureDoesNotCancelSiblings(t *testing.T) {
 	ok := &fixedResultTool{name: "ok"}
 
 	manager := newTestManager(t, failing, ok)
-	s := newScheduler(manager, SchedulerConfig{MaxConcurrency: 2, MaxRetries: 0, BaseBackoff: time.Millisecond})
+	s := newScheduler(manager, nil, nil, SchedulerConfig{MaxConcurrency: 2, MaxRetries: 0, BaseBackoff: time.Millisecond})
 
 	results := s.Run(context.Background(), []providers.ToolCall{
 		{ID: "1", Name: "failing"},
@@ -199,7 +199,7 @@ func (t *fixedErrorTool) Execute(context.Context, map[string]any) (tools.Result,
 func TestScheduler_TimeoutProducesFailedResult(t *testing.T) {
 	blocking := &blockingTool{meta: tools.Metadata{Timeout: 10 * time.Millisecond}}
 	manager := newTestManager(t, blocking)
-	s := newScheduler(manager, SchedulerConfig{MaxConcurrency: 1, MaxRetries: 0, BaseBackoff: time.Millisecond})
+	s := newScheduler(manager, nil, nil, SchedulerConfig{MaxConcurrency: 1, MaxRetries: 0, BaseBackoff: time.Millisecond})
 
 	start := time.Now()
 	results := s.Run(context.Background(), []providers.ToolCall{{ID: "1", Name: "blocking"}}, func(Event) bool { return true })
@@ -225,7 +225,7 @@ func (t *blockingTool) Execute(ctx context.Context, _ map[string]any) (tools.Res
 func TestScheduler_StreamingToolEmitsProgress(t *testing.T) {
 	st := &streamingTool{}
 	manager := newTestManager(t, st)
-	s := newScheduler(manager, DefaultSchedulerConfig)
+	s := newScheduler(manager, nil, nil, DefaultSchedulerConfig)
 
 	var mu sync.Mutex
 	var chunks []string

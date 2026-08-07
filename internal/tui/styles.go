@@ -81,8 +81,17 @@ var (
 				Background(lipgloss.Color("#3A1414"))
 
 	pickerMetaStyle = lipgloss.NewStyle().
-				Foreground(colorMuted)
+			Foreground(colorMuted)
 
 	pickerHelpStyle = lipgloss.NewStyle().
+			Foreground(colorMuted)
+)
+
+var (
+	permissionQuestionStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorAccent)
+
+	permissionHelpStyle = lipgloss.NewStyle().
 				Foreground(colorMuted)
 )
