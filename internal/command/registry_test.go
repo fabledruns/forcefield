@@ -114,3 +114,37 @@ func TestRegistry_Suggest(t *testing.T) {
 		t.Fatalf("Suggest(%q) = %v, want no suggestions for a wildly unrelated string", "zzzzzzzzzzzzzzzz", got)
 	}
 }
+
+func TestRegistry_Match(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(&stubCommand{name: "help"})
+	reg.Register(&stubCommand{name: "exit", aliases: []string{"quit"}})
+	reg.Register(&stubCommand{name: "clear"})
+	reg.Register(&stubCommand{name: "model"})
+
+	names := func(cmds []Command) []string {
+		out := make([]string, len(cmds))
+		for i, c := range cmds {
+			out[i] = c.Name()
+		}
+		return out
+	}
+
+	if got := names(reg.Match("")); !reflect.DeepEqual(got, []string{"clear", "exit", "help", "model"}) {
+		t.Errorf(`Match("") = %v, want all commands sorted alphabetically`, got)
+	}
+
+	if got := names(reg.Match("h")); !reflect.DeepEqual(got, []string{"help"}) {
+		t.Errorf(`Match("h") = %v, want [help]`, got)
+	}
+
+	// An alias must never surface as its own match: it's the same
+	// command as "exit", not a second one.
+	if got := names(reg.Match("qu")); len(got) != 0 {
+		t.Errorf(`Match("qu") = %v, want no matches (aliases aren't matched)`, got)
+	}
+
+	if got := names(reg.Match("zzz")); len(got) != 0 {
+		t.Errorf(`Match("zzz") = %v, want no matches`, got)
+	}
+}

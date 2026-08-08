@@ -95,3 +95,11 @@ var (
 	permissionHelpStyle = lipgloss.NewStyle().
 				Foreground(colorMuted)
 )
+
+var (
+	suggestionListStyle = lipgloss.NewStyle().
+				Foreground(colorAccent)
+
+	suggestionPreviewStyle = lipgloss.NewStyle().
+				Foreground(colorMuted)
+)

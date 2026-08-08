@@ -74,6 +74,21 @@ type model struct {
 	// decision is awaiting an answer. See permission.go and asker.go.
 	permissionPrompt *permissionPrompt
 
+	// suggestions holds the slash commands whose name has the currently
+	// typed prefix, sorted alphabetically; recomputed on every keystroke
+	// by updateSuggestions and cleared once the input isn't an
+	// in-progress command name (see completion.go). Empty/nil hides the
+	// suggestion list and preview entirely.
+	suggestions []command.Command
+
+	// tabMatches and tabIndex track an in-progress Tab-cycle: tabMatches
+	// is the sorted set of command names a cycle is working through, and
+	// tabIndex is which one the input currently holds. Any key other
+	// than Tab clears tabMatches, so the next Tab press starts a fresh
+	// cycle from whatever's typed then.
+	tabMatches []string
+	tabIndex   int
+
 	width, height int
 	waiting       bool // true while a runTask command is in flight
 	status        string
@@ -372,6 +387,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.input.Reset()
+		m.suggestions = nil
+		m.tabMatches = nil
 
 		if isCommand, err := command.Dispatch(&m, m.registry, task); isCommand {
 			if err != nil {
@@ -414,10 +431,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.spinner.Tick,
 			waitForChunk(stream),
 		)
+	case tea.KeyTab:
+		return m.handleTabComplete()
 	}
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.tabMatches = nil // any non-Tab edit invalidates an in-progress cycle
+	m.updateSuggestions()
 	return m, cmd
 }
 
@@ -616,5 +637,8 @@ func (m model) renderFooter() string {
 		status = fmt.Sprintf("%s %s", m.spinner.View(), activity)
 	}
 
+	if suggestions := m.renderSuggestions(); suggestions != "" {
+		return lipgloss.JoinVertical(lipgloss.Left, suggestions, inputBox, helpStyle.Render(status))
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, inputBox, helpStyle.Render(status))
 }

@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // Registry holds every registered command, indexed for O(1) lookup by
@@ -11,9 +12,9 @@ import (
 // session — there's no need for locking or dynamic
 // registration/unregistration.
 type Registry struct {
-	byName map[string]Command 
-	unique []Command        
-	names  []string           
+	byName map[string]Command
+	unique []Command
+	names  []string
 }
 
 // NewRegistry returns an empty Registry ready for Register calls.
@@ -58,6 +59,25 @@ func (r *Registry) Lookup(name string) (Command, bool) {
 // in registration order. It backs /help's command listing.
 func (r *Registry) All() []Command {
 	return r.unique
+}
+
+// Match returns every registered command (canonical names only, aliases
+// excluded so the same Command doesn't appear twice) whose name has
+// prefix, sorted alphabetically by name. It backs Tab-completion and the
+// live suggestion list in the TUI; unlike Suggest, it's called on every
+// keystroke while typing a command, so it does a plain linear scan with
+// no scoring or allocation beyond the result slice.
+func (r *Registry) Match(prefix string) []Command {
+	matches := make([]Command, 0, 4)
+	for _, cmd := range r.unique {
+		if strings.HasPrefix(cmd.Name(), prefix) {
+			matches = append(matches, cmd)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].Name() < matches[j].Name()
+	})
+	return matches
 }
 
 // Suggest returns up to n known command names closest to input by edit
