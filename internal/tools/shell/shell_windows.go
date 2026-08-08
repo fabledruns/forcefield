@@ -2,7 +2,12 @@
 
 package shell
 
-import "os/exec"
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"strconv"
+)
 
 // setProcessGroup is a no-op on Windows: POSIX process groups don't exist
 // here. Cancellation falls back to killing the direct child process only
@@ -17,5 +22,18 @@ func killProcessGroup(cmd *exec.Cmd) error {
 	if cmd.Process == nil {
 		return nil
 	}
-	return cmd.Process.Kill()
+
+	// Use taskkill to terminate the full process tree rooted at cmd.
+	// This mirrors the Unix "kill process group" behavior as closely as
+	// possible on Windows, where grandchildren can otherwise keep stdio
+	// pipes open and delay timeout/cancellation completion.
+	if err := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run(); err == nil {
+		return nil
+	}
+
+	// Fallback to killing the direct child if taskkill is unavailable.
+	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	return nil
 }
