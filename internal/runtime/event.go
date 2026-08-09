@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"forcefield/internal/providers"
+	"forcefield/internal/task"
 )
 
 // EventType describes an observable step in an agent run.
@@ -20,6 +21,22 @@ const (
 	EventToolDenied
 	EventDone
 	EventError
+	// EventBlocked is emitted instead of EventDone when the runtime stops
+	// a task itself - an iteration/tool-call/failure limit was hit - as
+	// opposed to the model deciding it's finished.
+	EventBlocked
+)
+
+// Status mirrors task.Status for convenience so callers of this package
+// don't need to import internal/task just to read Event.Status.
+type Status = task.Status
+
+const (
+	StatusInProgress = task.StatusInProgress
+	StatusVerified   = task.StatusVerified
+	StatusPartial    = task.StatusPartial
+	StatusBlocked    = task.StatusBlocked
+	StatusFailed     = task.StatusFailed
 )
 
 // Backwards-compatible names for the initial streaming tool-call API.
@@ -63,5 +80,7 @@ type Event struct {
 	ToolProgress *ToolProgress
 	ToolResult   *ToolResult
 	Response     *providers.Response
+	Status       Status
+	TaskState    *task.Snapshot
 	Err          error
 }

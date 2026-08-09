@@ -21,10 +21,17 @@ type Model struct {
 	APIKey   string `yaml:"-"`
 }
 
-// Agent describes the default agent's identity and base system prompt.
+// Agent describes the default agent's identity, base system prompt, and
+// the limits that bound a single long-horizon run. Zero values fall back
+// to runtime.DefaultLimits, so existing config files keep working
+// unchanged.
 type Agent struct {
 	Name         string `yaml:"name"`
 	SystemPrompt string `yaml:"system_prompt"`
+
+	MaxIterations          int `yaml:"max_iterations,omitempty"`
+	MaxToolCalls           int `yaml:"max_tool_calls,omitempty"`
+	MaxConsecutiveFailures int `yaml:"max_consecutive_failures,omitempty"`
 }
 
 // Permissions configures whether tool invocations run automatically or
