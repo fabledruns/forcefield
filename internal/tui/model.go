@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -24,12 +25,22 @@ import (
 // something usable instead of a zero-height viewport.
 const minTranscriptHeight = 3
 
-// headerHeight and footerHeight are the fixed number of terminal rows
-// consumed by the header line and the input box + help line,
-// respectively. Used to size the transcript viewport on every resize.
+// headerHeight is the fixed number of terminal rows consumed by the
+// header line. Used to size the transcript viewport on every resize.
+//
+// There is no equivalent fixed footerHeight: the footer now grows with
+// the input box, which itself grows with however many lines the prompt
+// holds (see minInputHeight/maxInputHeight and (*model).layout), so its
+// height is computed dynamically instead.
+const headerHeight = 2
+
+// minInputHeight and maxInputHeight bound how many rows the prompt input
+// box is allowed to occupy. It grows automatically as the user types or
+// pastes multiple lines, and shrinks back down on submit, but is capped
+// so a very large paste can't swallow the whole terminal window.
 const (
-	headerHeight = 2
-	footerHeight = 3
+	minInputHeight = 1
+	maxInputHeight = 6
 )
 
 // model is Forcefield's interactive chat state. It is a thin presentation
@@ -50,7 +61,7 @@ type model struct {
 
 	entries  []chatEntry
 	viewport viewport.Model
-	input    textinput.Model
+	input    textarea.Model
 	spinner  spinner.Model
 
 	// activeTools maps a running tool call's ID to the index of its live
@@ -96,17 +107,64 @@ type model struct {
 	ready         bool // true once the first WindowSizeMsg has arrived
 }
 
+// newInput builds the prompt's multi-line text input with Forcefield's
+// settings. Split out from newModel so tests can construct the exact same
+// input widget without spinning up a full model (and its Runtime).
+func newInput() textarea.Model {
+	input := textarea.New()
+	input.Placeholder = "Ask Forcefield something…"
+	input.Prompt = "› "
+	input.ShowLineNumbers = false
+	// textinput's old 4000-char limit was sized for single-line prompts;
+	// a pasted file or code block needs more room.
+	input.CharLimit = 20000
+	input.SetHeight(minInputHeight)
+	// A plain Enter always submits (handled in handleKey below) so it
+	// keeps its normal single-key behavior; only Shift+Enter inserts a
+	// literal newline for manually composing a multi-line prompt.
+	//
+	// Bubble Tea's key decoder has no Shift modifier bit for Enter (raw
+	// terminal mode simply can't report one for that key), so there is
+	// no literal "shift+enter" it can ever produce. What terminals send
+	// instead, by convention, when the user presses Shift+Enter is a
+	// bare line feed (0x0A) rather than the carriage return (0x0D) a
+	// plain Enter sends -- the same byte as Ctrl+J, which Bubble Tea
+	// reports as KeyCtrlJ ("ctrl+j"). Binding InsertNewline to that is
+	// what actually receives a Shift+Enter press in practice (iTerm2,
+	// Kitty, WezTerm, tmux, etc. all follow this convention).
+	//
+	// Pasted text is unaffected by this binding either way: bracketed-
+	// paste content arrives as one KeyRunes message with Paste set,
+	// never as KeyEnter/KeyCtrlJ, so multi-line pastes are inserted
+	// as-is regardless.
+	input.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
+
+	// The default bubbles theme renders the active line's typed text in
+	// a dim ANSI grey, which reads as greyed-out/disabled next to the
+	// rest of Forcefield's UI. Give focused typed text the same bright
+	// foreground the transcript uses, and keep the placeholder in the
+	// existing muted color so it stays visibly dimmer than real input.
+	focusedStyle, blurredStyle := textarea.DefaultStyles()
+	focusedStyle.Text = focusedStyle.Text.Foreground(colorText)
+	focusedStyle.CursorLine = focusedStyle.CursorLine.Foreground(colorText)
+	focusedStyle.Placeholder = focusedStyle.Placeholder.Foreground(colorMuted)
+	blurredStyle.Text = blurredStyle.Text.Foreground(colorText)
+	blurredStyle.CursorLine = blurredStyle.CursorLine.Foreground(colorText)
+	blurredStyle.Placeholder = blurredStyle.Placeholder.Foreground(colorMuted)
+	input.FocusedStyle = focusedStyle
+	input.BlurredStyle = blurredStyle
+
+	input.Focus()
+	return input
+}
+
 // newModel builds the initial chat model. cfg is only used to label the
 // session header (which agent/provider/model it's talking to); requests use
 // the Runtime created below. asker resolves interactive "ask" permission
 // decisions via the permission modal instead of the runtime's stdin
 // default, which isn't usable once bubbletea has taken over the terminal.
 func newModel(cfg *config.Config, sess *session.Session, asker permissions.Asker) model {
-	input := textinput.New()
-	input.Placeholder = "Ask Forcefield something…"
-	input.Prompt = "› "
-	input.CharLimit = 4000
-	input.Focus()
+	input := newInput()
 
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
@@ -167,7 +225,7 @@ func sessionEntries(sess *session.Session) []chatEntry {
 // startup — config was already loaded before the program started — so
 // this only starts the input cursor blinking.
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	return textarea.Blink
 }
 
 // Update satisfies tea.Model.
@@ -281,6 +339,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var inputCmd tea.Cmd
 	m.input, inputCmd = m.input.Update(msg)
 	cmds = append(cmds, inputCmd)
+	m.layout()
 
 	return m, tea.Batch(cmds...)
 }
@@ -389,6 +448,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Reset()
 		m.suggestions = nil
 		m.tabMatches = nil
+		m.layout() // the input box just shrank back to one line
 
 		if isCommand, err := command.Dispatch(&m, m.registry, task); isCommand {
 			if err != nil {
@@ -439,6 +499,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.input, cmd = m.input.Update(msg)
 	m.tabMatches = nil // any non-Tab edit invalidates an in-progress cycle
 	m.updateSuggestions()
+	// A paste (or any edit) may have changed the input's line count or
+	// the suggestion list, either of which changes how tall the footer
+	// is, so re-derive the viewport size from the current content.
+	m.layout()
 	return m, cmd
 }
 
@@ -549,22 +613,60 @@ func (m model) switchToSession(id string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// layout recomputes the viewport and input widths/heights after a resize.
+// syncInputHeight grows or shrinks the input box to match how many lines
+// it currently holds (e.g. after a multi-line paste, or after Reset),
+// clamped to [minInputHeight, maxInputHeight] so a huge paste can't push
+// the transcript off-screen entirely.
+func (m *model) syncInputHeight() {
+	lines := m.input.LineCount()
+	if lines < minInputHeight {
+		lines = minInputHeight
+	}
+	if lines > maxInputHeight {
+		lines = maxInputHeight
+	}
+	if m.input.Height() != lines {
+		m.input.SetHeight(lines)
+	}
+}
+
+// footerHeight computes how many terminal rows the footer needs right
+// now: the input box (plus its border), the help/status line below it,
+// and, when present, the two-line live suggestion list above it. It
+// changes as the input grows/shrinks and as suggestions come and go, so
+// callers should not cache this value.
+func (m *model) footerHeight() int {
+	const (
+		inputBorder = 2 // top + bottom border of inputBorderStyle
+		helpLine    = 1
+		suggestions = 2 // suggestion list line + description line
+	)
+	h := inputBorder + m.input.Height() + helpLine
+	if len(m.suggestions) > 0 {
+		h += suggestions
+	}
+	return h
+}
+
+// layout recomputes the viewport and input widths/heights after a resize
+// or after an edit that changed the input's line count or the suggestion
+// list, both of which change how tall the footer is.
 func (m *model) layout() {
-	transcriptHeight := m.height - headerHeight - footerHeight
+	// Account for the input box's rounded border + horizontal padding.
+	inputWidth := m.width - 4
+	if inputWidth < 1 {
+		inputWidth = 1
+	}
+	m.input.SetWidth(inputWidth)
+	m.syncInputHeight()
+
+	transcriptHeight := m.height - headerHeight - m.footerHeight()
 	if transcriptHeight < minTranscriptHeight {
 		transcriptHeight = minTranscriptHeight
 	}
 
 	m.viewport.Width = m.width
 	m.viewport.Height = transcriptHeight
-
-	// Account for the input box's rounded border + horizontal padding.
-	inputWidth := m.width - 4
-	if inputWidth < 1 {
-		inputWidth = 1
-	}
-	m.input.Width = inputWidth
 
 	m.refreshTranscript()
 }
@@ -625,7 +727,7 @@ func (m model) renderFooter() string {
 
 	inputBox := inputBorderStyle.Width(m.width - 2).Render(m.input.View())
 
-	status := "enter send · esc quit"
+	status := "enter send · shift+enter newline · esc quit"
 	if m.waiting {
 		activity := m.activeToolStatus()
 		if activity == "" {

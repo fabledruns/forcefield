@@ -9,6 +9,7 @@ import (
 
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
+	"forcefield/internal/memory"
 	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
 	"forcefield/internal/skills"
@@ -66,11 +67,24 @@ func New() (*Runtime, error) {
 		return nil, fmt.Errorf("load skill store: %w", err)
 	}
 
+	// Resolve the current project's memory store (by Git root, falling
+	// back to the working directory) and load whatever's already been
+	// remembered into the agent's system prompt. A fresh checkout with
+	// no memory yet loads an empty store, not an error.
+	projectMemory, err := memory.CurrentProjectStore(forcefieldHome)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project memory store: %w", err)
+	}
+	memoryEntries, err := projectMemory.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load project memory: %w", err)
+	}
+
 	a := agent.New(
 		cfg.Agent.Name,
 		cfg.Agent.SystemPrompt,
 		skills.FormatCatalog(skillStore.Catalog()),
-	)
+	).WithProjectMemory(memory.FormatForPrompt(memoryEntries))
 
 	provider, err := newProvider(cfg)
 	if err != nil {
@@ -86,6 +100,9 @@ func New() (*Runtime, error) {
 	}
 	if err := manager.Register(newUpdateTaskStateTool()); err != nil {
 		return nil, fmt.Errorf("register update_task_state tool: %w", err)
+	}
+	if err := manager.Register(newAddProjectMemoryTool(projectMemory)); err != nil {
+		return nil, fmt.Errorf("register add_project_memory tool: %w", err)
 	}
 
 	permManager, err := permissions.NewManager(permissions.NewConfigStore())

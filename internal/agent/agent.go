@@ -7,9 +7,10 @@ import "strings"
 
 // Agent holds everything needed to build a system prompt for a single run.
 type Agent struct {
-	Name         string
-	SystemPrompt string
-	SkillCatalog string
+	Name          string
+	SystemPrompt  string
+	SkillCatalog  string
+	ProjectMemory string
 }
 
 // New constructs an Agent from a base system prompt and the concatenated
@@ -22,6 +23,15 @@ func New(name, systemPrompt, skillCatalog string) *Agent {
 	}
 }
 
+// WithProjectMemory sets the formatted project memory (see
+// memory.FormatForPrompt) that gets folded into the system prompt, and
+// returns the agent for chaining. An empty string means "nothing remembered
+// yet" and adds no section to the prompt.
+func (a *Agent) WithProjectMemory(formatted string) *Agent {
+	a.ProjectMemory = strings.TrimSpace(formatted)
+	return a
+}
+
 // BuildSystemPrompt combines the agent's base system prompt with its
 // loaded skills into the single string sent to the model as the "system"
 // message. If there are no skills, this is just the base prompt.
@@ -29,6 +39,20 @@ func (a *Agent) BuildSystemPrompt() string {
 	var b strings.Builder
 	b.WriteString(strings.TrimSpace(a.SystemPrompt))
 	b.WriteString(agentContract)
+
+	if a.ProjectMemory != "" {
+		b.WriteString(`
+
+## Project Memory
+
+The following facts were remembered from previous sessions on this project:
+
+`)
+		b.WriteString(a.ProjectMemory)
+		b.WriteString(`
+
+Treat these as established context. Use the "add_project_memory" tool to add new durable facts worth remembering, but only after user approval.`)
+	}
 
 	if a.SkillCatalog == "" {
 		return b.String()

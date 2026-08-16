@@ -70,6 +70,7 @@ permissions:
     pwd: allow
     write_file: ask
     shell: ask
+    add_project_memory: ask
 `
 
 // Dir returns the Forcefield home directory (~/.forcefield), creating it
