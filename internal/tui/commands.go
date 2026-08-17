@@ -36,9 +36,16 @@ func (m *model) Println(format string, args ...any) {
 	})
 }
 
-// Clear empties the transcript, e.g. for /clear.
+// Clear empties the transcript, e.g. for /clear. Any live stream is
+// cancelled and its per-entry bookkeeping reset, so in-flight tool events
+// can't index into the rebuilt transcript and update the wrong line.
 func (m *model) Clear() {
+	m.stopStream(false)
 	m.entries = nil
+	m.activeTools = make(map[string]int)
+	m.assistantBuffer = ""
+	m.status = ""
+	m.permissionPrompt = nil
 }
 
 // Quit marks the session to end; handleKey turns this into a tea.Quit.

@@ -136,13 +136,32 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		if wd, err := os.Getwd(); err == nil {
 			cwd = wd
 		}
+	} else if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+		// Fail as a tool Result (not a Go error) so the model sees a clear,
+		// retryable message instead of an opaque execution failure.
+		return tools.Result{
+			IsError: true,
+			Content: fmt.Sprintf("working directory does not exist: %s", cwd),
+			Tool:    "shell",
+			Command: command,
+		}, nil
 	}
 
+	// A bad timeout_seconds must be an argument error, not silently ignored:
+	// falling back to the 30s default would kill a long command the caller
+	// asked to run longer, which looks exactly like "the command never ran".
 	timeout := defaultTimeout
 	if raw, ok := args["timeout_seconds"]; ok {
-		if secs, ok := toFloat(raw); ok && secs > 0 {
-			timeout = time.Duration(secs * float64(time.Second))
+		secs, ok := toFloat(raw)
+		if !ok || secs <= 0 {
+			return tools.Result{}, &tools.ArgumentError{Field: "timeout_seconds", Reason: "must be a positive number of seconds"}
 		}
+		timeout = time.Duration(secs * float64(time.Second))
+	}
+
+	env, err := buildEnv(args)
+	if err != nil {
+		return tools.Result{}, err
 	}
 
 	runCtx := ctx
@@ -154,7 +173,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 
 	cmd := shellCommand(runCtx, command)
 	cmd.Dir = cwd
-	cmd.Env = buildEnv(args)
+	cmd.Env = env
 
 	// Explicitly isolate the child from the real terminal:
 	//   - Stdin: nil makes Go connect it to the null device, so a command
@@ -185,7 +204,17 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
-		return tools.Result{}, fmt.Errorf("shell: start command: %w", err)
+		// Start failures (bad cwd, missing interpreter, permission denied)
+		// are reported as Results like every other command failure, so the
+		// model always gets stdout/stderr/exit-code-shaped feedback.
+		return tools.Result{
+			IsError:    true,
+			Content:    fmt.Sprintf("failed to start command: %v", err),
+			ExitCode:   -1,
+			Tool:       "shell",
+			Command:    command,
+			DurationMs: time.Since(started).Milliseconds(),
+		}, nil
 	}
 
 	var stdout, stderr strings.Builder
@@ -236,6 +265,15 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	}
 
 	content := stdout.String()
+	if stderr.Len() > 0 {
+		// Keep stderr visible even on success: callers reading only Content
+		// would otherwise lose diagnostics the command wrote to stderr.
+		if content == "" {
+			content = fmt.Sprintf("stderr:\n%s", stderr.String())
+		} else {
+			content = fmt.Sprintf("%s\nstderr:\n%s", content, stderr.String())
+		}
+	}
 	if !success {
 		content = fmt.Sprintf("command exited with code %d\nstdout:\n%s\nstderr:\n%s", exitCode, stdout.String(), stderr.String())
 	}
@@ -259,26 +297,34 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 // alternate screen buffer ever reaches the TUI's rendered content. It
 // signals done when r is exhausted (EOF or the pipe was closed because
 // the process was killed).
+//
+// It uses bufio.Reader rather than bufio.Scanner so lines of any length
+// are captured whole: a Scanner's max token size would silently drop the
+// remainder of any line past the cap, losing output.
 func streamPipe(r io.Reader, stream string, dst *strings.Builder, onChunk func(tools.StreamChunk), done chan<- struct{}) {
 	defer func() { done <- struct{}{} }()
 
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for scanner.Scan() {
-		line := sanitizeOutput(scanner.Text())
-		dst.WriteString(line)
-		dst.WriteByte('\n')
-		if onChunk != nil {
-			onChunk(tools.StreamChunk{Stream: stream, Data: line})
+	reader := bufio.NewReader(r)
+	for {
+		raw, err := reader.ReadString('\n')
+		if raw != "" {
+			line := sanitizeOutput(strings.TrimSuffix(raw, "\n"))
+			dst.WriteString(line)
+			dst.WriteByte('\n')
+			if onChunk != nil {
+				onChunk(tools.StreamChunk{Stream: stream, Data: line})
+			}
 		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		line := sanitizeOutput(fmt.Sprintf("scanner error: %v", err))
-		dst.WriteString(line)
-		dst.WriteByte('\n')
-		if onChunk != nil {
-			onChunk(tools.StreamChunk{Stream: stream, Data: line})
+		if err != nil {
+			if err != io.EOF {
+				line := sanitizeOutput(fmt.Sprintf("read error: %v", err))
+				dst.WriteString(line)
+				dst.WriteByte('\n')
+				if onChunk != nil {
+					onChunk(tools.StreamChunk{Stream: stream, Data: line})
+				}
+			}
+			return
 		}
 	}
 }
@@ -358,31 +404,89 @@ var bareReplCommands = map[string]bool{
 // chain multiple commands together, so "true && vim" is still caught.
 var commandSeparators = regexp.MustCompile(`&&|\|\||[;|]`)
 
+// wrapperCommands are prefix commands that run the following word as the
+// real command ("sudo vim", "env python", "nohup top", "command ssh").
+// They're skipped when looking for the interactive program in a segment.
+var wrapperCommands = map[string]bool{
+	"sudo": true, "env": true, "nohup": true, "command": true,
+	"xargs": true, "nice": true, "stdbuf": true, "time": true,
+}
+
 // detectInteractiveCommand reports whether command invokes a program that
 // requires a TTY. It's a deliberately simple heuristic - split on shell
-// control operators, skip leading VAR=value assignments, look at the
-// first remaining word of each segment - not a full shell parser. That's
-// enough to catch the common cases (bare "vim", "cmd1 && ssh host",
-// "FOO=bar top") without taking on the complexity of actually parsing
+// control operators, skip leading VAR=value assignments and wrapper
+// commands, strip quotes from the candidate word, look at the first
+// remaining word of each segment - not a full shell parser. That's enough
+// to catch the common cases (bare "vim", "cmd1 && ssh host", "FOO=bar
+// top", "sudo vim") without taking on the complexity of actually parsing
 // shell syntax.
 func detectInteractiveCommand(command string) (string, bool) {
 	for _, segment := range commandSeparators.Split(command, -1) {
-		fields := strings.Fields(segment)
+		fields := splitFields(segment)
 		for i, field := range fields {
 			if isAssignment(field) {
 				continue
 			}
-			name := strings.TrimSuffix(filepath.Base(field), ".exe")
+			name := strings.TrimSuffix(filepath.Base(unquote(field)), ".exe")
+			if wrapperCommands[name] {
+				continue
+			}
 			if interactiveCommands[name] {
 				return name, true
 			}
 			if bareReplCommands[name] && i == len(fields)-1 {
 				return name, true
 			}
-			break // first real (non-assignment) token in this segment
+			break // first real (non-assignment, non-wrapper) token
 		}
 	}
 	return "", false
+}
+
+// splitFields splits a shell segment into words, treating single- and
+// double-quoted spans (including spaces inside them) as one field, so a
+// quoted program path like `"C:\Program Files\vim.exe"` stays a single
+// word for interactive-command detection.
+func splitFields(segment string) []string {
+	var fields []string
+	var current strings.Builder
+	inSingle, inDouble := false, false
+	flush := func() {
+		if current.Len() > 0 {
+			fields = append(fields, current.String())
+			current.Reset()
+		}
+	}
+	for _, r := range segment {
+		switch {
+		case r == '\'' && !inDouble:
+			inSingle = !inSingle
+		case r == '"' && !inSingle:
+			inDouble = !inDouble
+		case r == ' ' || r == '\t':
+			if inSingle || inDouble {
+				current.WriteRune(r)
+			} else {
+				flush()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	flush()
+	return fields
+}
+
+// unquote strips one level of matching single or double quotes from word,
+// so a quoted program name (`"C:\Program Files\vim.exe"`) is still
+// recognized.
+func unquote(word string) string {
+	if len(word) >= 2 {
+		if (word[0] == '"' && word[len(word)-1] == '"') || (word[0] == '\'' && word[len(word)-1] == '\'') {
+			return word[1 : len(word)-1]
+		}
+	}
+	return word
 }
 
 // isAssignment reports whether field looks like a leading shell
@@ -406,25 +510,29 @@ func isAssignment(field string) bool {
 }
 
 // buildEnv merges the current process environment with any extra
-// variables supplied under the "env" argument.
-func buildEnv(args map[string]any) []string {
+// variables supplied under the "env" argument. A malformed env argument is
+// an argument error rather than being silently dropped: the caller asked
+// for variables the command would then run without.
+func buildEnv(args map[string]any) ([]string, error) {
 	env := os.Environ()
 
 	raw, ok := args["env"]
 	if !ok {
-		return env
+		return env, nil
 	}
 	extra, ok := raw.(map[string]any)
 	if !ok {
-		return env
+		return nil, &tools.ArgumentError{Field: "env", Reason: "must be an object of string key/value pairs"}
 	}
 
 	for k, v := range extra {
-		if s, ok := v.(string); ok {
-			env = append(env, fmt.Sprintf("%s=%s", k, s))
+		s, ok := v.(string)
+		if !ok {
+			return nil, &tools.ArgumentError{Field: "env", Reason: fmt.Sprintf("value for %q must be a string", k)}
 		}
+		env = append(env, fmt.Sprintf("%s=%s", k, s))
 	}
-	return env
+	return env, nil
 }
 
 // shellCommand builds the *exec.Cmd for running command through the

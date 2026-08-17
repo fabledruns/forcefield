@@ -26,10 +26,10 @@ func killProcessGroup(cmd *exec.Cmd) error {
 	// Use taskkill to terminate the full process tree rooted at cmd.
 	// This mirrors the Unix "kill process group" behavior as closely as
 	// possible on Windows, where grandchildren can otherwise keep stdio
-	// pipes open and delay timeout/cancellation completion.
-	if err := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run(); err == nil {
-		return nil
-	}
+	// pipes open and delay timeout/cancellation completion. If taskkill
+	// fails, fall through to the direct-child kill below rather than
+	// surfacing a diagnostics-only error from the Cancel path.
+	_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
 
 	// Fallback to killing the direct child if taskkill is unavailable.
 	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {

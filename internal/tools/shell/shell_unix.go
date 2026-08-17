@@ -3,6 +3,7 @@
 package shell
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 )
@@ -26,6 +27,11 @@ func killProcessGroup(cmd *exec.Cmd) error {
 	}
 	// A negative pid targets the whole process group in the kill(2)
 	// syscall. Because setProcessGroup made this process its own group
-	// leader, -pid is exactly that group.
-	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	// leader, -pid is exactly that group. ESRCH means the group already
+	// exited between the Process check and the kill, which is not a
+	// failure.
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return nil
 }

@@ -56,6 +56,15 @@ type ToolResult struct {
 	Duration   time.Duration
 	Attempt    int // 1-based retry attempt that produced this result
 	Err        error
+
+	// Structured output passthrough for tools that provide it (e.g. the
+	// shell tool's separate stdout/stderr streams and exit code), so
+	// consumers like the TUI's expanded tool view can show them without
+	// parsing Content.
+	Stdout      string
+	Stderr      string
+	ExitCode    int
+	HasExitCode bool
 }
 
 // ToolProgress describes a single live output chunk from a running tool,

@@ -214,6 +214,10 @@ func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit fu
 				Success:    !res.IsError,
 				Duration:   time.Since(started),
 				Attempt:    attempt,
+				Stdout:      res.Stdout,
+				Stderr:      res.Stderr,
+				ExitCode:    res.ExitCode,
+				HasExitCode: res.ExitCode != 0 || res.Tool == "shell",
 			}
 			if res.IsError {
 				emit(Event{Type: EventToolFailed, ToolResult: &result})

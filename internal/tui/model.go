@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -105,7 +106,38 @@ type model struct {
 	status        string
 	quitting      bool
 	ready         bool // true once the first WindowSizeMsg has arrived
+
+	// following is true while the viewport should stick to the bottom of
+	// the transcript as new output streams in. Scrolling up pauses the
+	// auto-follow so older output stays put while reading; scrolling back
+	// to the bottom (or submitting a message) resumes it.
+	following bool
+
+	// streamGen tags the active stream; every waitForChunk message carries
+	// the generation it was spawned with, so events from a replaced stream
+	// (session switch, /clear, quit) are dropped instead of landing in the
+	// new transcript. cancelStream cancels the active stream's context.
+	streamGen    uint64
+	cancelStream context.CancelFunc
+
+	// showActivity toggles the transient model-activity labels (Thinking,
+	// Planning, Running…) in the footer. It never exposes chain-of-thought
+	// content, only short status labels.
+	showActivity bool
+
+	// lastKeyAt timestamps the most recent key event, for paste-burst
+	// detection: input drivers without bracketed paste (the Windows
+	// console API) deliver a paste as a rapid keystroke burst whose
+	// newlines are plain Enter events. A KeyEnter arriving within
+	// pasteBurstWindow of the previous key is treated as a pasted newline,
+	// not a submit. The window sits well under keyboard auto-repeat
+	// (~33ms at the default Windows rate), which never bursts.
+	lastKeyAt time.Time
 }
+
+// pasteBurstWindow is the maximum gap between keystrokes for the run to
+// count as one paste burst; see model.lastKeyAt.
+const pasteBurstWindow = 25 * time.Millisecond
 
 // newInput builds the prompt's multi-line text input with Forcefield's
 // settings. Split out from newModel so tests can construct the exact same
@@ -119,24 +151,30 @@ func newInput() textarea.Model {
 	// a pasted file or code block needs more room.
 	input.CharLimit = 20000
 	input.SetHeight(minInputHeight)
-	// A plain Enter always submits (handled in handleKey below) so it
-	// keeps its normal single-key behavior; only Shift+Enter inserts a
-	// literal newline for manually composing a multi-line prompt.
+	// A plain Enter always submits (handled in handleKey below); only
+	// modified Enters and Ctrl+J insert a literal newline for manually
+	// composing a multi-line prompt.
 	//
-	// Bubble Tea's key decoder has no Shift modifier bit for Enter (raw
-	// terminal mode simply can't report one for that key), so there is
-	// no literal "shift+enter" it can ever produce. What terminals send
-	// instead, by convention, when the user presses Shift+Enter is a
-	// bare line feed (0x0A) rather than the carriage return (0x0D) a
-	// plain Enter sends -- the same byte as Ctrl+J, which Bubble Tea
-	// reports as KeyCtrlJ ("ctrl+j"). Binding InsertNewline to that is
-	// what actually receives a Shift+Enter press in practice (iTerm2,
-	// Kitty, WezTerm, tmux, etc. all follow this convention).
+	// Platform reality, per the input drivers in bubbletea v1:
+	//   - The Windows console API reports VK_RETURN as a plain KeyEnter
+	//     with no Shift state (KeyMsg has Alt, but not Shift, for keys),
+	//     so a literal Shift+Enter press is indistinguishable from Enter
+	//     there. What it CAN report is Alt+Enter, and ANSI terminals
+	//     report it as ESC CR - both arrive as KeyEnter with Alt set,
+	//     which handleKey turns into a newline.
+	//   - Terminals that send a bare line feed (0x0A) for Shift+Enter
+	//     (Kitty, WezTerm, iTerm2 and tmux conventions) arrive as
+	//     KeyCtrlJ, which this binding receives.
+	//   - If a future input stack ever reports a distinct "shift+enter"
+	//     key, handleKey handles it by name before the submit path.
 	//
-	// Pasted text is unaffected by this binding either way: bracketed-
-	// paste content arrives as one KeyRunes message with Paste set,
-	// never as KeyEnter/KeyCtrlJ, so multi-line pastes are inserted
-	// as-is regardless.
+	// Pasted text is unaffected by any of this: bracketed-paste content
+	// arrives as one KeyRunes message with Paste set (never as
+	// KeyEnter/KeyCtrlJ), and the textarea's sanitizer normalizes \r and
+	// \r\n to real \n, so multi-line pastes keep actual newlines. On the
+	// Windows console driver (no bracketed paste), a paste arrives as a
+	// keystroke burst and handleKey's burst detection converts its Enter
+	// events to newlines instead of submitting mid-paste.
 	input.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 
 	// The default bubbles theme renders the active line's typed text in
@@ -190,6 +228,8 @@ func newModel(cfg *config.Config, sess *session.Session, asker permissions.Asker
 		session:      sess,
 		registry:     newRegistry(),
 		activeTools:  make(map[string]int),
+		following:    true,
+		showActivity: true,
 	}
 }
 
@@ -254,24 +294,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case permissionRequestMsg:
+		// A permission decision blocks the whole run, so it takes
+		// precedence over any open modal: close pickers rather than leave
+		// the prompt unreachable behind them.
+		m.picker = nil
+		m.selectPicker = nil
 		m.permissionPrompt = &permissionPrompt{request: msg.request, respond: msg.respond}
 		m.appendActivity(m.permissionPrompt.summary())
 		m.refreshTranscript()
 		return m, nil
 
 	case streamEventMsg:
+		if msg.gen != m.streamGen {
+			return m, nil // stale event from a replaced stream
+		}
 		switch msg.Event.Type {
 		case runtime.EventText:
 			if msg.Event.Text == "" {
-				return m, waitForChunk(m.stream)
+				return m, waitForChunk(m.stream, m.streamGen)
 			}
 			m.status = ""
 			m.appendAssistantText(msg.Event.Text)
 			m.assistantBuffer += msg.Event.Text
 		case runtime.EventThinking:
 			// Provider thinking content remains available to other runtime
-			// consumers. The terminal presents a concise, transient status.
-			if msg.Event.Thinking == "" {
+			// consumers. The terminal presents a concise, transient status
+			// label only - never the chain-of-thought text itself.
+			if msg.Event.Thinking != "" {
 				m.status = "Thinking"
 			}
 		case runtime.EventToolStart:
@@ -284,35 +333,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.refreshTranscript()
-		return m, waitForChunk(m.stream)
+		return m, waitForChunk(m.stream, m.streamGen)
 
 	case streamDoneMsg:
-		m.waiting = false
-		m.stream = nil
-		m.status = ""
-		m.activeTools = make(map[string]int)
-		m.finishAssistantStream()
-		if text := strings.TrimSpace(m.assistantBuffer); text != "" {
-			m.session.AddMessage("assistant", text)
-			_ = m.session.Save()
+		if msg.gen != m.streamGen {
+			return m, nil // stale
 		}
-
-		m.assistantBuffer = ""
+		m.stopStream(true)
 		m.refreshTranscript()
 		return m, nil
 
 	case streamErrMsg:
-		m.waiting = false
-		m.status = ""
-		m.activeTools = make(map[string]int)
-		m.finishAssistantStream()
+		if msg.gen != m.streamGen {
+			return m, nil // stale
+		}
+		// Keep whatever streamed before the error: losing a half-finished
+		// answer is indistinguishable from the model having said nothing.
+		m.stopStream(true)
 
 		m.entries = append(m.entries, chatEntry{
 			Role:    roleError,
 			Content: msg.err.Error(),
 		})
-
-		m.stream = nil
 
 		m.refreshTranscript()
 
@@ -335,6 +377,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var vpCmd tea.Cmd
 	m.viewport, vpCmd = m.viewport.Update(msg)
 	cmds = append(cmds, vpCmd)
+	// Wheel/PgUp scrolling away from the bottom pauses auto-follow; coming
+	// back to the bottom resumes it.
+	m.following = m.viewport.AtBottom()
 
 	var inputCmd tea.Cmd
 	m.input, inputCmd = m.input.Update(msg)
@@ -342,6 +387,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.layout()
 
 	return m, tea.Batch(cmds...)
+}
+
+// stopStream tears down the active stream: it cancels the runtime context
+// (stopping the producer goroutine and any running tools), retires the
+// generation so in-flight reader commands are dropped, and clears the
+// per-stream bookkeeping. When savePartial is set, an assistant reply that
+// streamed before the stream ended is persisted rather than discarded.
+func (m *model) stopStream(savePartial bool) {
+	if m.cancelStream != nil {
+		m.cancelStream()
+		m.cancelStream = nil
+	}
+	m.streamGen++
+	m.stream = nil
+	m.waiting = false
+	m.status = ""
+	m.activeTools = make(map[string]int)
+	m.finishAssistantStream()
+	if savePartial {
+		if text := strings.TrimSpace(m.assistantBuffer); text != "" {
+			m.session.AddMessage("assistant", text)
+			_ = m.session.Save()
+		}
+	}
+	m.assistantBuffer = ""
 }
 
 func (m *model) appendAssistantText(text string) {
@@ -368,7 +438,12 @@ func (m *model) startToolActivity(call *providers.ToolCall) {
 	if call == nil {
 		return
 	}
-	m.entries = append(m.entries, chatEntry{Role: roleActivity, Content: formatToolStart(call)})
+	record := &toolRecord{name: call.Name, args: call.Arguments}
+	m.entries = append(m.entries, chatEntry{
+		Role:    roleActivity,
+		Content: formatToolStart(call),
+		Tool:    record,
+	})
 	m.activeTools[call.ID] = len(m.entries) - 1
 }
 
@@ -394,10 +469,42 @@ func (m *model) finishToolActivity(result *runtime.ToolResult, eventType runtime
 	text := formatToolFinish(result, eventType)
 	if idx, ok := m.activeTools[result.ToolCallID]; ok && idx < len(m.entries) {
 		m.entries[idx].Content = text
+		if record := m.entries[idx].Tool; record != nil {
+			fillToolRecord(record, result, eventType)
+		}
 	} else {
-		m.appendActivity(text)
+		record := &toolRecord{name: result.Name, args: result.Arguments}
+		fillToolRecord(record, result, eventType)
+		m.appendToolActivity(text, record)
 	}
 	delete(m.activeTools, result.ToolCallID)
+}
+
+// fillToolRecord copies a finished tool call's structured outcome into its
+// transcript record for the expandable detail view.
+func fillToolRecord(record *toolRecord, result *runtime.ToolResult, eventType runtime.EventType) {
+	record.finished = true
+	record.eventType = eventType
+	record.content = result.Content
+	record.stdout = result.Stdout
+	record.stderr = result.Stderr
+	record.exitCode = result.ExitCode
+	record.hasExit = result.HasExitCode
+	record.duration = result.Duration
+	if result.Err != nil {
+		record.err = result.Err.Error()
+	}
+}
+
+// toggleToolExpansion flips the expanded view of the most recent tool-call
+// entry (ctrl+e). Tool calls stay compact by default.
+func (m *model) toggleToolExpansion() {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Tool != nil {
+			m.entries[i].Tool.expanded = !m.entries[i].Tool.expanded
+			return
+		}
+	}
 }
 
 // activeToolStatus summarizes currently running tool calls for the footer.
@@ -426,59 +533,123 @@ func (m *model) appendActivity(text string) {
 	m.entries = append(m.entries, chatEntry{Role: roleActivity, Content: text})
 }
 
+func (m *model) appendToolActivity(text string, record *toolRecord) {
+	if text == "" {
+		return
+	}
+	m.entries = append(m.entries, chatEntry{Role: roleActivity, Content: text, Tool: record})
+}
+
 // handleKey processes keyboard input: global shortcuts first, then
 // message submission, then falls back to normal text-input editing.
+// newlineEnter reports whether an Enter key event should insert a newline
+// rather than submit: modified chords always (Alt+Enter is the reliably
+// distinguishable one on every input driver; "shift+enter" only exists on
+// input stacks that report it), and a plain Enter when it arrives inside a
+// paste keystroke burst, where it carries a pasted newline.
+func newlineEnter(msg tea.KeyMsg, inPasteBurst bool) bool {
+	return msg.Alt || msg.String() == "shift+enter" || inPasteBurst
+}
+
+// normalizeNewlines converts CRLF and lone CR to LF. The textarea's rune
+// sanitizer maps each of \r and \n to a separate \n, so unnormalized
+// Windows clipboard text would get every newline doubled.
+func normalizeNewlines(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
+}
+
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Bracketed paste arrives as one KeyRunes message with Paste set.
+	// Insert it verbatim (modulo newline normalization) so multi-line
+	// clipboard content keeps real newline characters, and so it can never
+	// match a key binding. Being atomic, a paste also never arms the
+	// paste-burst window below: an Enter following it is always the
+	// user's, never a pasted newline.
+	if msg.Type == tea.KeyRunes && msg.Paste {
+		m.input.InsertString(normalizeNewlines(string(msg.Runes)))
+		m.tabMatches = nil
+		m.updateSuggestions()
+		m.layout()
+		return m, nil
+	}
+
+	// Track inter-key timing for paste-burst detection (see
+	// pasteBurstWindow): on drivers without bracketed paste (the Windows
+	// console API), a paste arrives as a rapid keystroke burst whose
+	// embedded newlines are plain Enter events.
+	inPasteBurst := time.Since(m.lastKeyAt) <= pasteBurstWindow
+	m.lastKeyAt = time.Now()
+
 	switch msg.Type {
 
-	case tea.KeyCtrlC, tea.KeyEsc:
+	case tea.KeyCtrlC:
+		// Cancel the in-flight run (stopping tools and the producer
+		// goroutine) and persist any partial reply before quitting.
+		m.stopStream(true)
 		m.quitting = true
 		return m, tea.Quit
 
+	case tea.KeyEsc:
+		// Esc first clears a non-empty input (or closes suggestions),
+		// quitting only when there's nothing else it could mean. Ctrl+C
+		// remains the unconditional quit.
+		if m.input.Value() != "" {
+			m.input.Reset()
+			m.suggestions = nil
+			m.tabMatches = nil
+			m.layout()
+			return m, nil
+		}
+		m.stopStream(true)
+		m.quitting = true
+		return m, tea.Quit
+
+	case tea.KeyCtrlE:
+		m.toggleToolExpansion()
+		m.refreshTranscript()
+		return m, nil
+
+	case tea.KeyCtrlT:
+		m.showActivity = !m.showActivity
+		return m, nil
+
+	case tea.KeyCtrlY:
+		return m, copyLastAssistantMessage(m.entries)
+
 	case tea.KeyEnter:
+		// Enter-with-modifier inserts a real newline instead of
+		// submitting; see newInput for which chords can actually reach
+		// here per platform. An unmodified Enter arriving inside a
+		// keystroke burst is a pasted newline (no bracketed paste on the
+		// Windows console driver), not a deliberate submit.
+		if newlineEnter(msg, inPasteBurst) {
+			m.input.InsertString("\n")
+			m.tabMatches = nil
+			m.updateSuggestions()
+			m.layout()
+			return m, nil
+		}
 		if m.waiting {
 			// A response is already in flight; ignore extra submits
 			// instead of queuing or dropping the in-progress request.
 			return m, nil
 		}
-		task := strings.TrimSpace(m.input.Value())
-		if task == "" {
-			return m, nil
+		started, quit := m.acceptInput()
+		if quit {
+			return m, tea.Quit
 		}
-		m.input.Reset()
-		m.suggestions = nil
-		m.tabMatches = nil
-		m.layout() // the input box just shrank back to one line
-
-		if isCommand, err := command.Dispatch(&m, m.registry, task); isCommand {
-			if err != nil {
-				m.entries = append(m.entries, chatEntry{Role: roleError, Content: err.Error()})
-			}
-			m.refreshTranscript()
-			if m.quitting {
-				return m, tea.Quit
-			}
+		if !started {
 			return m, nil
 		}
 
-		m.entries = append(m.entries, chatEntry{Role: roleUser, Content: task})
-		m.session.AddMessage("user", task)
-
-		if err := m.session.Save(); err != nil {
-			m.entries = append(m.entries, chatEntry{
-				Role:    roleError,
-				Content: fmt.Sprintf("failed to save session: %v", err),
-			})
-		}
-
-		m.waiting = true
-		m.refreshTranscript()
-
+		streamCtx, cancel := context.WithCancel(context.Background())
 		stream, err := m.runtime.Stream(
-			context.Background(),
+			streamCtx,
 			m.session.ProviderMessages(),
 		)
 		if err != nil {
+			cancel()
 			m.waiting = false
 			m.entries = append(m.entries, chatEntry{Role: roleError, Content: fmt.Sprintf("stream failed: %v", err)})
 			m.refreshTranscript()
@@ -486,10 +657,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		m.stream = stream
+		m.cancelStream = cancel
+		m.streamGen++
 
 		return m, tea.Batch(
 			m.spinner.Tick,
-			waitForChunk(stream),
+			waitForChunk(stream, m.streamGen),
 		)
 	case tea.KeyTab:
 		return m.handleTabComplete()
@@ -502,9 +675,49 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// A paste (or any edit) may have changed the input's line count or
 	// the suggestion list, either of which changes how tall the footer
 	// is, so re-derive the viewport size from the current content.
-	m.layout()
+		m.layout()
 	return m, cmd
 }
+
+// acceptInput consumes the current input as a submitted prompt: it resets
+// the input box, records the message (or runs it when it's a slash
+// command), and reports whether the caller should start streaming a reply.
+// Split from handleKey so the submission pipeline is testable without a
+// live runtime; the newline characters in task are stored verbatim.
+func (m *model) acceptInput() (startedStream bool, quit bool) {
+	task := strings.TrimSpace(m.input.Value())
+	if task == "" {
+		return false, false
+	}
+	m.input.Reset()
+	m.suggestions = nil
+	m.tabMatches = nil
+	m.layout() // the input box just shrank back to one line
+
+	if isCommand, err := command.Dispatch(m, m.registry, task); isCommand {
+		if err != nil {
+			m.entries = append(m.entries, chatEntry{Role: roleError, Content: err.Error()})
+		}
+		m.refreshTranscript()
+		return false, m.quitting
+	}
+
+	m.entries = append(m.entries, chatEntry{Role: roleUser, Content: task})
+	m.session.AddMessage("user", task)
+
+	if err := m.session.Save(); err != nil {
+		m.entries = append(m.entries, chatEntry{
+			Role:    roleError,
+			Content: fmt.Sprintf("failed to save session: %v", err),
+		})
+	}
+
+	m.waiting = true
+	m.following = true
+	m.refreshTranscript()
+	return true, false
+}
+
 
 // handlePickerKey processes keys while the /sessions modal is open. It
 // never touches the runtime or transcript directly except on Enter,
@@ -598,13 +811,11 @@ func (m model) switchToSession(id string) (tea.Model, tea.Cmd) {
 	}
 
 	// A stream from the previous session is no longer relevant once we've
-	// switched conversations; drop it rather than let it keep appending
-	// to the new transcript.
-	m.stream = nil
-	m.waiting = false
-	m.status = ""
-	m.assistantBuffer = ""
-	m.activeTools = make(map[string]int)
+	// switched conversations: cancel it (its events would otherwise keep
+	// appending to the new transcript) and save any partial reply that
+	// belongs to the old session before swapping it out.
+	m.stopStream(true)
+	m.permissionPrompt = nil
 
 	m.session = sess
 	m.entries = sessionEntries(sess)
@@ -671,10 +882,12 @@ func (m *model) layout() {
 	m.refreshTranscript()
 }
 
-// refreshTranscript re-renders all entries into the viewport. Once there's
-// a conversation, it scrolls to the bottom so the newest message is
-// visible; while empty (showing the FORCEFIELD splash), it stays at the
-// top so the whole banner is visible instead of its lower half.
+// refreshTranscript re-renders all entries into the viewport. While the
+// user is following the conversation (at the bottom, or just submitted),
+// new output keeps the newest message visible; once they've scrolled up to
+// read older output, the scroll position is preserved instead of being
+// yanked back down on every stream chunk. While empty (showing the
+// FORCEFIELD splash), it stays at the top so the whole banner is visible.
 func (m *model) refreshTranscript() {
 	if m.viewport.Width == 0 {
 		return // not sized yet; layout() will call this again once it is
@@ -682,7 +895,7 @@ func (m *model) refreshTranscript() {
 	m.viewport.SetContent(renderTranscript(m.entries, m.viewport.Width))
 	if len(m.entries) == 0 {
 		m.viewport.GotoTop()
-	} else {
+	} else if m.following {
 		m.viewport.GotoBottom()
 	}
 }
@@ -727,16 +940,23 @@ func (m model) renderFooter() string {
 
 	inputBox := inputBorderStyle.Width(m.width - 2).Render(m.input.View())
 
-	status := "enter send · shift+enter newline · esc quit"
+	status := "enter send · alt+enter newline · ctrl+e tool · ctrl+t status · esc quit"
 	if m.waiting {
-		activity := m.activeToolStatus()
-		if activity == "" {
-			activity = m.status
+		activity := ""
+		if m.showActivity {
+			activity = m.activeToolStatus()
+			if activity == "" {
+				activity = m.status
+			}
 		}
-		if activity == "" {
+		if activity == "" && m.showActivity {
 			activity = "Working"
 		}
-		status = fmt.Sprintf("%s %s", m.spinner.View(), activity)
+		if activity != "" {
+			status = fmt.Sprintf("%s %s", m.spinner.View(), activity)
+		} else {
+			status = m.spinner.View()
+		}
 	}
 
 	if suggestions := m.renderSuggestions(); suggestions != "" {

@@ -23,6 +23,10 @@ type chatEntry struct {
 	Role      role
 	Content   string
 	Streaming bool
+
+	// Tool, when set on a roleActivity entry, holds the structured details
+	// behind the one-line tool summary so it can be expanded (ctrl+e).
+	Tool *toolRecord
 }
 
 // render turns a chatEntry into its final styled, word-wrapped form.
@@ -37,6 +41,9 @@ func (e chatEntry) render(width int) string {
 		body := renderMarkdown(e.Content, width, e.Streaming)
 		return fmt.Sprintf("%s\n%s", label, body)
 	case roleActivity:
+		if e.Tool != nil && e.Tool.expanded {
+			return activityStyle.Width(width).Render(e.Content + formatToolDetails(e.Tool, width))
+		}
 		return activityStyle.Width(width).Render(e.Content)
 	case roleError:
 		label = errorLabelStyle.Render("Error")
