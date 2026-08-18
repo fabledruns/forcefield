@@ -6,14 +6,21 @@
 // session instead of one command per question.
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/lipgloss"
+
+	"forcefield/internal/runtime"
+)
 
 var (
 	colorAccent    = lipgloss.Color("#FF3B3B")
 	colorAssistant = lipgloss.Color("#FF3B3B")
 	colorMuted     = lipgloss.Color("#7A7A7A")
+	colorDim       = lipgloss.Color("#4A4A50")
 	colorError     = lipgloss.Color("#FF6B6B")
-	colorBorder    = lipgloss.Color("#f8a7a7")
+	colorSuccess   = lipgloss.Color("#7D9B76")
+	colorWarning   = lipgloss.Color("#C4A35A")
+	colorBorder    = lipgloss.Color("#3A3A40")
 	colorText      = lipgloss.Color("#EAEAEA")
 )
 
@@ -26,6 +33,9 @@ var (
 
 	headerMetaStyle = lipgloss.NewStyle().
 			Foreground(colorMuted)
+
+	headerSepStyle = lipgloss.NewStyle().
+			Foreground(colorDim)
 
 	userLabelStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -49,11 +59,47 @@ var (
 	activityStyle = lipgloss.NewStyle().
 			Foreground(colorMuted)
 
+	thinkStyle = lipgloss.NewStyle().
+			Foreground(colorMuted)
+
+	thinkStepStyle = lipgloss.NewStyle().
+			Foreground(colorDim)
+
+	toolNameStyle = lipgloss.NewStyle().
+			Foreground(colorText)
+
+	toolDetailStyle = lipgloss.NewStyle().
+			Foreground(colorMuted)
+
+	toolRunningStyle = lipgloss.NewStyle().
+				Foreground(colorAccent)
+
+	toolSuccessStyle = lipgloss.NewStyle().
+				Foreground(colorSuccess)
+
+	toolFailedStyle = lipgloss.NewStyle().
+			Foreground(colorError)
+
+	toolCancelStyle = lipgloss.NewStyle().
+			Foreground(colorMuted)
+
 	helpStyle = lipgloss.NewStyle().
 			Foreground(colorMuted)
 
+	statusIdleStyle = lipgloss.NewStyle().
+			Foreground(colorMuted)
+
+	statusBusyStyle = lipgloss.NewStyle().
+			Foreground(colorAccent)
+
+	statusErrorStyle = lipgloss.NewStyle().
+			Foreground(colorError)
+
+	statusWarnStyle = lipgloss.NewStyle().
+			Foreground(colorWarning)
+
 	inputBorderStyle = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder()).
+				Border(lipgloss.NormalBorder(), true, false, true, false).
 				BorderForeground(colorBorder).
 				Padding(0, 1)
 
@@ -103,3 +149,19 @@ var (
 	suggestionPreviewStyle = lipgloss.NewStyle().
 				Foreground(colorMuted)
 )
+
+func toolStatusStyle(t *toolRecord) lipgloss.Style {
+	if t == nil || !t.finished {
+		return toolRunningStyle
+	}
+	switch t.eventType {
+	case runtime.EventToolCancelled:
+		return toolCancelStyle
+	case runtime.EventToolFailed, runtime.EventToolDenied:
+		return toolFailedStyle
+	}
+	if t.err != "" {
+		return toolFailedStyle
+	}
+	return toolSuccessStyle
+}

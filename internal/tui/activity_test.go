@@ -14,7 +14,7 @@ func TestFormatToolStartIncludesUsefulArguments(t *testing.T) {
 		Name:      "read_file",
 		Arguments: map[string]any{"path": "README.md"},
 	})
-	if got != "Running read_file README.md" {
+	if got != "● Running read_file README.md" {
 		t.Errorf("formatToolStart() = %q", got)
 	}
 }

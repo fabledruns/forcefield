@@ -183,12 +183,19 @@ func newInput() textarea.Model {
 	// foreground the transcript uses, and keep the placeholder in the
 	// existing muted color so it stays visibly dimmer than real input.
 	focusedStyle, blurredStyle := textarea.DefaultStyles()
+
 	focusedStyle.Text = focusedStyle.Text.Foreground(colorText)
-	focusedStyle.CursorLine = focusedStyle.CursorLine.Foreground(colorText)
+	focusedStyle.CursorLine = focusedStyle.CursorLine.
+		Foreground(colorText).
+		Background(lipgloss.NoColor{})
 	focusedStyle.Placeholder = focusedStyle.Placeholder.Foreground(colorMuted)
+
 	blurredStyle.Text = blurredStyle.Text.Foreground(colorText)
-	blurredStyle.CursorLine = blurredStyle.CursorLine.Foreground(colorText)
+	blurredStyle.CursorLine = blurredStyle.CursorLine.
+		Foreground(colorText).
+		Background(lipgloss.NoColor{})
 	blurredStyle.Placeholder = blurredStyle.Placeholder.Foreground(colorMuted)
+
 	input.FocusedStyle = focusedStyle
 	input.BlurredStyle = blurredStyle
 
@@ -924,12 +931,33 @@ func (m model) View() string {
 	)
 }
 
+// headerState returns the icon and style that summarize the agent's
+// current activity at a glance: idle, thinking, or running a tool. It
+// deliberately collapses several runtime states into three visual ones so
+// the header stays a single glance, not a status dashboard.
+func (m model) headerState() (Icon, lipgloss.Style, string) {
+	if m.permissionPrompt != nil {
+		return IconWarning, statusWarnStyle, "waiting"
+	}
+	if !m.waiting {
+		return IconIdle, statusIdleStyle, "idle"
+	}
+	if len(m.activeTools) > 0 {
+		return IconRunning, statusBusyStyle, "running"
+	}
+	return IconThink, statusBusyStyle, "thinking"
+}
+
 func (m model) renderHeader() string {
 	title := headerStyle.Render(" Forcefield ")
+
+	icon, style, label := m.headerState()
+	state := style.Render(fmt.Sprintf("%s %s", icon, label))
+
 	meta := headerMetaStyle.Render(
-		fmt.Sprintf("agent: %s  ·  %s/%s", m.agentName, m.providerName, m.modelName),
+		fmt.Sprintf("%s %s/%s  %s %s", IconModel, m.providerName, m.modelName, IconSession, m.agentName),
 	)
-	return lipgloss.JoinHorizontal(lipgloss.Top, title, " ", meta)
+	return lipgloss.JoinHorizontal(lipgloss.Top, title, " ", state, headerSepStyle.Render(" · "), meta)
 }
 
 func (m model) renderFooter() string {
@@ -940,7 +968,7 @@ func (m model) renderFooter() string {
 
 	inputBox := inputBorderStyle.Width(m.width - 2).Render(m.input.View())
 
-	status := "enter send · alt+enter newline · ctrl+e tool · ctrl+t status · esc quit"
+	status := helpStyle.Render("enter send · alt+enter newline · ctrl+e tool · ctrl+t status · esc quit")
 	if m.waiting {
 		activity := ""
 		if m.showActivity {
@@ -953,14 +981,14 @@ func (m model) renderFooter() string {
 			activity = "Working"
 		}
 		if activity != "" {
-			status = fmt.Sprintf("%s %s", m.spinner.View(), activity)
+			status = statusBusyStyle.Render(fmt.Sprintf("%s %s", m.spinner.View(), activity))
 		} else {
-			status = m.spinner.View()
+			status = statusBusyStyle.Render(m.spinner.View())
 		}
 	}
 
 	if suggestions := m.renderSuggestions(); suggestions != "" {
-		return lipgloss.JoinVertical(lipgloss.Left, suggestions, inputBox, helpStyle.Render(status))
+		return lipgloss.JoinVertical(lipgloss.Left, suggestions, inputBox, status)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, inputBox, helpStyle.Render(status))
+	return lipgloss.JoinVertical(lipgloss.Left, inputBox, status)
 }

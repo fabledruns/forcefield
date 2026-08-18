@@ -37,13 +37,13 @@ const maxExpandedOutputLines = 40
 
 func formatToolStart(call *providers.ToolCall) string {
 	if call == nil {
-		return "Running tool"
+		return IconRunning.String() + " Running tool"
 	}
 
 	if detail := usefulToolArgument(call.Arguments); detail != "" {
-		return fmt.Sprintf("Running %s %s", call.Name, detail)
+		return fmt.Sprintf("%s Running %s %s", IconRunning, call.Name, detail)
 	}
-	return fmt.Sprintf("Running %s", call.Name)
+	return fmt.Sprintf("%s Running %s", IconRunning, call.Name)
 }
 
 // formatToolProgress renders a single streamed output line (e.g. one line
@@ -54,18 +54,18 @@ func formatToolProgress(progress *runtime.ToolProgress) string {
 	}
 	line := shortResult(progress.Data)
 	if line == "" {
-		return fmt.Sprintf("Running %s…", progress.Name)
+		return fmt.Sprintf("%s Running %s…", IconRunning, progress.Name)
 	}
-	return fmt.Sprintf("Running %s │ %s", progress.Name, line)
+	return fmt.Sprintf("%s Running %s %s %s", IconRunning, progress.Name, IconPipe, line)
 }
 
 func formatToolFinish(result *runtime.ToolResult, eventType runtime.EventType) string {
 	if result == nil {
-		return "✕ Tool failed"
+		return IconFailure.String() + " Tool failed"
 	}
 
 	if eventType == runtime.EventToolCancelled {
-		message := fmt.Sprintf("⊘ %s cancelled", result.Name)
+		message := fmt.Sprintf("%s %s cancelled", IconCancel, result.Name)
 		if summary := shortResult(result.Content); summary != "" {
 			return message + ": " + summary
 		}
@@ -73,7 +73,7 @@ func formatToolFinish(result *runtime.ToolResult, eventType runtime.EventType) s
 	}
 
 	if !result.Success {
-		message := fmt.Sprintf("✕ %s failed", result.Name)
+		message := fmt.Sprintf("%s %s failed", IconFailure, result.Name)
 		if result.Attempt > 1 {
 			message += fmt.Sprintf(" (after %d attempts)", result.Attempt)
 		}
@@ -90,19 +90,19 @@ func formatToolFinish(result *runtime.ToolResult, eventType runtime.EventType) s
 	switch result.Name {
 	case "list_files":
 		if count := nonEmptyLines(result.Content); count > 0 {
-			message = fmt.Sprintf("✓ Found %d entries", count)
+			message = fmt.Sprintf("%s Found %d entries", IconSuccess, count)
 		}
 	case "read_file":
 		if path, ok := result.Arguments["path"].(string); ok && path != "" {
-			message = fmt.Sprintf("✓ Read %s", path)
+			message = fmt.Sprintf("%s Read %s", IconSuccess, path)
 		}
 	case "write_file":
 		if path, ok := result.Arguments["path"].(string); ok && path != "" {
-			message = fmt.Sprintf("✓ Wrote %s", path)
+			message = fmt.Sprintf("%s Wrote %s", IconSuccess, path)
 		}
 	}
 	if message == "" {
-		message = fmt.Sprintf("✓ %s completed", result.Name)
+		message = fmt.Sprintf("%s %s completed", IconSuccess, result.Name)
 	}
 	return message + durationSuffix(result.Duration)
 }

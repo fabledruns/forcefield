@@ -41,8 +41,17 @@ func (e chatEntry) render(width int) string {
 		body := renderMarkdown(e.Content, width, e.Streaming)
 		return fmt.Sprintf("%s\n%s", label, body)
 	case roleActivity:
-		if e.Tool != nil && e.Tool.expanded {
-			return activityStyle.Width(width).Render(e.Content + formatToolDetails(e.Tool, width))
+		if e.Tool != nil {
+			style := toolStatusStyle(e.Tool)
+			caret := IconCollapsed
+			if e.Tool.expanded {
+				caret = IconExpanded
+			}
+			line := fmt.Sprintf("%s %s", caret, e.Content)
+			if e.Tool.expanded {
+				return style.Width(width).Render(line + formatToolDetails(e.Tool, width))
+			}
+			return style.Width(width).Render(line)
 		}
 		return activityStyle.Width(width).Render(e.Content)
 	case roleError:
