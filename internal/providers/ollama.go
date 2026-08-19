@@ -16,6 +16,8 @@ type OllamaProvider struct {
 	Endpoint string
 	Model    string
 	client   *http.Client
+	retry    retryPolicy
+	gate     *requestGate
 }
 
 // NewOllamaProvider builds an OllamaProvider pointed at the given endpoint
@@ -25,6 +27,8 @@ func NewOllamaProvider(endpoint, model string) *OllamaProvider {
 		Endpoint: endpoint,
 		Model:    model,
 		client:   &http.Client{},
+		retry:    defaultRetryPolicy,
+		gate:     newRequestGate(),
 	}
 }
 
@@ -100,31 +104,31 @@ func (o *OllamaProvider) StreamChat(ctx context.Context, messages []Message, too
 		return nil, fmt.Errorf("encode ollama request: %w", err)
 	}
 
-	url := o.Endpoint + "/api/chat"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("build request to %s: %w", url, err)
+	if err := o.gate.acquire(); err != nil {
+		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := o.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf(
+	buildRequest := func() (*http.Request, error) {
+		url := o.Endpoint + "/api/chat"
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, fmt.Errorf("build request to %s: %w", url, err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		return httpReq, nil
+	}
+
+	wrapTransport := func(err error) error {
+		return fmt.Errorf(
 			"could not reach Ollama at %s (is `ollama serve` running?): %w",
 			o.Endpoint, err,
 		)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		return nil, fmt.Errorf(
-			"ollama returned status %d for model %q: %s",
-			resp.StatusCode,
-			o.Model,
-			string(body),
-		)
+	resp, err := doWithRetry(ctx, o.client, o.retry, "ollama", o.Model, buildRequest, wrapTransport)
+	if err != nil {
+		o.gate.release()
+		return nil, err
 	}
 
 	events := make(chan StreamEvent)
@@ -132,6 +136,16 @@ func (o *OllamaProvider) StreamChat(ctx context.Context, messages []Message, too
 	go func() {
 		defer resp.Body.Close()
 		defer close(events)
+		defer o.gate.release()
+
+		send := func(event StreamEvent) bool {
+			select {
+			case events <- event:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
 
 		decoder := json.NewDecoder(resp.Body)
 
@@ -140,49 +154,47 @@ func (o *OllamaProvider) StreamChat(ctx context.Context, messages []Message, too
 
 			err := decoder.Decode(&chunk)
 			if err == io.EOF {
-				events <- StreamEvent{
+				send(StreamEvent{
 					Err: io.ErrUnexpectedEOF,
-				}
+				})
 				return
 			}
 
 			if err != nil {
-				events <- StreamEvent{
+				send(StreamEvent{
 					Err: err,
-				}
+				})
 				return
 			}
 
 			if chunk.Error != "" {
-				events <- StreamEvent{
+				send(StreamEvent{
 					Err: errors.New(chunk.Error),
-				}
+				})
 
 				return
 			}
 
 			if chunk.Message.Thinking != "" {
-				events <- StreamEvent{
-					Thinking: chunk.Message.Thinking,
+				if !send(StreamEvent{Thinking: chunk.Message.Thinking}) {
+					return
 				}
 			}
 
 			if chunk.Message.Content != "" {
-				events <- StreamEvent{
-					Text: chunk.Message.Content,
+				if !send(StreamEvent{Text: chunk.Message.Content}) {
+					return
 				}
 			}
 
 			if len(chunk.Message.ToolCalls) > 0 {
-				events <- StreamEvent{
-					ToolCalls: toToolCalls(chunk.Message.ToolCalls),
+				if !send(StreamEvent{ToolCalls: toToolCalls(chunk.Message.ToolCalls)}) {
+					return
 				}
 			}
 
 			if chunk.Done {
-				events <- StreamEvent{
-					Done: true,
-				}
+				send(StreamEvent{Done: true})
 
 				return
 			}

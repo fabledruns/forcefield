@@ -955,7 +955,7 @@ func (m model) renderHeader() string {
 	state := style.Render(fmt.Sprintf("%s %s", icon, label))
 
 	meta := headerMetaStyle.Render(
-		fmt.Sprintf("%s %s/%s  %s %s", IconModel, m.providerName, m.modelName, IconSession, m.agentName),
+		fmt.Sprintf("%s %s %s  %s %s", m.providerName, IconModel, m.modelName, IconSession, m.agentName),
 	)
 	return lipgloss.JoinHorizontal(lipgloss.Top, title, " ", state, headerSepStyle.Render(" · "), meta)
 }

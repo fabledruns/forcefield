@@ -16,7 +16,7 @@ const (
 	IconExpanded  Icon = "▾"
 
 	IconSuccess   Icon = "✓"
-	IconFailure   Icon = "✗"
+	IconFailure   Icon = "✕"
 	IconWarning   Icon = "!"
 	IconCancel    Icon = "⊘"
 	IconRunning   Icon = "●"

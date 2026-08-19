@@ -2,6 +2,9 @@ package shell
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -11,32 +14,50 @@ import (
 	"forcefield/internal/tools"
 )
 
-func commandSeparator() string {
-	if runtime.GOOS == "windows" {
-		return "&"
-	}
-	return ";"
-}
+// The shell tool always runs commands through GNU Bash (natively on
+// Linux/macOS, through WSL on Windows), so the tests use Bash syntax on
+// every platform.
+func commandSeparator() string { return ";" }
 
-func stderrRedirect() string {
-	if runtime.GOOS == "windows" {
-		return "1>&2"
-	}
-	return ">&2"
-}
+func stderrRedirect() string { return ">&2" }
 
 func commandChain(commands ...string) string {
 	return strings.Join(commands, " "+commandSeparator()+" ")
 }
 
-func cancellableCommand() string {
+// requireShellBackend skips the test when this machine cannot run Bash
+// commands at all (no bash on PATH on Unix; WSL missing or its distribution
+// broken on Windows). Live execution tests then degrade to skips with the
+// reason attached instead of reporting failures that say nothing about the
+// shell tool itself.
+func requireShellBackend(t *testing.T) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
-		return "timeout /T 30 /NOBREAK >NUL"
+		s := NewShell()
+		if err := s.ensureBackend(context.Background()); err != nil {
+			t.Skipf("WSL backend unavailable; skipping live execution test: %v", err)
+		}
+		return
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skipf("bash not on PATH; skipping live execution test: %v", err)
+	}
+}
+
+func cancellableCommand() string {
+	// On Windows, process group cleanup is best-effort (setProcessGroup is
+	// a no-op, taskkill /T may miss bash-launched grandchildren). Use a
+	// single long-running process so the test proves the cancellation
+	// mechanism itself still works. On Unix, use a backgrounded child to
+	// prove the POSIX process-group kill reaches grandchildren.
+	if runtime.GOOS == "windows" {
+		return "sleep 30"
 	}
 	return commandChain("(sleep 30 &)", "sleep 30")
 }
 
 func TestShell_CapturesStdout(t *testing.T) {
+	requireShellBackend(t)
 	s := NewShell()
 	result, err := s.Execute(context.Background(), map[string]any{
 		"command": "echo hello",
@@ -62,6 +83,7 @@ func TestShell_CapturesStdout(t *testing.T) {
 }
 
 func TestShell_CapturesStderrSeparately(t *testing.T) {
+	requireShellBackend(t)
 	s := NewShell()
 	result, err := s.Execute(context.Background(), map[string]any{
 		"command": commandChain("echo out", "echo err "+stderrRedirect()),
@@ -78,6 +100,7 @@ func TestShell_CapturesStderrSeparately(t *testing.T) {
 }
 
 func TestShell_ReportsNonZeroExitCode(t *testing.T) {
+	requireShellBackend(t)
 	s := NewShell()
 	result, err := s.Execute(context.Background(), map[string]any{
 		"command": "exit 7",
@@ -97,6 +120,7 @@ func TestShell_CommandFailureDoesNotReturnGoError(t *testing.T) {
 	// A failing shell command is a normal (if unsuccessful) tool result,
 	// not a Go-level error - the scheduler and model both need to be able
 	// to see stdout/stderr/exit code, which a plain `error` can't carry.
+	requireShellBackend(t)
 	s := NewShell()
 	result, err := s.Execute(context.Background(), map[string]any{
 		"command": "no-such-command-xyz",
@@ -110,6 +134,7 @@ func TestShell_CommandFailureDoesNotReturnGoError(t *testing.T) {
 }
 
 func TestShell_ContextCancellationStopsTheCommandAndItsChildren(t *testing.T) {
+	requireShellBackend(t)
 	s := NewShell()
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -137,6 +162,7 @@ func TestShell_ContextCancellationStopsTheCommandAndItsChildren(t *testing.T) {
 }
 
 func TestShell_TimeoutIsEnforced(t *testing.T) {
+	requireShellBackend(t)
 	s := NewShell()
 	start := time.Now()
 	result, err := s.Execute(context.Background(), map[string]any{
@@ -155,6 +181,7 @@ func TestShell_TimeoutIsEnforced(t *testing.T) {
 }
 
 func TestShell_ConcurrentExecutionsAreIndependent(t *testing.T) {
+	requireShellBackend(t)
 	s := NewShell()
 
 	const n = 5
@@ -189,6 +216,7 @@ func TestShell_StreamsChunksThroughCallbackNotTerminal(t *testing.T) {
 	// This is the TUI-safety contract: all output must flow through
 	// onChunk (which the scheduler turns into events for the TUI), never
 	// touch a real file descriptor directly.
+	requireShellBackend(t)
 	s := NewShell()
 
 	var mu sync.Mutex
@@ -258,6 +286,7 @@ func TestShell_RefusesInteractiveCommands(t *testing.T) {
 }
 
 func TestShell_AllowsNonInteractiveLookalikes(t *testing.T) {
+	requireShellBackend(t)
 	s := NewShell()
 
 	// These share a program name with a blocked interactive tool but are
@@ -322,6 +351,7 @@ func TestSanitizeOutput_StripsANSIAndControlSequences(t *testing.T) {
 }
 
 func TestShell_SanitizesANSIInStreamedOutput(t *testing.T) {
+	requireShellBackend(t)
 	s := NewShell()
 
 	var mu sync.Mutex
@@ -373,6 +403,90 @@ func TestDetectInteractiveCommand(t *testing.T) {
 		_, got := detectInteractiveCommand(tc.command)
 		if got != tc.want {
 			t.Errorf("detectInteractiveCommand(%q) = %v, want %v", tc.command, got, tc.want)
+		}
+	}
+}
+
+func TestShell_CwdIsRespectedAcrossBackend(t *testing.T) {
+	requireShellBackend(t)
+	s := NewShell()
+
+	// The cwd is a host path (e.g. C:\Users\...\Temp\... on Windows). It
+	// must be translated for the backend (mapped to /mnt/... under WSL)
+	// so the command really runs there - proven by writing a file from
+	// inside Bash and finding it from the host afterwards.
+	dir := t.TempDir()
+	result, err := s.Execute(context.Background(), map[string]any{
+		"command": "pwd",
+		"cwd":     dir,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("result.IsError = true, content: %s", result.Content)
+	}
+	if !strings.Contains(result.Stdout, filepath.Base(dir)) {
+		t.Errorf("pwd output %q does not contain the working directory base name %q", result.Stdout, filepath.Base(dir))
+	}
+
+	result, err = s.Execute(context.Background(), map[string]any{
+		"command": `printf hello > ff-cwd-cross-check.txt`,
+		"cwd":     dir,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("result.IsError = true, content: %s", result.Content)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "ff-cwd-cross-check.txt"))
+	if err != nil {
+		t.Fatalf("file written inside Bash not visible from the host: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "hello" {
+		t.Errorf("file content = %q, want %q", data, "hello")
+	}
+}
+
+func TestShell_BashSyntaxIsExecutedAsBash(t *testing.T) {
+	// The agent's command contract is Bash regardless of host OS: quotes,
+	// newlines, variable assignments, pipes, redirects, heredocs, and &&
+	// chains must all behave exactly as Bash specifies.
+	requireShellBackend(t)
+	s := NewShell()
+
+	command := strings.Join([]string{
+		"set -e",
+		"TMPF=$(mktemp)",
+		`X="hello world"`,
+		`printf '%s\n' "$X" | tr 'a-z' 'A-Z' > "$TMPF"`,
+		"cat <<'EOF'",
+		"heredoc $X stays literal",
+		"EOF",
+		`if grep -q 'HELLO WORLD' "$TMPF"; then echo pipes-and-quotes-ok; fi`,
+		`rm -f "$TMPF"`,
+		`echo done && echo chained`,
+	}, "\n")
+
+	result, err := s.Execute(context.Background(), map[string]any{
+		"command":         command,
+		"timeout_seconds": 30,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("result.IsError = true, content: %s", result.Content)
+	}
+	for _, want := range []string{
+		"heredoc $X stays literal",
+		"pipes-and-quotes-ok",
+		"done",
+		"chained",
+	} {
+		if !strings.Contains(result.Stdout, want) {
+			t.Errorf("Stdout missing %q:\n%s", want, result.Stdout)
 		}
 	}
 }

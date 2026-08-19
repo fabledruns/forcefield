@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"forcefield/internal/tools"
-	"io"
 	"net/http"
 	"strings"
 )
@@ -24,6 +23,8 @@ type NvidiaProvider struct {
 	Model    string
 	APIKey   string
 	client   *http.Client
+	retry    retryPolicy
+	gate     *requestGate
 }
 
 // NewNvidiaProvider builds an NvidiaProvider pointed at the given endpoint
@@ -38,6 +39,8 @@ func NewNvidiaProvider(endpoint, model, apiKey string, client *http.Client) *Nvi
 		Model:    model,
 		APIKey:   apiKey,
 		client:   client,
+		retry:    defaultRetryPolicy,
+		gate:     newRequestGate(),
 	}
 }
 
@@ -137,32 +140,32 @@ func (n *NvidiaProvider) StreamChat(ctx context.Context, messages []Message, too
 		return nil, fmt.Errorf("encode nvidia request: %w", err)
 	}
 
-	url := n.Endpoint + "/chat/completions"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err := n.gate.acquire(); err != nil {
+		return nil, err
+	}
+
+	buildRequest := func() (*http.Request, error) {
+		url := n.Endpoint + "/chat/completions"
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, fmt.Errorf("build request to %s: %w", url, err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream")
+		if n.APIKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+n.APIKey)
+		}
+		return httpReq, nil
+	}
+
+	wrapTransport := func(err error) error {
+		return fmt.Errorf("could not reach NVIDIA NIM at %s: %w", n.Endpoint, err)
+	}
+
+	resp, err := doWithRetry(ctx, n.client, n.retry, "nvidia nim", n.Model, buildRequest, wrapTransport)
 	if err != nil {
-		return nil, fmt.Errorf("build request to %s: %w", url, err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	if n.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer " + n.APIKey)
-	}
-
-	resp, err := n.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("could not reach NVIDIA NIM at %s: %w", n.Endpoint, err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		return nil, fmt.Errorf(
-			"nvidia nim returned status %d for model %q: %s",
-			resp.StatusCode,
-			n.Model,
-			string(body),
-		)
+		n.gate.release()
+		return nil, err
 	}
 
 	events := make(chan StreamEvent)
@@ -170,6 +173,7 @@ func (n *NvidiaProvider) StreamChat(ctx context.Context, messages []Message, too
 	go func() {
 		defer resp.Body.Close()
 		defer close(events)
+		defer n.gate.release()
 
 		send := func(event StreamEvent) bool {
 			select {

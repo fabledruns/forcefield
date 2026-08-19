@@ -2,7 +2,7 @@ package shell
 
 import (
 	"context"
-	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -66,6 +66,7 @@ func TestShell_InvalidEnvIsArgumentError(t *testing.T) {
 }
 
 func TestShell_StderrIncludedInContentOnSuccess(t *testing.T) {
+	requireShellBackend(t)
 	s := NewShell()
 	command := commandChain("echo out", "echo err " + stderrRedirect())
 	result, err := s.Execute(context.Background(), map[string]any{"command": command})
@@ -87,23 +88,18 @@ func TestShell_StderrIncludedInContentOnSuccess(t *testing.T) {
 }
 
 func TestShell_CapturesVeryLongLine(t *testing.T) {
+	requireShellBackend(t)
 	s := NewShell()
 	// A single line well past the old 1 MiB scanner cap must be captured
-	// whole, not truncated with a "token too long" note. Generate the line
-	// from a large env var so the test doesn't depend on shell-specific
-	// string-generation syntax.
+	// whole, not truncated with a "token too long" note. The line is
+	// generated inside Bash (rather than passed through the environment)
+	// so the test also works under WSL, where wsl.exe's command line
+	// cannot carry multi-megabyte values.
 	size := 3 << 20
-	echo := "printf %s \"$FORCEFIELD_LONG_LINE\""
-	if runtime.GOOS == "windows" {
-		// No quotes needed, so cmd.exe leaves the argument for PowerShell
-		// intact; %VAR% expansion is unusable here because cmd caps lines
-		// around 8k characters.
-		echo = "powershell -NoProfile -Command $env:FORCEFIELD_LONG_LINE"
-	}
+	command := "head -c " + strconv.Itoa(size) + " /dev/zero | tr '\\0' x"
 	result, err := s.Execute(context.Background(), map[string]any{
-		"command":         echo,
+		"command":         command,
 		"timeout_seconds": 60,
-		"env":             map[string]any{"FORCEFIELD_LONG_LINE": strings.Repeat("x", size)},
 	})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -117,11 +113,9 @@ func TestShell_CapturesVeryLongLine(t *testing.T) {
 }
 
 func TestShell_EnvVarsApplied(t *testing.T) {
+	requireShellBackend(t)
 	s := NewShell()
 	echo := "echo $FORCEFIELD_TEST_VAR"
-	if runtime.GOOS == "windows" {
-		echo = "echo %FORCEFIELD_TEST_VAR%"
-	}
 	result, err := s.Execute(context.Background(), map[string]any{
 		"command": echo,
 		"env":     map[string]any{"FORCEFIELD_TEST_VAR": "applied"},
@@ -135,6 +129,7 @@ func TestShell_EnvVarsApplied(t *testing.T) {
 }
 
 func TestShell_FinishesWithErrorFieldsPopulated(t *testing.T) {
+	requireShellBackend(t)
 	s := NewShell()
 	result, err := s.Execute(context.Background(), map[string]any{"command": commandChain("echo before", "exit 9")})
 	if err != nil {

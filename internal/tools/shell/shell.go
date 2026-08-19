@@ -7,10 +7,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
-	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"forcefield/internal/tools"
@@ -37,20 +37,29 @@ const waitDelay = time.Second
 // captured through pipes, sanitized, and handed to the caller as plain
 // Result/StreamChunk data that flows through the runtime's event system;
 // the TUI decides how (and whether) to render it.
-type Shell struct{}
+type Shell struct {
+	// backendMu guards the one-time backend probe below.
+	backendMu sync.Mutex
+	// backendErr caches the result of probing the Bash execution backend
+	// (WSL availability on Windows; see ensureBackend, a no-op on Unix).
+	// A nil backendErr with backendProbed set means the backend is healthy.
+	backendErr    error
+	backendProbed bool
+}
 
 // NewShell returns a ready-to-register Shell tool.
 func NewShell() *Shell { return &Shell{} }
 
-func (Shell) Name() string { return "shell" }
+func (*Shell) Name() string { return "shell" }
 
-func (Shell) Description() string {
+func (*Shell) Description() string {
 	return "Execute a shell command and return its stdout, stderr, and exit code. " +
+		"Commands are executed using GNU Bash. " +
 		"Runs in the current project directory unless a working directory is given. " +
 		"Commands that require an interactive terminal (editors, pagers, ssh, REPLs, etc.) are not supported."
 }
 
-func (Shell) InputSchema() map[string]any {
+func (*Shell) InputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -77,7 +86,7 @@ func (Shell) InputSchema() map[string]any {
 
 // Metadata advertises shell's execution characteristics to the scheduler
 // and the model. Shell always requires explicit approval to run.
-func (Shell) Metadata() tools.Metadata {
+func (*Shell) Metadata() tools.Metadata {
 	return tools.Metadata{
 		Timeout:              defaultTimeout,
 		SupportsStreaming:    true,
@@ -136,7 +145,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		if wd, err := os.Getwd(); err == nil {
 			cwd = wd
 		}
-	} else if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+	} else if !validWorkingDir(cwd) {
 		// Fail as a tool Result (not a Go error) so the model sees a clear,
 		// retryable message instead of an opaque execution failure.
 		return tools.Result{
@@ -159,9 +168,23 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		timeout = time.Duration(secs * float64(time.Second))
 	}
 
-	env, err := buildEnv(args)
+	envPairs, err := extraEnvArgs(args)
 	if err != nil {
 		return tools.Result{}, err
+	}
+
+	// Probe the Bash execution backend once per Shell (WSL availability on
+	// Windows, a no-op on Unix) before spawning anything, so an unusable
+	// backend yields one clear structured error instead of a confusing
+	// per-command failure that looks like the command's own fault.
+	if err := s.ensureBackend(ctx); err != nil {
+		return tools.Result{
+			IsError:  true,
+			Content:  err.Error(),
+			ExitCode: -1,
+			Tool:     "shell",
+			Command:  command,
+		}, nil
 	}
 
 	runCtx := ctx
@@ -171,9 +194,23 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		defer cancel()
 	}
 
-	cmd := shellCommand(runCtx, command)
-	cmd.Dir = cwd
-	cmd.Env = env
+	// buildCommand decides how Bash is reached on this platform: natively on
+	// Unix, through wsl.exe on Windows. It owns cmd.Dir/cmd.Env because the
+	// two backends handle working directory and environment completely
+	// differently. cleanup, when non-nil, releases backend-side staging
+	// resources (e.g. a spilled script file) once the command has run.
+	cmd, cleanup, err := buildCommand(runCtx, command, cwd, envPairs)
+	if err != nil {
+		return tools.Result{
+			IsError: true,
+			Content: err.Error(),
+			Tool:    "shell",
+			Command: command,
+		}, nil
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
 
 	// Explicitly isolate the child from the real terminal:
 	//   - Stdin: nil makes Go connect it to the null device, so a command
@@ -186,24 +223,35 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 
 	// Put the child in its own process group and take over Cancel so that
 	// when runCtx is done (parent cancellation or our own timeout), we
-	// kill the whole subtree - not just the immediate `sh` process - and
-	// don't let Wait() hang forever on a grandchild still holding a pipe
-	// open.
+	// kill the whole subtree - not just the immediate `sh` process.
 	setProcessGroup(cmd)
 	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 	cmd.WaitDelay = waitDelay
 
-	stdoutPipe, err := cmd.StdoutPipe()
+	// Own the pipes instead of using StdoutPipe/StderrPipe. The latter are
+	// closed by cmd.Wait, so waiting for the readers before calling Wait can
+	// deadlock when a descendant keeps an inherited pipe handle open. With
+	// explicit pipes, Wait can run concurrently and cancellation can close
+	// the readers to unblock the stream goroutines immediately.
+	stdoutReader, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		return tools.Result{}, fmt.Errorf("shell: create stdout pipe: %w", err)
 	}
-	stderrPipe, err := cmd.StderrPipe()
+	stderrReader, stderrWriter, err := os.Pipe()
 	if err != nil {
+		_ = stdoutReader.Close()
+		_ = stdoutWriter.Close()
 		return tools.Result{}, fmt.Errorf("shell: create stderr pipe: %w", err)
 	}
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
 
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
+		_ = stdoutReader.Close()
+		_ = stdoutWriter.Close()
+		_ = stderrReader.Close()
+		_ = stderrWriter.Close()
 		// Start failures (bad cwd, missing interpreter, permission denied)
 		// are reported as Results like every other command failure, so the
 		// model always gets stdout/stderr/exit-code-shaped feedback.
@@ -216,16 +264,45 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 			DurationMs: time.Since(started).Milliseconds(),
 		}, nil
 	}
+	// The child owns the duplicated write handles after Start. Keeping the
+	// parent's copies open would prevent EOF when the command exits.
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
 
 	var stdout, stderr strings.Builder
-	done := make(chan struct{}, 2)
+	pipeDone := make(chan struct{}, 2)
+	pipesFinished := make(chan struct{})
+	go func() {
+		<-pipeDone
+		<-pipeDone
+		close(pipesFinished)
+	}()
 
-	go streamPipe(stdoutPipe, "stdout", &stdout, onChunk, done)
-	go streamPipe(stderrPipe, "stderr", &stderr, onChunk, done)
-	<-done
-	<-done
+	go streamPipe(stdoutReader, "stdout", &stdout, onChunk, pipeDone)
+	go streamPipe(stderrReader, "stderr", &stderr, onChunk, pipeDone)
 
-	waitErr := cmd.Wait()
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+
+	// Wait for the process first. On cancellation, CommandContext invokes
+	// cmd.Cancel and this returns after the process is killed. On normal
+	// completion, this also avoids making process completion depend on a
+	// descendant that inherited stdout/stderr.
+	waitErr := <-waitDone
+
+	// Let readers drain naturally, but never wait forever for a descendant
+	// that retained an inherited pipe handle. Closing the read ends also
+	// unblocks streamPipe, allowing the result to return after cancellation
+	// or after a short bounded drain window on normal completion.
+	select {
+	case <-pipesFinished:
+	case <-time.After(waitDelay):
+		_ = stdoutReader.Close()
+		_ = stderrReader.Close()
+		<-pipesFinished
+	}
+	_ = stdoutReader.Close()
+	_ = stderrReader.Close()
 	duration := time.Since(started)
 
 	exitCode := 0
@@ -262,6 +339,25 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 			Tool:       "shell",
 			Command:    command,
 		}, nil
+	}
+
+	// Distinguish backend infrastructure failures (e.g. WSL's distribution
+	// failing to start or mount mid-session) from the command's own errors,
+	// so the model learns its command never properly ran instead of seeing
+	// an unexplained non-zero exit from Bash.
+	if !success {
+		if detail, hint := backendFailure(stderr.String(), stdout.String()); hint != "" {
+			return tools.Result{
+				IsError:    true,
+				Content:    fmt.Sprintf("shell backend error: WSL could not run the command: %s\n%s", detail, hint),
+				ExitCode:   exitCode,
+				Stdout:     stdout.String(),
+				Stderr:     stderr.String(),
+				DurationMs: duration.Milliseconds(),
+				Tool:       "shell",
+				Command:    command,
+			}, nil
+		}
 	}
 
 	content := stdout.String()
@@ -427,7 +523,7 @@ func detectInteractiveCommand(command string) (string, bool) {
 			if isAssignment(field) {
 				continue
 			}
-			name := strings.TrimSuffix(filepath.Base(unquote(field)), ".exe")
+			name := strings.TrimSuffix(commandBaseName(unquote(field)), ".exe")
 			if wrapperCommands[name] {
 				continue
 			}
@@ -477,6 +573,20 @@ func splitFields(segment string) []string {
 	return fields
 }
 
+// commandBaseName returns the final path component of word, splitting on
+// both "/" and "\". Bash commands are agent-authored text, not host
+// filesystem paths, so the split can't use filepath.Base: its separator is
+// platform-dependent (only ":" and "/" are volume/separator characters on
+// Unix builds), which would leave a Windows-style path like
+// `C:\Program Files\vim.exe` un-split - and therefore invisible to
+// detectInteractiveCommand - when Forcefield itself runs on Linux/macOS.
+func commandBaseName(word string) string {
+	if i := strings.LastIndexAny(word, `/\`); i >= 0 {
+		return word[i+1:]
+	}
+	return word
+}
+
 // unquote strips one level of matching single or double quotes from word,
 // so a quoted program name (`"C:\Program Files\vim.exe"`) is still
 // recognized.
@@ -509,40 +619,34 @@ func isAssignment(field string) bool {
 	return true
 }
 
-// buildEnv merges the current process environment with any extra
-// variables supplied under the "env" argument. A malformed env argument is
-// an argument error rather than being silently dropped: the caller asked
-// for variables the command would then run without.
-func buildEnv(args map[string]any) ([]string, error) {
-	env := os.Environ()
-
+// extraEnvArgs returns the environment variables supplied under the "env"
+// argument as K=V pairs, sorted by key for deterministic ordering. Only the
+// extras are returned: how they merge into the child's environment is a
+// backend decision (appended to os.Environ natively; passed to `env` inside
+// WSL, since WSL does not forward arbitrary Windows variables into the
+// distribution). A malformed env argument is an argument error rather than
+// being silently dropped: the caller asked for variables the command would
+// then run without.
+func extraEnvArgs(args map[string]any) ([]string, error) {
 	raw, ok := args["env"]
 	if !ok {
-		return env, nil
+		return nil, nil
 	}
 	extra, ok := raw.(map[string]any)
 	if !ok {
 		return nil, &tools.ArgumentError{Field: "env", Reason: "must be an object of string key/value pairs"}
 	}
 
+	pairs := make([]string, 0, len(extra))
 	for k, v := range extra {
 		s, ok := v.(string)
 		if !ok {
 			return nil, &tools.ArgumentError{Field: "env", Reason: fmt.Sprintf("value for %q must be a string", k)}
 		}
-		env = append(env, fmt.Sprintf("%s=%s", k, s))
+		pairs = append(pairs, k+"="+s)
 	}
-	return env, nil
-}
-
-// shellCommand builds the *exec.Cmd for running command through the
-// platform's shell, using CommandContext so ctx cancellation/timeout
-// terminates the process.
-func shellCommand(ctx context.Context, command string) *exec.Cmd {
-	if runtime.GOOS == "windows" {
-		return exec.CommandContext(ctx, "cmd", "/C", command)
-	}
-	return exec.CommandContext(ctx, "sh", "-c", command)
+	sort.Strings(pairs)
+	return pairs, nil
 }
 
 func toFloat(v any) (float64, bool) {

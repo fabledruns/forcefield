@@ -2,6 +2,10 @@ package runtime
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"forcefield/internal/agent"
@@ -144,5 +148,60 @@ func TestRunUsesStreamingAgentLoop(t *testing.T) {
 	}
 	if provider.calls != 2 {
 		t.Errorf("provider calls = %d, want 2", provider.calls)
+	}
+}
+
+// TestRunSurvivesRateLimitedTurn is the regression test for runs that used
+// to abort the whole agent loop on the provider's first 429: a real
+// NvidiaProvider (over an httptest server) gets rate-limited on the first
+// request, then serves a tool-call turn and a final turn. The run must
+// recover via the provider's retry layer and complete instead of failing
+// with EventError.
+func TestRunSurvivesRateLimitedTurn(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch requests.Add(1) {
+		case 1:
+			// Retry-After: 0 makes the default retry policy retry
+			// immediately, so the test needs no timing hooks.
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error":{"message":"rate limit exceeded, please retry"}}`)
+		case 2:
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"value\\\":\\\"x\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		default:
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"all done\"},\"finish_reason\":\"stop\"}]}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}
+	}))
+	defer server.Close()
+
+	rt := newTestRuntime(providers.NewNvidiaProvider(server.URL, "test-model", "", nil))
+
+	events, err := rt.StreamChat(context.Background(), []providers.Message{{Role: providers.UserRole, Content: "use a tool"}})
+	if err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
+	}
+
+	var done bool
+	for event := range events {
+		if event.Type == EventError {
+			t.Fatalf("run aborted on rate limit: %v", event.Err)
+		}
+		if event.Type == EventDone {
+			done = true
+			if event.Response == nil || event.Response.Content != "all done" {
+				t.Fatalf("final response = %#v, want all done", event.Response)
+			}
+		}
+	}
+	if !done {
+		t.Fatal("run finished without EventDone")
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("requests = %d, want 3 (rate-limited turn, tool turn, final turn)", got)
 	}
 }
