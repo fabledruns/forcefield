@@ -81,10 +81,23 @@ type nvidiaFunctionCall struct {
 
 // nvidiaChatRequest is the request body for POST /chat/completions.
 type nvidiaChatRequest struct {
-	Model    string          `json:"model"`
-	Messages []nvidiaMessage `json:"messages"`
-	Tools    []nvidiaTool    `json:"tools,omitempty"`
-	Stream   bool            `json:"stream"`
+	Model              string                    `json:"model"`
+	Messages           []nvidiaMessage           `json:"messages"`
+	Tools              []nvidiaTool              `json:"tools,omitempty"`
+	Stream             bool                      `json:"stream"`
+	ChatTemplateKwargs *nvidiaChatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
+}
+
+// nvidiaChatTemplateKwargs requests reasoning output from NIM-hosted
+// models that gate it behind this non-standard field instead of streaming
+// it unconditionally (GLM-5/5.1/5.2, several Qwen3 and MiniMax builds…).
+// Models that don't recognize the field simply ignore it, so it's safe to
+// send on every NVIDIA request rather than needing a per-model allowlist.
+// clear_thinking:false preserves reasoning across turns for agentic/tool
+// workflows, matching NVIDIA's own documented usage.
+type nvidiaChatTemplateKwargs struct {
+	EnableThinking bool `json:"enable_thinking"`
+	ClearThinking  bool `json:"clear_thinking"`
 }
 
 // nvidiaToolCallDelta is a partial tool call as it appears in a streamed
@@ -101,11 +114,19 @@ type nvidiaToolCallDelta struct {
 
 // nvidiaStreamChunk is the relevant subset of a streamed
 // /chat/completions response chunk (Server-Sent Events, OpenAI shape).
+//
+// Reasoning-capable models (DeepSeek-R1, Qwen3, Nemotron…) stream their
+// chain of thought separately from the answer, in delta.reasoning_content
+// (the field NIM documents) or delta.reasoning (the spelling some other
+// OpenAI-compatible gateways use). Both are surfaced as Thinking events;
+// models that reason inline or not at all simply never set them.
 type nvidiaStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string                `json:"content"`
-			ToolCalls []nvidiaToolCallDelta `json:"tool_calls"`
+			Content          string                `json:"content"`
+			ReasoningContent string                `json:"reasoning_content"`
+			Reasoning        string                `json:"reasoning"`
+			ToolCalls        []nvidiaToolCallDelta `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -133,6 +154,14 @@ func (n *NvidiaProvider) StreamChat(ctx context.Context, messages []Message, too
 		Messages: toNvidiaMessages(messages),
 		Tools:    toNvidiaTools(tools),
 		Stream:   true,
+		// Ask NIM to actually stream reasoning. Models that stream it
+		// unconditionally (or don't support reasoning at all) are
+		// unaffected; models that gate it behind this field (GLM-5.x and
+		// others) only emit reasoning_content deltas when it's set.
+		ChatTemplateKwargs: &nvidiaChatTemplateKwargs{
+			EnableThinking: true,
+			ClearThinking:  false,
+		},
 	}
 
 	payload, err := json.Marshal(reqBody)
@@ -184,13 +213,33 @@ func (n *NvidiaProvider) StreamChat(ctx context.Context, messages []Message, too
 			}
 		}
 
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
 		// pending buffers partial tool calls by their stream index until
 		// their arguments are complete.
 		pending := map[int]*nvidiaToolCallBuf{}
 		order := []int{}
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+		// finishTurn flushes any buffered tool calls and completes the
+		// stream. Every stream exit path funnels through here so partially
+		// received tool calls are never silently dropped just because the
+		// server omitted a "tool_calls" finish_reason - some NIM models end
+		// tool-call turns with "stop" or a bare [DONE], which previously
+		// left the runtime with an empty response that looked like a hang.
+		finishTurn := func() {
+			if len(order) > 0 {
+				calls, err := finalizeNvidiaToolCalls(pending, order)
+				if err != nil {
+					send(StreamEvent{Err: fmt.Errorf("decode nvidia tool call arguments: %w", err)})
+					return
+				}
+				if !send(StreamEvent{ToolCalls: calls}) {
+					return
+				}
+			}
+			send(StreamEvent{Done: true})
+		}
 
 		for scanner.Scan() {
 			if ctx.Err() != nil {
@@ -204,7 +253,7 @@ func (n *NvidiaProvider) StreamChat(ctx context.Context, messages []Message, too
 
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
-				send(StreamEvent{Done: true})
+				finishTurn()
 				return
 			}
 
@@ -224,6 +273,16 @@ func (n *NvidiaProvider) StreamChat(ctx context.Context, messages []Message, too
 			}
 
 			choice := chunk.Choices[0]
+
+			if reasoning := choice.Delta.ReasoningContent; reasoning != "" {
+				if !send(StreamEvent{Thinking: reasoning}) {
+					return
+				}
+			} else if reasoning := choice.Delta.Reasoning; reasoning != "" {
+				if !send(StreamEvent{Thinking: reasoning}) {
+					return
+				}
+			}
 
 			if choice.Delta.Content != "" {
 				if !send(StreamEvent{Text: choice.Delta.Content}) {
@@ -249,36 +308,21 @@ func (n *NvidiaProvider) StreamChat(ctx context.Context, messages []Message, too
 				}
 			}
 
-			switch choice.FinishReason {
-			case "":
-				// turn not finished yet, keep reading
-			case "tool_calls":
-				calls, err := finalizeNvidiaToolCalls(pending, order)
-				if err != nil {
-					send(StreamEvent{Err: fmt.Errorf("decode nvidia tool call arguments: %w", err)})
-					return
-				}
-				if len(calls) > 0 {
-					if !send(StreamEvent{ToolCalls: calls}) {
-						return
-					}
-				}
-				send(StreamEvent{Done: true})
-				return
-			case "stop", "length", "content_filter":
-				send(StreamEvent{Done: true})
-				return
-			default:
-				// Unknown finish reason: treat the turn as complete rather
-				// than looping forever, but don't fail the whole stream.
-				send(StreamEvent{Done: true})
+			if choice.FinishReason != "" {
+				// Any finish reason ends the turn; finishTurn decides
+				// whether buffered tool calls need to be delivered first.
+				finishTurn()
 				return
 			}
 		}
 
 		if err := scanner.Err(); err != nil {
 			send(StreamEvent{Err: err})
+			return
 		}
+		// Stream ended without [DONE] or a finish reason (EOF): still a
+		// complete turn as far as the runtime is concerned.
+		finishTurn()
 	}()
 
 	return events, nil

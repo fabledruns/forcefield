@@ -27,6 +27,11 @@ type chatEntry struct {
 	// Tool, when set on a roleActivity entry, holds the structured details
 	// behind the one-line tool summary so it can be expanded (ctrl+e).
 	Tool *toolRecord
+
+	// Thinking, when set on a roleActivity entry, holds the reasoning a
+	// reasoning-capable model streamed before its answer, so it can be
+	// expanded (ctrl+r) instead of living in the assistant message.
+	Thinking *thinkingRecord
 }
 
 // render turns a chatEntry into its final styled, word-wrapped form.
@@ -41,6 +46,9 @@ func (e chatEntry) render(width int) string {
 		body := renderMarkdown(e.Content, width, e.Streaming)
 		return fmt.Sprintf("%s\n%s", label, body)
 	case roleActivity:
+		if e.Thinking != nil {
+			return renderThinking(e.Thinking, width)
+		}
 		if e.Tool != nil {
 			style := toolStatusStyle(e.Tool)
 			caret := IconCollapsed

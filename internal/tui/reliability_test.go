@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -142,6 +143,164 @@ func TestEventThinkingSetsStatusLabel(t *testing.T) {
 	got := next.(model)
 	if got.status != "Thinking" {
 		t.Errorf("status = %q, want %q", got.status, "Thinking")
+	}
+}
+
+// TestThinkingChunksAccumulateAcrossEvents makes sure multiple streamed
+// reasoning deltas append into the same live Thinking block rather than
+// creating a new one per chunk, matching how the NVIDIA provider streams
+// reasoning_content one fragment at a time.
+func TestThinkingChunksAccumulateAcrossEvents(t *testing.T) {
+	m := sizedModel()
+	m.streamGen = 1
+	m.stream = make(chan runtime.Event, 1)
+	m.waiting = true
+
+	chunks := []string{"I need to check the file first", " then compile it", " then run it"}
+	var next tea.Model = m
+	for _, c := range chunks {
+		next, _ = next.(model).Update(streamEventMsg{
+			Event: runtime.Event{Type: runtime.EventThinking, Thinking: c},
+			gen:   1,
+		})
+	}
+	got := next.(model)
+
+	thinkingEntries := 0
+	var text string
+	for _, e := range got.entries {
+		if e.Thinking != nil {
+			thinkingEntries++
+			text = e.Thinking.text
+		}
+	}
+	if thinkingEntries != 1 {
+		t.Fatalf("got %d Thinking entries, want 1 (chunks should accumulate into a single block)", thinkingEntries)
+	}
+	want := strings.Join(chunks, "")
+	if text != want {
+		t.Errorf("Thinking.text = %q, want %q", text, want)
+	}
+}
+
+// TestReasoningDoesNotLeakIntoAssistantContent verifies that reasoning
+// deltas are kept entirely separate from the assistant's answer: the
+// transcript's assistant entry and the persisted assistantBuffer must
+// never contain streamed reasoning text.
+func TestReasoningDoesNotLeakIntoAssistantContent(t *testing.T) {
+	m := sizedModel()
+	m.streamGen = 1
+	m.stream = make(chan runtime.Event, 1)
+	m.waiting = true
+
+	var next tea.Model = m
+	next, _ = next.(model).Update(streamEventMsg{
+		Event: runtime.Event{Type: runtime.EventThinking, Thinking: "the model's private chain of thought"},
+		gen:   1,
+	})
+	next, _ = next.(model).Update(streamEventMsg{
+		Event: runtime.Event{Type: runtime.EventText, Text: "Here is the answer."},
+		gen:   1,
+	})
+	got := next.(model)
+
+	if strings.Contains(got.assistantBuffer, "chain of thought") {
+		t.Errorf("assistantBuffer leaked reasoning text: %q", got.assistantBuffer)
+	}
+	for _, e := range got.entries {
+		if e.Role == roleAssistant && strings.Contains(e.Content, "chain of thought") {
+			t.Errorf("assistant entry leaked reasoning text: %q", e.Content)
+		}
+	}
+
+	found := false
+	for _, e := range got.entries {
+		if e.Thinking != nil && e.Thinking.text == "the model's private chain of thought" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("reasoning text was not recorded in a Thinking entry")
+	}
+}
+
+// TestThinkingBlockClosesWhenAssistantTextStarts ensures the live
+// reasoning block stops streaming (freezes its duration) once the model
+// moves on to answer text, so the Thinking header collapses instead of
+// continuing to grow indefinitely.
+func TestThinkingBlockClosesWhenAssistantTextStarts(t *testing.T) {
+	m := sizedModel()
+	m.streamGen = 1
+	m.stream = make(chan runtime.Event, 1)
+	m.waiting = true
+
+	var next tea.Model = m
+	next, _ = next.(model).Update(streamEventMsg{
+		Event: runtime.Event{Type: runtime.EventThinking, Thinking: "thinking..."},
+		gen:   1,
+	})
+	next, _ = next.(model).Update(streamEventMsg{
+		Event: runtime.Event{Type: runtime.EventText, Text: "answer"},
+		gen:   1,
+	})
+	got := next.(model)
+
+	for _, e := range got.entries {
+		if e.Thinking != nil && e.Thinking.streaming() {
+			t.Error("Thinking block still marked as streaming after assistant text started")
+		}
+	}
+}
+
+// TestToggleThinkingExpansionFlipsMostRecentBlock covers ctrl+r: it should
+// expand a collapsed Thinking block and collapse it back on a second call,
+// without touching earlier Thinking blocks from prior turns.
+func TestToggleThinkingExpansionFlipsMostRecentBlock(t *testing.T) {
+	m := sizedModel()
+	m.entries = []chatEntry{
+		{Role: roleActivity, Thinking: &thinkingRecord{text: "older turn", startedAt: time.Now(), endedAt: time.Now()}},
+		{Role: roleActivity, Thinking: &thinkingRecord{text: "latest turn", startedAt: time.Now(), endedAt: time.Now()}},
+	}
+
+	m.toggleThinkingExpansion()
+	if !m.entries[1].Thinking.expanded {
+		t.Error("most recent Thinking block should be expanded after toggle")
+	}
+	if m.entries[0].Thinking.expanded {
+		t.Error("older Thinking block should be untouched by toggle")
+	}
+
+	m.toggleThinkingExpansion()
+	if m.entries[1].Thinking.expanded {
+		t.Error("most recent Thinking block should collapse back on second toggle")
+	}
+}
+
+// TestThinkingAbsentWhenProviderSendsNone confirms providers/models that
+// never emit reasoning (e.g. Ollama, or an NVIDIA model without a
+// reasoning_content/reasoning field) produce no Thinking entries at all -
+// the block must not appear, let alone be fabricated.
+func TestThinkingAbsentWhenProviderSendsNone(t *testing.T) {
+	m := sizedModel()
+	m.streamGen = 1
+	m.stream = make(chan runtime.Event, 1)
+	m.waiting = true
+
+	var next tea.Model = m
+	next, _ = next.(model).Update(streamEventMsg{
+		Event: runtime.Event{Type: runtime.EventThinking}, // empty payload: turn start marker only
+		gen:   1,
+	})
+	next, _ = next.(model).Update(streamEventMsg{
+		Event: runtime.Event{Type: runtime.EventText, Text: "plain answer, no reasoning"},
+		gen:   1,
+	})
+	got := next.(model)
+
+	for _, e := range got.entries {
+		if e.Thinking != nil {
+			t.Errorf("unexpected Thinking entry for a provider that sent no reasoning: %+v", e.Thinking)
+		}
 	}
 }
 

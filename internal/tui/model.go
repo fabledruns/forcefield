@@ -121,8 +121,9 @@ type model struct {
 	cancelStream context.CancelFunc
 
 	// showActivity toggles the transient model-activity labels (Thinking,
-	// Planning, Running…) in the footer. It never exposes chain-of-thought
-	// content, only short status labels.
+	// Planning, Running…) in the footer. Footer labels stay one-line
+	// status phrases; the reasoning text itself lives in the transcript's
+	// collapsible Thinking blocks, not here.
 	showActivity bool
 
 	// lastKeyAt timestamps the most recent key event, for paste-burst
@@ -321,17 +322,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, waitForChunk(m.stream, m.streamGen)
 			}
 			m.status = ""
+			m.finishThinkingStream()
 			m.appendAssistantText(msg.Event.Text)
 			m.assistantBuffer += msg.Event.Text
 		case runtime.EventThinking:
-			// Provider thinking content remains available to other runtime
-			// consumers. The terminal presents a concise, transient status
-			// label only - never the chain-of-thought text itself.
+			// Reasoning deltas stream into the transcript's collapsible
+			// Thinking block as the model thinks. An empty payload marks
+			// the start of a new model turn, closing out the previous
+			// turn's block; only reasoning the provider explicitly sent is
+			// ever shown.
 			if msg.Event.Thinking != "" {
+				m.appendThinking(msg.Event.Thinking)
 				m.status = "Thinking"
+			} else {
+				m.finishThinkingStream()
 			}
 		case runtime.EventToolStart:
 			m.finishAssistantStream()
+			m.finishThinkingStream()
 			m.startToolActivity(msg.Event.ToolCall)
 		case runtime.EventToolProgress:
 			m.updateToolActivity(msg.Event.ToolProgress)
@@ -412,6 +420,7 @@ func (m *model) stopStream(savePartial bool) {
 	m.status = ""
 	m.activeTools = make(map[string]int)
 	m.finishAssistantStream()
+	m.finishThinkingStream()
 	if savePartial {
 		if text := strings.TrimSpace(m.assistantBuffer); text != "" {
 			m.session.AddMessage("assistant", text)
@@ -426,6 +435,60 @@ func (m *model) appendAssistantText(text string) {
 		m.entries = append(m.entries, chatEntry{Role: roleAssistant, Streaming: true})
 	}
 	m.entries[len(m.entries)-1].Content += text
+}
+
+// appendThinking appends one streamed reasoning chunk to the transcript's
+// live Thinking block, creating the block on the turn's first chunk. The
+// text never flows into the assistant entry or assistantBuffer, which only
+// EventText feeds.
+func (m *model) appendThinking(text string) {
+	if text == "" {
+		return
+	}
+	if i := m.lastStreamingThinking(); i >= 0 {
+		m.entries[i].Thinking.text += text
+		return
+	}
+	m.entries = append(m.entries, chatEntry{
+		Role:     roleActivity,
+		Thinking: &thinkingRecord{text: text, startedAt: time.Now()},
+	})
+}
+
+// lastStreamingThinking returns the index of the live Thinking block, or
+// -1 when none is streaming. Scanning stops at the most recent thinking
+// entry: if it is already closed, later reasoning belongs to a new block.
+func (m *model) lastStreamingThinking() int {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Thinking != nil {
+			if m.entries[i].Thinking.streaming() {
+				return i
+			}
+			return -1
+		}
+	}
+	return -1
+}
+
+// finishThinkingStream freezes the live Thinking block's duration and
+// collapses it to its summary line. Called when the turn moves on to
+// answer text, tool calls, or completion.
+func (m *model) finishThinkingStream() {
+	if i := m.lastStreamingThinking(); i >= 0 {
+		m.entries[i].Thinking.endedAt = time.Now()
+	}
+}
+
+// toggleThinkingExpansion flips the expanded view of the most recent
+// Thinking block (ctrl+r). Blocks stay collapsed by default once the
+// reasoning has finished streaming.
+func (m *model) toggleThinkingExpansion() {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Thinking != nil {
+			m.entries[i].Thinking.expanded = !m.entries[i].Thinking.expanded
+			return
+		}
+	}
 }
 
 func (m *model) finishAssistantStream() {
@@ -614,6 +677,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyCtrlE:
 		m.toggleToolExpansion()
+		m.refreshTranscript()
+		return m, nil
+
+	case tea.KeyCtrlR:
+		m.toggleThinkingExpansion()
 		m.refreshTranscript()
 		return m, nil
 
@@ -968,7 +1036,7 @@ func (m model) renderFooter() string {
 
 	inputBox := inputBorderStyle.Width(m.width - 2).Render(m.input.View())
 
-	status := helpStyle.Render("enter send · alt+enter newline · ctrl+e tool · ctrl+t status · esc quit")
+	status := helpStyle.Render("enter send · alt+enter newline · ctrl+e tool · ctrl+r think · ctrl+t status · esc quit")
 	if m.waiting {
 		activity := ""
 		if m.showActivity {
