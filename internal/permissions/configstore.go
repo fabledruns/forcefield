@@ -10,7 +10,7 @@ import (
 // ~/.forcefield/config.yaml, leaving the rest of the file untouched.
 type configStore struct{}
 
-// NewConfigStore returns a Store backed by Forcefield's normal config.yaml.
+// NewConfigStore returns a config-backed Store.
 func NewConfigStore() Store {
 	return configStore{}
 }

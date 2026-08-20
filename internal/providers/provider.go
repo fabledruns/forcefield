@@ -1,7 +1,4 @@
-// Package providers defines the ModelProvider interface and its
-// implementations. In this prototype there is exactly one implementation
-// (Ollama), but the interface exists so a second provider can be added
-// later without touching agent or runtime code.
+// Package providers defines the runtime-facing model provider interfaces.
 package providers
 
 import (

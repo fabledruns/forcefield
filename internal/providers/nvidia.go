@@ -67,8 +67,6 @@ type nvidiaFunction struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
-// nvidiaToolCall is a complete (non-streamed) tool call, used when sending
-// prior assistant messages back to the API.
 type nvidiaToolCall struct {
 	ID       string             `json:"id"`
 	Function nvidiaFunctionCall `json:"function"`
@@ -79,7 +77,6 @@ type nvidiaFunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 
-// nvidiaChatRequest is the request body for POST /chat/completions.
 type nvidiaChatRequest struct {
 	Model              string                    `json:"model"`
 	Messages           []nvidiaMessage           `json:"messages"`
@@ -100,9 +97,6 @@ type nvidiaChatTemplateKwargs struct {
 	ClearThinking  bool `json:"clear_thinking"`
 }
 
-// nvidiaToolCallDelta is a partial tool call as it appears in a streamed
-// delta. Index identifies which tool call this fragment belongs to;
-// ID/Name/Arguments may each be empty and are appended incrementally.
 type nvidiaToolCallDelta struct {
 	Index    int    `json:"index"`
 	ID       string `json:"id"`
@@ -136,8 +130,6 @@ type nvidiaStreamChunk struct {
 	} `json:"error"`
 }
 
-// nvidiaToolCallBuf accumulates a streamed tool call's fragments (ID, name,
-// and raw argument text) until finish_reason confirms it is complete.
 type nvidiaToolCallBuf struct {
 	ID      string
 	Name    string
@@ -213,8 +205,6 @@ func (n *NvidiaProvider) StreamChat(ctx context.Context, messages []Message, too
 			}
 		}
 
-		// pending buffers partial tool calls by their stream index until
-		// their arguments are complete.
 		pending := map[int]*nvidiaToolCallBuf{}
 		order := []int{}
 
@@ -328,9 +318,6 @@ func (n *NvidiaProvider) StreamChat(ctx context.Context, messages []Message, too
 	return events, nil
 }
 
-// finalizeNvidiaToolCalls parses the buffered argument strings into
-// ToolCall.Arguments now that streaming is complete, in the order the
-// tool calls first appeared.
 func finalizeNvidiaToolCalls(pending map[int]*nvidiaToolCallBuf, order []int) ([]ToolCall, error) {
 	calls := make([]ToolCall, 0, len(order))
 	for _, idx := range order {

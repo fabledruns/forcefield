@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-// memStore is an in-memory Store used purely for testing the Manager
-// without touching disk.
 type memStore struct {
 	mu    sync.Mutex
 	rules Rules
@@ -59,7 +57,6 @@ func TestUpdatePersists(t *testing.T) {
 		t.Errorf("store.saves = %d, want 1", store.saves)
 	}
 
-	// A fresh Manager built from the same store should see the update.
 	m2, err := NewManager(store)
 	if err != nil {
 		t.Fatalf("NewManager (reload): %v", err)

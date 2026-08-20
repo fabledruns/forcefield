@@ -2,8 +2,7 @@ package permissions
 
 import "context"
 
-// Request describes the tool invocation an Asker is being asked to
-// approve or reject.
+// Request identifies the tool invocation being approved or rejected.
 type Request struct {
 	Tool      string
 	Arguments map[string]any
@@ -26,7 +25,6 @@ const (
 	PromptAlwaysDeny
 )
 
-// Decision reports the Decision implied by p, ignoring persistence.
 func (p Prompt) Decision() Decision {
 	switch p {
 	case PromptAllowOnce, PromptAlwaysAllow:
@@ -36,8 +34,6 @@ func (p Prompt) Decision() Decision {
 	}
 }
 
-// Persist reports whether p should be written back to the Manager's rule
-// set (the "always" answers) rather than applied just once.
 func (p Prompt) Persist() bool {
 	return p == PromptAlwaysAllow || p == PromptAlwaysDeny
 }

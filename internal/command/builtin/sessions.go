@@ -14,10 +14,10 @@ type Sessions struct{}
 
 func NewSessions() *Sessions { return &Sessions{} }
 
-func (Sessions) Name() string 		 { return "sessions" }
-func (Sessions) Aliases() []string 	 { return []string{"s"} }
+func (Sessions) Name() string        { return "sessions" }
+func (Sessions) Aliases() []string   { return []string{"s"} }
 func (Sessions) Description() string { return "Switch between saved chat sessions." }
-func (Sessions) Usage() string 		 { return "/sessions" }
+func (Sessions) Usage() string       { return "/sessions" }
 
 // Execute loads the saved sessions once and hands them to the TUI's
 // session picker. Loading stays here (in a package with no Bubble Tea

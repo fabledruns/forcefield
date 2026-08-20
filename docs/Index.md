@@ -14,7 +14,7 @@ You can find the index of the contents in this file.
 
 | Name                      | Package     | Description                                                                                                     |
 | ------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------- |
-| [Agent](Agent.md)         | `agent`     | Defines the `Agent` type and builds the final system prompt by combining the agent identity with loaded skills. |
+| [Agent](Agent.md)         | `agent`     | Defines the `Agent` type and builds the final system prompt from identity, operating contract, project memory, and skills. |
 | [Command](Command.md)     | `command`   | Implements slash command parsing and execution for interactive chat.                                            |
 | [Config](Config.md)       | `config`    | Loads, validates, and manages Forcefield's global YAML configuration file.                                      |
 | [Providers](Providers.md) | `providers` | Defines the model provider interface and its implementations for communicating with LLMs.                       |

@@ -10,18 +10,18 @@ const (
 )
 
 type Message struct {
-    Role    Role
-    Content string
+	Role    Role
+	Content string
 
-    ToolCalls []ToolCall
+	ToolCalls []ToolCall
 
-    ToolCallID string
-    Name       string
+	ToolCallID string
+	Name       string
 }
 
 type ToolCall struct {
 	ID        string
-	Name 	  string
+	Name      string
 	Arguments map[string]any
 }
 

@@ -5,15 +5,7 @@ import (
 	"strings"
 )
 
-// Dispatch parses line and, if it's a slash command, runs it against ctx
-// using reg to resolve the command name.
-//
-// The first return value reports whether line was a slash command at
-// all. When false, the caller should treat line as an ordinary chat
-// message instead, Dispatch never returns an error for non-command
-// input. When true, a non-nil error means the command was unrecognized
-// (with name suggestions included in the message) or that the resolved
-// command itself failed.
+// Dispatch parses and runs a slash command. It reports false for chat input.
 func Dispatch(ctx Context, reg *Registry, line string) (isCommand bool, err error) {
 	parsed, ok := Parse(line)
 	if !ok {
@@ -44,8 +36,6 @@ func unknownCommandError(reg *Registry, name string) error {
 	return fmt.Errorf("unknown command /%s — did you mean %s?", name, joinOr(formatted))
 }
 
-// joinOr joins items with commas and a trailing "or", e.g.
-// ["/exit", "/help"] -> "/exit or /help".
 func joinOr(items []string) string {
 	switch len(items) {
 	case 0:

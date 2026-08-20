@@ -18,5 +18,5 @@ package main
 import "forcefield/cmd"
 
 func main() {
-	cmd.Execute() // entrypoint
+	cmd.Execute()
 }

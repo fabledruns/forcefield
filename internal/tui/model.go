@@ -750,7 +750,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// A paste (or any edit) may have changed the input's line count or
 	// the suggestion list, either of which changes how tall the footer
 	// is, so re-derive the viewport size from the current content.
-		m.layout()
+	m.layout()
 	return m, cmd
 }
 
@@ -792,7 +792,6 @@ func (m *model) acceptInput() (startedStream bool, quit bool) {
 	m.refreshTranscript()
 	return true, false
 }
-
 
 // handlePickerKey processes keys while the /sessions modal is open. It
 // never touches the runtime or transcript directly except on Enter,

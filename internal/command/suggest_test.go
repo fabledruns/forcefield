@@ -14,7 +14,7 @@ func TestLevenshtein(t *testing.T) {
 		{"hlep", "help", 2},
 		{"exit", "exti", 2},
 		{"clear", "clear", 0},
-		{"kitten", "sitting", 3}, 
+		{"kitten", "sitting", 3},
 	}
 
 	for _, tt := range tests {

@@ -93,7 +93,7 @@ var (
 			Foreground(colorAccent)
 
 	statusErrorStyle = lipgloss.NewStyle().
-			Foreground(colorError)
+				Foreground(colorError)
 
 	statusWarnStyle = lipgloss.NewStyle().
 			Foreground(colorWarning)

@@ -20,9 +20,9 @@ type slowTool struct {
 	started chan<- string
 }
 
-func (t *slowTool) Name() string                     { return t.name }
-func (t *slowTool) Description() string               { return "slow" }
-func (t *slowTool) InputSchema() map[string]any        { return map[string]any{"type": "object"} }
+func (t *slowTool) Name() string                { return t.name }
+func (t *slowTool) Description() string         { return "slow" }
+func (t *slowTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
 func (t *slowTool) Execute(ctx context.Context, _ map[string]any) (tools.Result, error) {
 	if t.started != nil {
 		t.started <- t.name
@@ -110,8 +110,8 @@ type fixedResultTool struct {
 	delay time.Duration
 }
 
-func (t *fixedResultTool) Name() string              { return t.name }
-func (t *fixedResultTool) Description() string        { return "fixed" }
+func (t *fixedResultTool) Name() string                { return t.name }
+func (t *fixedResultTool) Description() string         { return "fixed" }
 func (t *fixedResultTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
 func (t *fixedResultTool) Execute(ctx context.Context, _ map[string]any) (tools.Result, error) {
 	if t.delay > 0 {
@@ -131,8 +131,8 @@ type flakyTool struct {
 	meta         tools.Metadata
 }
 
-func (t *flakyTool) Name() string              { return "flaky" }
-func (t *flakyTool) Description() string        { return "flaky" }
+func (t *flakyTool) Name() string                { return "flaky" }
+func (t *flakyTool) Description() string         { return "flaky" }
 func (t *flakyTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
 func (t *flakyTool) Metadata() tools.Metadata    { return t.meta }
 func (t *flakyTool) Execute(_ context.Context, _ map[string]any) (tools.Result, error) {
@@ -189,8 +189,8 @@ func TestScheduler_OneFailureDoesNotCancelSiblings(t *testing.T) {
 
 type fixedErrorTool struct{ name string }
 
-func (t *fixedErrorTool) Name() string              { return t.name }
-func (t *fixedErrorTool) Description() string        { return "fails" }
+func (t *fixedErrorTool) Name() string                { return t.name }
+func (t *fixedErrorTool) Description() string         { return "fails" }
 func (t *fixedErrorTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
 func (t *fixedErrorTool) Execute(context.Context, map[string]any) (tools.Result, error) {
 	return tools.Result{IsError: true, Content: "boom"}, nil
@@ -213,8 +213,8 @@ func TestScheduler_TimeoutProducesFailedResult(t *testing.T) {
 
 type blockingTool struct{ meta tools.Metadata }
 
-func (t *blockingTool) Name() string              { return "blocking" }
-func (t *blockingTool) Description() string        { return "blocks forever" }
+func (t *blockingTool) Name() string                { return "blocking" }
+func (t *blockingTool) Description() string         { return "blocks forever" }
 func (t *blockingTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
 func (t *blockingTool) Metadata() tools.Metadata    { return t.meta }
 func (t *blockingTool) Execute(ctx context.Context, _ map[string]any) (tools.Result, error) {
@@ -249,8 +249,8 @@ func TestScheduler_StreamingToolEmitsProgress(t *testing.T) {
 
 type streamingTool struct{}
 
-func (streamingTool) Name() string              { return "streaming" }
-func (streamingTool) Description() string        { return "streams" }
+func (streamingTool) Name() string                { return "streaming" }
+func (streamingTool) Description() string         { return "streams" }
 func (streamingTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
 func (streamingTool) Execute(ctx context.Context, args map[string]any) (tools.Result, error) {
 	return streamingTool{}.ExecuteStream(ctx, args, nil)

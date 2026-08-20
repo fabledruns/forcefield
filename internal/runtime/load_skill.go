@@ -9,9 +9,7 @@ import (
 	"forcefield/internal/tools"
 )
 
-// loadSkillTool is the model-facing tool for loading a skill's full body
-// by id. It delegates entirely to the Runtime's in-memory skills.Store —
-// no filesystem scan of the skills directory happens here.
+// loadSkillTool loads a skill body from the runtime's in-memory store.
 type loadSkillTool struct {
 	store *skills.Store
 }

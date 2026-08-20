@@ -1,6 +1,6 @@
 package tools
 
-// StringArg reads a required string argument named key out of args. 
+// StringArg reads a required string argument named key out of args.
 func StringArg(args map[string]any, key string) (string, error) {
 	v, ok := args[key]
 	if !ok {

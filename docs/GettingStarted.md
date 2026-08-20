@@ -77,7 +77,7 @@ model:
 agent:
   name: default
   system_prompt: |
-    You are a helpful coding assistant.
+    You are Forcefield, a local-first coding agent. Complete software tasks in real repositories: inspect, change, run, debug, and verify. Prefer a working, minimal result over advice or extra architecture.
 ```
 
 Edit `config.yaml` if your model name or endpoint is different.

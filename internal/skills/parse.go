@@ -15,8 +15,6 @@ type parsedSkill struct {
 	body        string
 }
 
-// parse extracts metadata from a skill file, falling back to sensible defaults
-// when frontmatter or metadata is missing.
 func parse(filename, raw string) parsedSkill {
 	base := strings.TrimSuffix(filename, filepath.Ext(filename))
 
@@ -47,8 +45,6 @@ func parse(filename, raw string) parsedSkill {
 	}
 }
 
-// splitFrontmatter extracts YAML frontmatter from the beginning of a Markdown
-// file. If the frontmatter is missing or invalid, ok is false.
 func splitFrontmatter(raw string) (fields map[string]string, body string, ok bool) {
 	lines := splitLines(raw)
 	if len(lines) == 0 || !isDelimiter(lines[0]) {
@@ -87,7 +83,6 @@ func splitFrontmatter(raw string) (fields map[string]string, body string, ok boo
 	return fields, raw[lines[closing].end:], true
 }
 
-// Accept both LF and CRLF frontmatter delimiters.
 func isDelimiter(l line) bool {
 	return strings.TrimRight(l.text, "\r") == "---"
 }
@@ -127,7 +122,6 @@ func firstHeading(s string) string {
 
 var nonIDChars = regexp.MustCompile(`[^a-z0-9]+`)
 
-// normalizeID converts arbitrary text into a lowercase kebab-case identifier.
 func normalizeID(s string) string {
 	return strings.Trim(nonIDChars.ReplaceAllString(strings.ToLower(s), "-"), "-")
 }

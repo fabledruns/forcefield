@@ -1,6 +1,4 @@
-// Package runtime wires together config, skills, the agent, and a model
-// provider to execute a single task. This is the "harness" itself: it
-// contains no business logic of its own beyond ordering these steps.
+// Package runtime coordinates the agent loop and its dependencies.
 package runtime
 
 import (
@@ -61,16 +59,11 @@ func New() (*Runtime, error) {
 		return nil, fmt.Errorf("resolve forcefield home: %w", err)
 	}
 
-	// Build the skill store once for the lifetime of this Runtime.
 	skillStore, err := skills.New(forcefieldHome)
 	if err != nil {
 		return nil, fmt.Errorf("load skill store: %w", err)
 	}
 
-	// Resolve the current project's memory store (by Git root, falling
-	// back to the working directory) and load whatever's already been
-	// remembered into the agent's system prompt. A fresh checkout with
-	// no memory yet loads an empty store, not an error.
 	projectMemory, err := memory.CurrentProjectStore(forcefieldHome)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project memory store: %w", err)
@@ -110,10 +103,6 @@ func New() (*Runtime, error) {
 		return nil, fmt.Errorf("load permissions: %w", err)
 	}
 
-	// StdinAsker is the default interactive surface for "ask" decisions.
-	// It works out of the box for "ff run" and any other plain-terminal
-	// entry point; the TUI replaces it via SetPermissionAsker with one
-	// that renders an in-app modal instead of writing to raw stdin.
 	asker := permissions.NewStdinAsker()
 
 	return &Runtime{
@@ -158,8 +147,11 @@ func (r *Runtime) Permissions() *permissions.Manager {
 	return r.scheduler.permissions
 }
 
-func (r *Runtime) CurrentModel() string    { return r.cfg.Model.Name }     // CurrentModel returns the name of the model currently in use.
-func (r *Runtime) CurrentProvider() string { return r.cfg.Model.Provider } // CurrentProvider returns the name of the provider currently in use.
+// CurrentModel returns the active model name.
+func (r *Runtime) CurrentModel() string { return r.cfg.Model.Name }
+
+// CurrentProvider returns the active provider name.
+func (r *Runtime) CurrentProvider() string { return r.cfg.Model.Provider }
 
 // SetModel switches the active model, keeping the current provider and
 // endpoint, and takes effect starting with the next request.
@@ -220,9 +212,7 @@ func (r *Runtime) buildMessages(history []providers.Message) []providers.Message
 	return messages
 }
 
-// StreamChat runs the agent loop and emits its structured events as they
-// happen. Model text, tool calls, tool results, and the final response all
-// flow through this single execution path.
+// StreamChat runs the agent loop and emits structured events.
 func (r *Runtime) StreamChat(ctx context.Context, messages []providers.Message) (<-chan Event, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("stream context cannot be nil")
@@ -249,13 +239,12 @@ func (r *Runtime) Stream(ctx context.Context, messages []providers.Message) (<-c
 	return r.StreamChat(ctx, messages)
 }
 
-// Run executes the same streaming agent loop as StreamChat and returns its
-// final response after consuming the emitted events.
+// Run executes the agent loop and returns its final response.
 func (r *Runtime) Run(messages []providers.Message) (providers.Response, error) {
 	return r.RunContext(context.Background(), messages)
 }
 
-// RunContext is Run with caller-controlled cancellation and deadlines.
+// RunContext executes Run with caller-controlled cancellation.
 func (r *Runtime) RunContext(ctx context.Context, messages []providers.Message) (providers.Response, error) {
 	events, err := r.StreamChat(ctx, messages)
 	if err != nil {
@@ -282,25 +271,10 @@ func (r *Runtime) RunContext(ctx context.Context, messages []providers.Message) 
 	return providers.Response{}, fmt.Errorf("runtime stopped without a completion event")
 }
 
-// maxToolResultChars bounds how much of a single tool result gets appended
-// to persistent conversation history. Long shell/test output is common on
-// real coding tasks; keeping the raw history bounded (rather than letting
-// it grow without limit) is what keeps later model turns affordable and
-// keeps the compact task.State - not a wall of old stdout - doing the work
-// of carrying context forward.
+// maxToolResultChars keeps verbose tool output from dominating later turns.
 const maxToolResultChars = 6000
 
-// run is the persistent agent loop: goal -> reason -> act -> observe ->
-// reason -> ... -> verify -> complete. It turns provider chunks into
-// runtime events, executes requested tools, appends their (bounded)
-// results to the conversation, and repeats until the model stops
-// requesting tools or a runtime-enforced limit trips first.
-//
-// A task.State travels with the run via ctx: the model updates it through
-// the update_task_state tool, and the runtime folds a compact summary of
-// it back into the system prompt every turn, so the agent has continuity
-// across many tool calls without the full raw history being replayed as
-// "context" on every turn.
+// run executes the persistent agent loop and enforces runtime limits.
 func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit func(Event) bool) {
 	state := task.New(goalFrom(messages))
 	ctx = task.WithState(ctx, state)
@@ -340,11 +314,6 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 			ToolCalls: response.ToolCalls,
 		})
 
-		// Independent tool calls from a single model turn run concurrently
-		// via the scheduler (bounded concurrency, retries, per-tool
-		// timeouts, live progress events). Results come back in the same
-		// order as response.ToolCalls regardless of completion order, so
-		// the conversation history stays deterministic.
 		results := r.scheduler.Run(ctx, response.ToolCalls, emit)
 
 		if ctx.Err() != nil {
@@ -371,9 +340,7 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 	}
 }
 
-// emitBlocked reports a runtime-enforced stop (as opposed to the model
-// deciding it's done) via EventBlocked, carrying the reason and a final
-// task snapshot so callers can inspect exactly how far the task got.
+// emitBlocked reports a runtime-enforced stop with the final task snapshot.
 func (r *Runtime) emitBlocked(emit func(Event) bool, state *task.State, reason string) {
 	state.SetStatus(task.StatusBlocked)
 	emit(Event{
@@ -389,11 +356,7 @@ func snapshotPtr(state *task.State) *task.Snapshot {
 	return &snap
 }
 
-// refreshSystemPrompt rewrites messages[0] (the system message built by
-// buildMessages) in place with the agent's base prompt plus a fresh
-// compact digest of the task state, so every model turn sees current
-// working memory without that memory being duplicated elsewhere in the
-// conversation.
+// refreshSystemPrompt adds the current task digest to the system message.
 func refreshSystemPrompt(messages []providers.Message, a *agent.Agent, state *task.State) {
 	if len(messages) == 0 || messages[0].Role != providers.SystemRole {
 		return
@@ -410,9 +373,6 @@ func refreshSystemPrompt(messages []providers.Message, a *agent.Agent, state *ta
 		"\n\nUpdate this via update_task_state as your understanding of the task evolves."
 }
 
-// truncateToolResult bounds how much of one tool result is kept in
-// persistent conversation history, so a single verbose command (e.g. a
-// noisy test run) can't blow out every subsequent model request.
 func truncateToolResult(content string) string {
 	if len(content) <= maxToolResultChars {
 		return content
@@ -421,9 +381,7 @@ func truncateToolResult(content string) string {
 	return fmt.Sprintf("%s\n\n[...output truncated, %d bytes total. Re-run with narrower output (e.g. filters, -run, grep) if you need the rest.]", kept, len(content))
 }
 
-// goalFrom extracts a short goal string from the first user message, for
-// display/persistence purposes only; it is never sent back to the model
-// verbatim beyond what's already in the conversation.
+// goalFrom returns the first user message for task-state display.
 func goalFrom(messages []providers.Message) string {
 	for _, m := range messages {
 		if m.Role == providers.UserRole && m.Content != "" {
@@ -433,8 +391,7 @@ func goalFrom(messages []providers.Message) string {
 	return ""
 }
 
-// runModelTurn streams one provider response and returns the assembled model
-// response. It deliberately knows nothing about tool execution.
+// runModelTurn streams and assembles one provider response.
 func (r *Runtime) runModelTurn(ctx context.Context, messages []providers.Message, emit func(Event) bool) (providers.Response, error) {
 	if !emit(Event{Type: EventThinking}) {
 		return providers.Response{}, context.Canceled
@@ -482,9 +439,7 @@ func Run(messages []providers.Message) (providers.Response, error) {
 	return rt.Run(messages)
 }
 
-// newProvider selects and constructs a ModelProvider based on
-// cfg.Model.Provider. Only "ollama" is supported in this prototype;
-// anything else fails fast with a clear message.
+// newProvider constructs the configured model provider.
 func newProvider(cfg *config.Config) (providers.ModelProvider, error) {
 	switch cfg.Model.Provider {
 	case "ollama":

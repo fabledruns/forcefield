@@ -1,5 +1,5 @@
 // Package builtin wires Forcefield's built-in tool implementations
-// (filesystem, shell) into a tools.Manager. 
+// (filesystem, shell) into a tools.Manager.
 package builtin
 
 import (

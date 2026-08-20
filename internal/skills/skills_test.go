@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-// writeSkill writes name (e.g. "go.md") with content into dir/skills,
-// creating the directory if needed.
 func writeSkill(t *testing.T, home, name, content string) {
 	t.Helper()
 	dir := filepath.Join(home, "skills")
@@ -20,7 +18,6 @@ func writeSkill(t *testing.T, home, name, content string) {
 	}
 }
 
-// newStore builds a Store over home, failing the test on error.
 func newStore(t *testing.T, home string) *Store {
 	t.Helper()
 	store, err := New(home)
@@ -114,16 +111,12 @@ func TestStore_ArbitraryMarkdown_NeverFails(t *testing.T) {
 
 func TestStore_MalformedFrontmatter_TreatedAsPlainMarkdown(t *testing.T) {
 	home := t.TempDir()
-	// Unclosed delimiter: never finds a second "---", so the whole thing
-	// is plain Markdown starting with a literal "---" line.
 	writeSkill(t, home, "broken.md", "---\nname: Broken\n# Fallback Heading\nbody text\n")
 
 	got := newStore(t, home).Catalog()[0]
 	if got.ID != "broken" {
 		t.Errorf("ID = %q, want %q", got.ID, "broken")
 	}
-	// name should NOT be "Broken" (that would mean invalid frontmatter
-	// silently succeeded) — it should fall through to the first H1.
 	if got.Name != "Fallback Heading" {
 		t.Errorf("Name = %q, want %q (frontmatter should not have parsed)", got.Name, "Fallback Heading")
 	}
@@ -227,7 +220,6 @@ func TestStore_Get(t *testing.T) {
 
 func TestStore_DuplicateID_FirstWins(t *testing.T) {
 	home := t.TempDir()
-	// alpha.md sorts before beta.md; both claim the same explicit id.
 	writeSkill(t, home, "alpha.md", "---\nid: shared\nname: From Alpha\n---\n# Alpha body\n")
 	writeSkill(t, home, "beta.md", "---\nid: shared\nname: From Beta\n---\n# Beta body\n")
 

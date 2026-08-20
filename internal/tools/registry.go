@@ -29,16 +29,18 @@ func (r *Registry) Register(t Tool) error {
 	return nil
 }
 
+// Lookup finds a tool by name.
 func (r *Registry) Lookup(name string) (Tool, bool) {
 	t, ok := r.byName[name]
 	return t, ok
 }
 
+// All returns registered tools in registration order.
 func (r *Registry) All() []Tool {
 	return r.all
 }
 
-// Definitions returns the static Definition of every registered tool, in registration order.
+// Definitions returns provider-facing definitions in registration order.
 func (r *Registry) Definitions() []Definition {
 	defs := make([]Definition, len(r.all))
 	for i, t := range r.all {

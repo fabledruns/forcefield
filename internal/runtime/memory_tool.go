@@ -8,14 +8,7 @@ import (
 	"forcefield/internal/tools"
 )
 
-// addProjectMemoryTool is the model-facing tool for writing a durable,
-// project-scoped fact. It is the *only* path by which the model can
-// persist memory: there is no other way for the model to make a write
-// stick across sessions. Like every tool, whether it actually runs
-// without interruption is decided by the permission system (see
-// config.yaml's permissions.tools), not by this tool itself - by
-// default the "add_project_memory" entry is "ask", so a human has to
-// approve each write before it's saved.
+// addProjectMemoryTool persists approved project-scoped facts.
 type addProjectMemoryTool struct {
 	store *memory.Store
 }

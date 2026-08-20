@@ -57,7 +57,7 @@ func New(forcefieldHome string) (*Store, error) {
 			return nil, fmt.Errorf("read skill file %s: %w", path, err)
 		}
 		if strings.TrimSpace(string(raw)) == "" {
-			continue // ignore empty skill files
+			continue
 		}
 
 		p := parse(name, string(raw))
@@ -115,7 +115,6 @@ func (s *Store) Load(id string) (string, error) {
 		return "", fmt.Errorf("read skill file %s: %w", skill.Path, err)
 	}
 
-	// Strip frontmatter before returning the body.
 	p := parse(filepath.Base(skill.Path), string(raw))
 	return p.body, nil
 }
@@ -148,7 +147,6 @@ func FormatCatalog(catalog []Skill) string {
 	return b.String()
 }
 
-// markdownFiles returns sorted Markdown filenames.
 func markdownFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

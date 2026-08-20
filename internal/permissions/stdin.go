@@ -20,8 +20,7 @@ type StdinAsker struct {
 	Out io.Writer
 }
 
-// NewStdinAsker returns a StdinAsker wired to the process's real stdin
-// and stdout.
+// NewStdinAsker returns an asker using the process stdin and stdout.
 func NewStdinAsker() *StdinAsker {
 	return &StdinAsker{In: os.Stdin, Out: os.Stdout}
 }

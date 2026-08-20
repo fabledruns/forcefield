@@ -2,17 +2,13 @@ package permissions
 
 import "sync"
 
-// Store persists Rules somewhere durable (config.yaml in practice). It's
-// the only extension point a Manager needs, which keeps the Manager itself
-// testable with an in-memory fake instead of a real file on disk.
+// Store persists permission rules.
 type Store interface {
 	Load() (Rules, error)
 	Save(Rules) error
 }
 
-// Manager is the single authority the rest of Forcefield consults before
-// running a tool. It's safe for concurrent use: the scheduler may check
-// and update permissions for several tool calls running in parallel.
+// Manager owns permission rules and is safe for concurrent use.
 type Manager struct {
 	mu    sync.RWMutex
 	rules Rules
@@ -24,8 +20,7 @@ type Manager struct {
 	saveMu sync.Mutex
 }
 
-// NewManager loads the initial rule set from store and returns a Manager
-// ready for concurrent use.
+// NewManager loads rules from store.
 func NewManager(store Store) (*Manager, error) {
 	rules, err := store.Load()
 	if err != nil {
@@ -37,8 +32,7 @@ func NewManager(store Store) (*Manager, error) {
 	return &Manager{rules: rules, store: store}, nil
 }
 
-// Check returns the effective Decision for toolName: its explicit
-// per-tool rule if one exists, otherwise the configured default.
+// Check returns the effective decision for toolName.
 func (m *Manager) Check(toolName string) Decision {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -63,9 +57,7 @@ func (m *Manager) Update(toolName string, decision Decision) error {
 	return m.persist(snapshot)
 }
 
-// Save persists the current rule set as-is, without changing anything.
-// Most callers want Update; Save exists for completeness and for callers
-// (e.g. a config migration) that mutate rules through other means.
+// Save persists the current rule set.
 func (m *Manager) Save() error {
 	m.mu.RLock()
 	snapshot := m.rules.clone()
@@ -74,8 +66,7 @@ func (m *Manager) Save() error {
 	return m.persist(snapshot)
 }
 
-// Rules returns a copy of the current rule set, e.g. for display in a
-// "/permissions" command.
+// Rules returns a copy of the current rule set.
 func (m *Manager) Rules() Rules {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

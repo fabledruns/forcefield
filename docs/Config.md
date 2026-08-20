@@ -27,7 +27,7 @@ model:
 agent:
   name: default
   system_prompt: |
-    You are a helpful coding assistant.
+    You are Forcefield, a local-first coding agent. Complete software tasks in real repositories: inspect, change, run, debug, and verify. Prefer a working, minimal result over advice or extra architecture.
 ```
 
 ### `model`
@@ -43,7 +43,7 @@ agent:
 | Field           | Required | Description                                      |
 | --------------- | -------- | ------------------------------------------------ |
 | `name`          | No       | Display name of the default agent.               |
-| `system_prompt` | No       | Base system prompt for the agent.                |
+| `system_prompt` | No       | Agent identity. The operating contract is always appended by the agent package. |
 
 ## Functions
 

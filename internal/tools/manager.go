@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// Manager is the entry point the rest of Forcefield uses to work with tools
+// Manager is the entry point for tool registration and execution.
 type Manager struct {
 	registry *Registry
 }
@@ -30,16 +30,12 @@ func (m *Manager) Definitions() []Definition {
 	return m.registry.Definitions()
 }
 
-// Lookup returns the registered tool named name, if any. Callers that need
-// to inspect a tool's Metadata (permissions, timeout, streaming support)
-// before executing it - such as the scheduler - use this instead of Execute.
+// Lookup returns the registered tool named name, if any.
 func (m *Manager) Lookup(name string) (Tool, bool) {
 	return m.registry.Lookup(name)
 }
 
-// Execute looks up name and runs it with args. A nil args is treated as
-// empty, so tools that take no arguments (e.g. pwd) can be called
-// without callers special-casing them.
+// Execute looks up and runs a tool. Nil args are treated as empty.
 func (m *Manager) Execute(ctx context.Context, name string, args map[string]any) (Result, error) {
 	tool, ok := m.registry.Lookup(name)
 	if !ok {

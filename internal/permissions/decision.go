@@ -1,7 +1,5 @@
-// Package permissions decides whether a tool invocation is allowed to
-// execute. It is deliberately independent of both the tool implementations
-// (tools remain unaware permissions exist at all) and of any particular UI
-// (the runtime supplies an Asker to handle the interactive "ask" case).
+// Package permissions resolves tool execution decisions independently of UI
+// and tool implementations.
 package permissions
 
 import "fmt"
@@ -10,12 +8,8 @@ import "fmt"
 type Decision int
 
 const (
-	// Allow means the tool call executes immediately, no questions asked.
 	Allow Decision = iota
-	// Deny means the tool call is rejected before it ever runs.
 	Deny
-	// Ask means the caller must be interactively prompted before the tool
-	// runs.
 	Ask
 )
 
@@ -50,8 +44,7 @@ func ParseDecision(s string) (Decision, error) {
 	}
 }
 
-// Rules is the pure data behind a Manager: a default decision plus any
-// per-tool overrides. It has no knowledge of where it's persisted.
+// Rules contains the default decision and per-tool overrides.
 type Rules struct {
 	Default Decision
 	Tools   map[string]Decision

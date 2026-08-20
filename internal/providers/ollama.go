@@ -64,7 +64,6 @@ type ollamaFunctionCall struct {
 	Arguments map[string]any `json:"arguments"`
 }
 
-// ollamaChatRequest is the request body for POST /api/chat.
 type ollamaChatRequest struct {
 	Model    string          `json:"model"`
 	Messages []ollamaMessage `json:"messages"`
@@ -72,8 +71,6 @@ type ollamaChatRequest struct {
 	Stream   bool            `json:"stream"`
 }
 
-// ollamaStreamResponse is the relevant subset of Ollama's streaming
-// /api/chat response body. Each chunk is a JSON object with this shape.
 type ollamaStreamResponse struct {
 	Message struct {
 		Content   string           `json:"content"`
@@ -85,9 +82,7 @@ type ollamaStreamResponse struct {
 	Error string `json:"error"`
 }
 
-// StreamChat sends the system and user prompts to Ollama and returns a channel
-// that emits StreamEvent objects as the model generates its reply. The channel
-// is closed when the model is done or if an error occurs.
+// StreamChat sends messages to Ollama and streams the response.
 func (o *OllamaProvider) StreamChat(ctx context.Context, messages []Message, tools []tools.Definition) (<-chan StreamEvent, error) {
 	ollamaMessages := toOllamaMessages(messages)
 	ollamaTools := toOllamaTools(tools)

@@ -34,17 +34,8 @@ var DefaultSchedulerConfig = SchedulerConfig{
 	BaseBackoff:    200 * time.Millisecond,
 }
 
-// scheduler executes a batch of independent tool calls - a single model
-// turn's worth - concurrently, aggregating their results before they're
-// handed back to the model. Calls within a batch are assumed independent;
-// ordering *between* batches (i.e. between model turns) is preserved
-// naturally because the runtime only asks for the next batch once the
-// previous one has fully finished.
-//
-// The scheduler is also the single central place permission checks happen
-// (see checkPermission below). Tool implementations never see the
-// permission manager and have no way to know it exists; the scheduler
-// decides whether execute() ever gets called at all.
+// scheduler runs independent tool calls concurrently and centralizes
+// permission checks.
 type scheduler struct {
 	manager     *tools.Manager
 	permissions *permissions.Manager
@@ -65,14 +56,7 @@ func newScheduler(manager *tools.Manager, perms *permissions.Manager, asker perm
 	return &scheduler{manager: manager, permissions: perms, asker: asker, cfg: cfg}
 }
 
-// Run executes calls with up to cfg.MaxConcurrency running at once and
-// returns their results in the same order as calls, regardless of
-// completion order, so callers can append them to conversation history
-// deterministically. A failure in one call never cancels its siblings;
-// only ctx being cancelled (e.g. the user pressing Ctrl+C) stops the whole
-// batch early. emit is called from multiple goroutines and is
-// synchronized internally, so callers don't need to worry about
-// concurrent Event delivery.
+// Run executes calls concurrently and returns results in call order.
 func (s *scheduler) Run(ctx context.Context, calls []providers.ToolCall, emit func(Event) bool) []ToolResult {
 	results := make([]ToolResult, len(calls))
 	if len(calls) == 0 {
@@ -122,10 +106,7 @@ func (s *scheduler) Run(ctx context.Context, calls []providers.ToolCall, emit fu
 	return results
 }
 
-// runOne executes a single tool call to completion, including retries,
-// timeout enforcement, and streaming progress events. It never panics the
-// caller: lookup failures and execution errors are both turned into a
-// failed ToolResult.
+// runOne executes one tool call with retries, timeouts, and progress events.
 func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit func(Event) bool) ToolResult {
 	started := time.Now()
 	emit(Event{Type: EventToolStart, ToolCall: &call})
@@ -206,14 +187,14 @@ func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit fu
 			// deterministic failure, e.g. "file not found") is never
 			// retried even if the tool is marked retryable.
 			result := ToolResult{
-				ToolCallID: call.ID,
-				Name:       call.Name,
-				Arguments:  call.Arguments,
-				Content:    res.Content,
-				IsError:    res.IsError,
-				Success:    !res.IsError,
-				Duration:   time.Since(started),
-				Attempt:    attempt,
+				ToolCallID:  call.ID,
+				Name:        call.Name,
+				Arguments:   call.Arguments,
+				Content:     res.Content,
+				IsError:     res.IsError,
+				Success:     !res.IsError,
+				Duration:    time.Since(started),
+				Attempt:     attempt,
 				Stdout:      res.Stdout,
 				Stderr:      res.Stderr,
 				ExitCode:    res.ExitCode,
@@ -273,10 +254,7 @@ func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit fu
 	return result
 }
 
-// checkPermission is the single central permission check every tool call
-// passes through before it's allowed to execute. It never touches the
-// tool itself, only the call's name and arguments, so tool implementations
-// stay entirely unaware permissions exist.
+// checkPermission resolves a tool call's permission before execution.
 func (s *scheduler) checkPermission(ctx context.Context, call providers.ToolCall, emit func(Event) bool) (denied bool, result *ToolResult) {
 	if s.permissions == nil {
 		return false, nil // no permission manager configured: fail open
@@ -306,9 +284,7 @@ func (s *scheduler) checkPermission(ctx context.Context, call providers.ToolCall
 	return true, result
 }
 
-// resolveAsk runs the interactive "ask" flow for a single tool call: it
-// prompts via s.asker and, for an "always allow"/"always deny" answer,
-// persists the new rule so future calls to this tool skip the prompt.
+// resolveAsk prompts for a decision and persists "always" responses.
 func (s *scheduler) resolveAsk(ctx context.Context, call providers.ToolCall) (permissions.Decision, error) {
 	if s.asker == nil {
 		// No interactive surface available (e.g. non-interactive
@@ -347,9 +323,6 @@ func (s *scheduler) deniedResult(call providers.ToolCall, reason string) *ToolRe
 	return result
 }
 
-// execute runs tool, preferring its streaming path when available so
-// callers get live progress events; otherwise it falls back to the plain
-// Execute method.
 func execute(ctx context.Context, tool tools.Tool, args map[string]any, onChunk func(tools.StreamChunk)) (tools.Result, error) {
 	if st, ok := tool.(tools.StreamingTool); ok {
 		return st.ExecuteStream(ctx, args, onChunk)

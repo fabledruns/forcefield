@@ -61,8 +61,7 @@ var Registry = []ProviderInfo{
 	},
 }
 
-// ByID looks up a provider by its ID (e.g. "nvidia"). ok is false if no
-// provider with that ID is registered.
+// ByID looks up a provider by ID.
 func ByID(id string) (ProviderInfo, bool) {
 	for _, p := range Registry {
 		if p.ID == id {
@@ -82,9 +81,7 @@ func (p ProviderInfo) ModelByID(id string) (ModelInfo, bool) {
 	return ModelInfo{}, false
 }
 
-// DisplayName returns the friendly name for a provider ID, falling back
-// to the raw ID if it isn't registered (e.g. one set by hand in
-// config.yaml).
+// DisplayName returns a provider's friendly name, or its ID if unknown.
 func DisplayName(providerID string) string {
 	if p, ok := ByID(providerID); ok {
 		return p.Name
@@ -92,8 +89,7 @@ func DisplayName(providerID string) string {
 	return providerID
 }
 
-// ModelDisplayName returns the friendly name for a model ID within a
-// provider, falling back to the raw ID if either isn't registered.
+// ModelDisplayName returns a model's friendly name, or its ID if unknown.
 func ModelDisplayName(providerID, modelID string) string {
 	if p, ok := ByID(providerID); ok {
 		if m, ok := p.ModelByID(modelID); ok {

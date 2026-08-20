@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// fastRetry keeps retries bounded but near-instant so tests exercise the
-// retry paths without real sleeps.
 var fastRetry = retryPolicy{
 	MaxRetries:    3,
 	BaseBackoff:   time.Millisecond,
@@ -21,12 +19,8 @@ var fastRetry = retryPolicy{
 	MaxRetryAfter: time.Minute,
 }
 
-// rateLimitedBody is a plain transient rate-limit message: it must NOT be
-// classified as quota exhaustion.
 const rateLimitedBody = `{"error":{"message":"rate limit exceeded, please retry"}}`
 
-// writeSSE writes one OpenAI-style SSE turn (one chunk per argument) and
-// the [DONE] sentinel that ends the stream.
 func writeSSE(w http.ResponseWriter, chunks ...string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	for _, chunk := range chunks {
@@ -35,9 +29,6 @@ func writeSSE(w http.ResponseWriter, chunks ...string) {
 	fmt.Fprint(w, "data: [DONE]\n\n")
 }
 
-// drainProviderStream consumes a provider stream to completion, failing the
-// test on any stream error, and returns the assembled text and whether a
-// Done event was seen.
 func drainProviderStream(t *testing.T, events <-chan StreamEvent) (text string, done bool) {
 	t.Helper()
 	for event := range events {

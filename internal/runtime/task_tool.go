@@ -8,11 +8,7 @@ import (
 	"forcefield/internal/tools"
 )
 
-// updateTaskStateTool is the model-facing tool for maintaining the current
-// task's plan and working memory. It reads the *task.State for the
-// in-flight run from ctx (set by Runtime.run via task.WithState), so it
-// needs no per-run registration: one instance is registered once, like
-// load_skill.
+// updateTaskStateTool updates the State attached to the current run.
 type updateTaskStateTool struct{}
 
 func newUpdateTaskStateTool() *updateTaskStateTool { return &updateTaskStateTool{} }

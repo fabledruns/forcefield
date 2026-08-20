@@ -10,9 +10,6 @@ import (
 	"testing"
 )
 
-// nvidiaSSE serves the given SSE payload lines (each already a full
-// "data: ..." line) and collects the StreamEvents the provider decodes
-// from them. Fails the test if any event carries an error.
 func nvidiaSSE(t *testing.T, lines ...string) []StreamEvent {
 	t.Helper()
 
@@ -70,7 +67,6 @@ func TestNvidiaStreamRequestsThinkingViaChatTemplateKwargs(t *testing.T) {
 		t.Fatalf("StreamChat() error = %v", err)
 	}
 	for range stream {
-		// drain
 	}
 
 	kwargs, ok := gotBody["chat_template_kwargs"].(map[string]any)
@@ -85,8 +81,6 @@ func TestNvidiaStreamRequestsThinkingViaChatTemplateKwargs(t *testing.T) {
 	}
 }
 
-// summarize collapses events to "thinking:<text>", "text:<text>",
-// "tools:<n>", or "done" so tests can assert whole sequences at a glance.
 func summarize(events []StreamEvent) []string {
 	var out []string
 	for _, e := range events {

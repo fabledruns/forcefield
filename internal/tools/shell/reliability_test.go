@@ -68,7 +68,7 @@ func TestShell_InvalidEnvIsArgumentError(t *testing.T) {
 func TestShell_StderrIncludedInContentOnSuccess(t *testing.T) {
 	requireShellBackend(t)
 	s := NewShell()
-	command := commandChain("echo out", "echo err " + stderrRedirect())
+	command := commandChain("echo out", "echo err "+stderrRedirect())
 	result, err := s.Execute(context.Background(), map[string]any{"command": command})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
