@@ -1,3 +1,22 @@
-Makefile linguist-language=Makefile
-flake.nix linguist-language=Nix
-*.nix linguist-language=Nix
+# Normalize line endings across platforms. Forcefield's tooling expects
+# LF in the working tree: gofmt reports CRLF files as unformatted, which
+# otherwise breaks format checks on Windows checkouts where
+# core.autocrlf=true converts everything on checkout.
+* text=auto eol=lf
+
+# Explicit text types (redundant with the default but self-documenting).
+*.go   text eol=lf
+*.cue  text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.md   text eol=lf
+*.mod  text eol=lf
+*.sum  text eol=lf
+
+# Scripts and shell assets.
+*.sh   text eol=lf
+Makefile text eol=lf
+
+# Binary assets are never normalized.
+*.exe  binary
+bin/** binary

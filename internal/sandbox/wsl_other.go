@@ -2,7 +2,10 @@
 
 package sandbox
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // wslExecutor is a compile-time placeholder on non-Windows platforms. WSL
 // execution is a Windows capability; on other systems the mode exists in
