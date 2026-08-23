@@ -17,9 +17,11 @@ import (
 // m.runtime unless Enter is pressed.
 func newTestModel() model {
 	m := model{
-		input:  newInput(),
-		width:  80,
-		height: 24,
+		input:        newInput(),
+		width:        80,
+		height:       24,
+		registry:     newRegistry(),
+		mouseEnabled: true,
 	}
 	m.layout()
 	return m
@@ -87,7 +89,10 @@ func newSubmitTestModel(t *testing.T) model {
 	}
 	sess := session.New()
 
-	m := newModel(cfg, sess, &tuiAsker{})
+	m, err := newModel(cfg, sess, &tuiAsker{})
+	if err != nil {
+		t.Fatalf("newModel() failed: %v", err)
+	}
 	m.width, m.height = 80, 24
 	m.layout()
 	return m

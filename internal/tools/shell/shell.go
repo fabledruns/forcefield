@@ -3,6 +3,7 @@ package shell
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 )
 
@@ -27,9 +29,9 @@ const defaultTimeout = 30 * time.Second
 // even though the command itself is long dead.
 const waitDelay = time.Second
 
-// Shell executes arbitrary shell commands inside the current project
-// directory (or a caller-specified working directory), capturing stdout
-// and stderr separately and streaming output live as the command runs.
+// Shell executes shell commands inside the current project directory (or
+// a caller-specified working directory), capturing stdout and stderr
+// separately and streaming output live as the command runs.
 //
 // Terminal ownership: Shell never touches os.Stdout/os.Stderr/os.Stdin or
 // prints anything itself. Bubble Tea is the only thing allowed to write to
@@ -37,18 +39,86 @@ const waitDelay = time.Second
 // captured through pipes, sanitized, and handed to the caller as plain
 // Result/StreamChunk data that flows through the runtime's event system;
 // the TUI decides how (and whether) to render it.
+//
+// Process construction is delegated entirely to a sandbox.Executor: this
+// tool requests execution, the executor enforces policy (working
+// directory scope, environment forwarding rules, backend selection), and
+// nothing here can bypass it because no other command-building path
+// exists. Shell owns only argument validation, output plumbing,
+// sanitization, and process teardown.
 type Shell struct {
+	// executor builds validated commands. Nil means native mode with the
+	// historical unrestricted behavior; runtime.New wires the configured
+	// sandbox executor in.
+	executor sandbox.Executor
+	// executorOnce guards one-time construction of the default executor.
+	executorOnce sync.Once
+
 	// backendMu guards the one-time backend probe below.
 	backendMu sync.Mutex
 	// backendErr caches the result of probing the Bash execution backend
-	// (WSL availability on Windows; see ensureBackend, a no-op on Unix).
-	// A nil backendErr with backendProbed set means the backend is healthy.
+	// (WSL availability on Windows; see ensureBackend). A nil backendErr
+	// with backendProbed set means the backend is healthy.
 	backendErr    error
 	backendProbed bool
 }
 
-// NewShell returns a ready-to-register Shell tool.
+// NewShell returns a ready-to-register Shell tool using native execution.
 func NewShell() *Shell { return &Shell{} }
+
+// NewShellWithExecutor returns a Shell tool whose commands are built by
+// the given sandbox.Executor. The executor is authoritative: when it
+// refuses (unavailable WSL, workspace escape, impossible network
+// isolation), the tool reports an error instead of falling back.
+func NewShellWithExecutor(e sandbox.Executor) *Shell { return &Shell{executor: e} }
+
+// executorFor lazily supplies the default executor so zero-value Shells
+// keep working for tests and simple callers.
+func (s *Shell) executorFor() sandbox.Executor {
+	if s.executor != nil {
+		return s.executor
+	}
+	s.executorOnce.Do(func() {
+		e, err := sandbox.NewExecutor(sandbox.DefaultPolicy())
+		if err != nil {
+			panic("shell: default policy must always construct: " + err.Error())
+		}
+		s.executor = e
+	})
+	return s.executor
+}
+
+// ExecutionEnforcement lets permission surfaces describe exactly what will
+// happen if this tool runs. The bool is false for tools without a
+// meaningful enforcement story (everything but shell today).
+func (s *Shell) ExecutionEnforcement(ctx context.Context) (sandbox.Enforcement, bool) {
+	return s.executorFor().Describe(ctx), true
+}
+
+// ensureBackend probes the active executor once per Shell, caching the
+// outcome so an unusable backend yields one clear structured error per
+// command instead of a confusing per-command failure. A probe aborted by
+// caller cancellation is reported but not cached.
+func (s *Shell) ensureBackend(ctx context.Context) error {
+	s.backendMu.Lock()
+	defer s.backendMu.Unlock()
+	if s.backendProbed {
+		return s.backendErr
+	}
+	err := s.executorFor().Probe(ctx)
+	if ctx.Err() == nil {
+		s.backendProbed, s.backendErr = true, err
+	}
+	return err
+}
+
+// CheckBackend verifies that the Bash execution backend is usable (WSL
+// availability on Windows; always healthy on Unix) and returns a
+// diagnostic error when it isn't. It exists so diagnostics like
+// `ff doctor` can report shell problems without executing a command.
+func (s *Shell) CheckBackend(ctx context.Context) error {
+	return s.ensureBackend(ctx)
+}
 
 func (*Shell) Name() string { return "shell" }
 
@@ -141,20 +211,10 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	}
 
 	cwd := tools.OptionalStringArg(args, "cwd", "")
-	if cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cwd = wd
-		}
-	} else if !validWorkingDir(cwd) {
-		// Fail as a tool Result (not a Go error) so the model sees a clear,
-		// retryable message instead of an opaque execution failure.
-		return tools.Result{
-			IsError: true,
-			Content: fmt.Sprintf("working directory does not exist: %s", cwd),
-			Tool:    "shell",
-			Command: command,
-		}, nil
-	}
+	// Directory existence and workspace-scope validation happen inside the
+	// executor (Prepare), which is the only place policy lives. Failures
+	// come back as typed errors mapped to Results below, so the model sees
+	// a clear, retryable message instead of an opaque execution failure.
 
 	// A bad timeout_seconds must be an argument error, not silently ignored:
 	// falling back to the 30s default would kill a long command the caller
@@ -173,10 +233,9 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		return tools.Result{}, err
 	}
 
-	// Probe the Bash execution backend once per Shell (WSL availability on
-	// Windows, a no-op on Unix) before spawning anything, so an unusable
-	// backend yields one clear structured error instead of a confusing
-	// per-command failure that looks like the command's own fault.
+	// Probe the execution backend once per Shell (WSL availability on
+	// Windows, Bash on Unix) before spawning anything, using the outer
+	// context so a cold WSL boot doesn't consume the command's own timeout.
 	if err := s.ensureBackend(ctx); err != nil {
 		return tools.Result{
 			IsError:  true,
@@ -194,20 +253,38 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		defer cancel()
 	}
 
-	// buildCommand decides how Bash is reached on this platform: natively on
-	// Unix, through wsl.exe on Windows. It owns cmd.Dir/cmd.Env because the
-	// two backends handle working directory and environment completely
-	// differently. cleanup, when non-nil, releases backend-side staging
-	// resources (e.g. a spilled script file) once the command has run.
-	cmd, cleanup, err := buildCommand(runCtx, command, cwd, envPairs)
-	if err != nil {
+	prepared, err := s.executorFor().Prepare(runCtx, sandbox.Request{
+		Command:  command,
+		Dir:      cwd,
+		ExtraEnv: envPairs,
+	})
+	switch {
+	case err == nil:
+	case errors.Is(err, sandbox.ErrInvalidDir):
 		return tools.Result{
 			IsError: true,
-			Content: err.Error(),
+			Content: fmt.Sprintf("working directory does not exist: %s", cwd),
 			Tool:    "shell",
 			Command: command,
 		}, nil
+	case errors.Is(err, sandbox.ErrWorkspaceEscape):
+		return tools.Result{
+			IsError: true,
+			Content: fmt.Sprintf("working directory %q is outside the allowed workspace; Forcefield will not widen its scope", cwd),
+			Tool:    "shell",
+			Command: command,
+		}, nil
+	default:
+		return tools.Result{
+			IsError:  true,
+			Content:  err.Error(),
+			ExitCode: -1,
+			Tool:     "shell",
+			Command:  command,
+		}, nil
 	}
+	cmd, cleanup := prepared.Cmd, prepared.Cleanup
+	cwd = prepared.Dir
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -346,7 +423,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	// so the model learns its command never properly ran instead of seeing
 	// an unexplained non-zero exit from Bash.
 	if !success {
-		if detail, hint := backendFailure(stderr.String(), stdout.String()); hint != "" {
+		if detail, hint := sandbox.BackendFailure(stderr.String(), stdout.String()); hint != "" {
 			return tools.Result{
 				IsError:    true,
 				Content:    fmt.Sprintf("shell backend error: WSL could not run the command: %s\n%s", detail, hint),

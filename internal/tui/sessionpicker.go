@@ -64,6 +64,13 @@ func (p *sessionPicker) selected() session.Session {
 
 // view renders the picker as a centered modal over a width x height area.
 func (p *sessionPicker) view(width, height int) string {
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, p.box())
+}
+
+// box renders just the modal (border, title, rows, help) without screen
+// centering. Rendering and hit-testing share it: geometry helpers measure
+// this exact string, so click targets can never drift from what is drawn.
+func (p *sessionPicker) box() string {
 	var b strings.Builder
 
 	b.WriteString(pickerTitleStyle.Render("Sessions"))
@@ -75,11 +82,37 @@ func (p *sessionPicker) view(width, height int) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(pickerHelpStyle.Render("↑/↓ select · enter switch · esc/q close"))
+	b.WriteString(pickerHelpStyle.Render("↑/↓ select · enter switch · esc/q close · click row"))
 
-	box := pickerBorderStyle.Width(pickerWidth).Render(strings.TrimRight(b.String(), "\n"))
+	return pickerBorderStyle.Width(pickerWidth).Render(strings.TrimRight(b.String(), "\n"))
+}
 
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+// boxOrigin returns the screen coordinates of the modal box's top-left
+// corner when centered by view. Rows begin after top border+padding and
+// the title plus blank line; each occupies exactly one row.
+func (p *sessionPicker) boxOrigin(width, height int) (x, y int) {
+	b := p.box()
+	x = max(0, (width-lipgloss.Width(b))/2)
+	y = max(0, (height-lipgloss.Height(b))/2)
+	return x, y
+}
+
+// pickerRowsTop is how many rows separate the box's top edge from its
+// first option row: border (1) + padding (1) + title (1) + blank (1).
+const pickerRowsTop = 4
+
+// rowAt resolves a point to an option-row index inside the modal.
+func (p *sessionPicker) rowAt(x, y, width, height int) (int, bool) {
+	bx, by := p.boxOrigin(width, height)
+	first := by + pickerRowsTop
+	if y < first || y >= first+len(p.sessions) {
+		return -1, false
+	}
+	innerX := bx + 1 /*border*/ + 2 /*padding*/
+	if x < innerX-1 || x >= innerX+pickerWidth {
+		return -1, false
+	}
+	return y - first, true
 }
 
 // renderRow formats a single session row: a selection cursor, an active

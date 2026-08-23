@@ -44,6 +44,24 @@ ff run explain this repository
 
 The command joins all task arguments into one prompt string.
 
+### `ff doctor`
+
+Checks the local pieces Forcefield depends on and reports problems with actionable messages:
+
+- config.yaml exists, parses, and validates
+- the configured provider is reachable and the configured model exists (Ollama), is loaded (LM Studio), or the API key works (NVIDIA)
+- session storage is readable; unreadable session files are named
+- skills load from `~/.forcefield/skills`
+- project memory parses
+- the Bash execution backend (WSL on Windows) is usable
+- the configured sandbox mode is actually deliverable; WSL mode that cannot run fails doctor with exit code 1
+
+Doctor never prints secret values such as API keys. It exits non-zero when a `[FAIL]` item is found.
+
+```bash
+ff doctor
+```
+
 ## Request Paths
 
 ### Interactive path

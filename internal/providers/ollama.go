@@ -82,6 +82,19 @@ type ollamaStreamResponse struct {
 	Error string `json:"error"`
 }
 
+// statusHint turns specific Ollama HTTP statuses into a concrete next
+// step. The most common one by far is 404: the configured model was never
+// pulled (or is misspelled), which otherwise reads as a bare "not found".
+func (o *OllamaProvider) statusHint(status int, _ string) string {
+	if status == http.StatusNotFound {
+		return fmt.Sprintf(
+			"model %q may not be installed - run `ollama pull %s` (see `ollama list` for what you have)",
+			o.Model, o.Model,
+		)
+	}
+	return ""
+}
+
 // StreamChat sends messages to Ollama and streams the response.
 func (o *OllamaProvider) StreamChat(ctx context.Context, messages []Message, tools []tools.Definition) (<-chan StreamEvent, error) {
 	ollamaMessages := toOllamaMessages(messages)
@@ -123,7 +136,7 @@ func (o *OllamaProvider) StreamChat(ctx context.Context, messages []Message, too
 	resp, err := doWithRetry(ctx, o.client, o.retry, "ollama", o.Model, buildRequest, wrapTransport)
 	if err != nil {
 		o.gate.release()
-		return nil, err
+		return nil, annotateStatusHint(err, o.statusHint)
 	}
 
 	events := make(chan StreamEvent)

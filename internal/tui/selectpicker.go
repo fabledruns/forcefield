@@ -91,6 +91,13 @@ func (p *selectPicker) selected() selectOption {
 
 // view renders the picker as a centered modal over a width x height area.
 func (p *selectPicker) view(width, height int) string {
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, p.box())
+}
+
+// box renders just the modal (border, title, rows, help) without screen
+// centering. Rendering and hit-testing share it: geometry helpers measure
+// this exact string, so click targets can never drift from what is drawn.
+func (p *selectPicker) box() string {
 	var b strings.Builder
 
 	b.WriteString(pickerTitleStyle.Render(p.title))
@@ -102,11 +109,32 @@ func (p *selectPicker) view(width, height int) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(pickerHelpStyle.Render("↑/↓ select · enter choose · esc cancel"))
+	b.WriteString(pickerHelpStyle.Render("↑/↓ select · enter choose · esc cancel · click row"))
 
-	box := pickerBorderStyle.Width(pickerWidth).Render(strings.TrimRight(b.String(), "\n"))
+	return pickerBorderStyle.Width(pickerWidth).Render(strings.TrimRight(b.String(), "\n"))
+}
 
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+// boxOrigin returns the screen coordinates of the modal box's top-left
+// corner when centered by view. See sessionPicker.boxOrigin for row math.
+func (p *selectPicker) boxOrigin(width, height int) (x, y int) {
+	b := p.box()
+	x = max(0, (width-lipgloss.Width(b))/2)
+	y = max(0, (height-lipgloss.Height(b))/2)
+	return x, y
+}
+
+// rowAt resolves a point to an option-row index inside the modal.
+func (p *selectPicker) rowAt(x, y, width, height int) (int, bool) {
+	bx, by := p.boxOrigin(width, height)
+	first := by + pickerRowsTop
+	if y < first || y >= first+len(p.options) {
+		return -1, false
+	}
+	innerX := bx + 3
+	if x < innerX-1 || x >= innerX+pickerWidth {
+		return -1, false
+	}
+	return y - first, true
 }
 
 // renderRow formats a single option row: a selection cursor, the

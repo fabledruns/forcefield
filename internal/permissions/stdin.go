@@ -44,7 +44,16 @@ func (a *StdinAsker) Ask(ctx context.Context, req Request) (Prompt, error) {
 		args = []byte("{}")
 	}
 
-	fmt.Fprintf(out, "\nTool wants permission\n\nTool:\n%s\n\nArguments:\n%s\n\nAllow?\n\n(y) Yes\n(n) No\n(a) Always allow this tool\n(d) Always deny this tool\n\n> ", req.Tool, args)
+	fmt.Fprintf(out, "\nTool wants permission\n\nTool:\n%s\n\nArguments:\n%s\n", req.Tool, args)
+
+	// Execution facts come from the executor itself, so the prompt can
+	// never claim more isolation than exists. When absent (tools without
+	// an execution story), nothing extra is printed.
+	if req.Execution != nil {
+		fmt.Fprintf(out, "\n%s\n", strings.Join(req.Execution.SummaryLines(), "\n"))
+	}
+
+	fmt.Fprint(out, "\nAllow?\n\n(y) Yes\n(n) No\n(a) Always allow this tool\n(d) Always deny this tool\n\n> ")
 
 	reader := bufio.NewReader(in)
 	for {

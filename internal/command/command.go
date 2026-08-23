@@ -3,6 +3,18 @@ package command
 
 import "forcefield/internal/session"
 
+// SessionStats summarizes the active conversation without exposing a
+// session.Session (and its mutation methods) to commands.
+type SessionStats struct {
+	// ID is the active session's identifier.
+	ID string
+	// Messages is how many messages the conversation holds.
+	Messages int
+	// Chars is the total size of all message contents combined - an
+	// honest, provider-independent lower bound on context growth.
+	Chars int
+}
+
 // Context is the session-facing interface used by commands.
 type Context interface {
 	Println(format string, args ...any)
@@ -15,6 +27,11 @@ type Context interface {
 	OpenSessionPicker(sessions []session.Session)
 	OpenProviderPicker()
 	OpenModelPicker()
+	// SessionStats describes the active conversation.
+	SessionStats() SessionStats
+	// Tools returns one human-readable line per available tool, e.g.
+	// "read_file: Read the contents of a file.".
+	Tools() []string
 }
 
 // Command is a slash command.

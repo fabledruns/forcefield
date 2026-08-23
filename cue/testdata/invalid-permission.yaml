@@ -1,0 +1,7 @@
+# INVALID: permission values must be allow/deny/ask (or empty).
+model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ornith:9b
+permissions:
+  default: sometimes

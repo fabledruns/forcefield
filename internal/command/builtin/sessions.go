@@ -24,15 +24,21 @@ func (Sessions) Usage() string       { return "/sessions" }
 // dependency); the picker is only responsible for selection, not for
 // reading sessions off disk.
 func (s *Sessions) Execute(ctx command.Context, _ []string) error {
-	sessions, err := session.List()
+	sessions, corrupt, err := session.ListCorrupt()
 	if err != nil {
 		// No sessions directory yet
 		ctx.Println("No saved sessions found.")
 		return nil
 	}
 
+	for _, c := range corrupt {
+		ctx.Println("Skipping unreadable session file: %s", c.Error())
+	}
+
 	if len(sessions) == 0 {
-		ctx.Println("No saved sessions found.")
+		if len(corrupt) == 0 {
+			ctx.Println("No saved sessions found.")
+		}
 		return nil
 	}
 
@@ -56,16 +62,22 @@ func sessionTitle(s session.Session) string {
 	for _, msg := range s.Messages {
 		if msg.Role == "user" && strings.TrimSpace(msg.Content) != "" {
 			title := strings.TrimSpace(msg.Content)
-
-			if len(title) > 50 {
-				title = title[:50] + "..."
-			}
-
-			return fmt.Sprintf(`"%s"`, title)
+			return fmt.Sprintf(`"%s"`, truncate(title, 50))
 		}
 	}
 
 	return "(empty session)"
+}
+
+// truncate shortens s to at most max runes, appending "..." when it cut
+// anything off. Truncating on rune boundaries keeps multi-byte characters
+// intact instead of producing broken half-characters.
+func truncate(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "..."
 }
 
 // FormatTime returns a short human-readable relative time (e.g. "5m

@@ -1,6 +1,6 @@
 //go:build windows
 
-package shell
+package sandbox
 
 import (
 	"context"
@@ -15,23 +15,28 @@ import (
 	"unicode/utf16"
 )
 
-// The Bash execution layer for Windows. The host process never executes
-// /bin/bash (or any other shell) directly: every command is driven through
-// wsl.exe, which relays it into the WSL distribution. The invocation is
-// assembled as an argv, never as a command string, so the agent's Bash
-// command and environment values cannot be re-parsed or injected on the way
-// through:
+// Shared WSL machinery for both Windows execution modes:
 //
-//	wsl.exe [--distribution <name>] --cd <dir> --exec
+//   - native mode relays through wsl.exe purely so GNU Bash exists on
+//     Windows; it grants no isolation and forwards the host environment.
+//   - wsl mode (see wsl_windows.go) uses the same low-level plumbing but
+//     under an explicitly restricted invocation.
+//
+// Every invocation is assembled as an argv, never as a command string, so
+// a command's text and environment values cannot be re-parsed or injected
+// on the way through:
+//
+//	wsl.exe [--distribution <name>] [--cd <dir>] --exec
 //	        [/usr/bin/env K=V ...] /bin/bash -lc <command>
 //
 // --exec runs the following argv inside the distribution without a shell;
 // each K=V pair and the whole command are single argv elements, so spaces,
 // quotes, newlines, pipes, and heredocs reach Bash verbatim.
 
-// wslPreflightTimeout bounds both the one-time backend probe and the
-// working-directory check inside the distribution. A cold distribution can
-// take a few seconds to boot, so this is deliberately generous.
+// wslPreflightTimeout bounds the one-time backend probes (backend health,
+// network-isolation support, working-directory checks). A cold
+// distribution can take a few seconds to boot, so this is deliberately
+// generous.
 const wslPreflightTimeout = 30 * time.Second
 
 // wslArgBudget is the payload size above which the command is spilled to a
@@ -40,8 +45,8 @@ const wslPreflightTimeout = 30 * time.Second
 // well under.
 const wslArgBudget = 30000
 
-// wslExePath resolves the wsl.exe launcher. It is a seam over the real
-// resolution so tests can simulate WSL being absent.
+// wslExePath is a seam over launcher resolution so tests can simulate WSL
+// being absent.
 var wslExePath = defaultWSLExePath
 
 func defaultWSLExePath() (string, error) {
@@ -61,46 +66,34 @@ func wslMissingError() error {
 		"Install WSL and a Linux distribution (e.g. `wsl --install -d Ubuntu`) and try again")
 }
 
-// distroArgs returns the arguments selecting the WSL distribution. By
-// default WSL's configured default distribution is used; FORCEFIELD_WSL_DISTRO
-// overrides that for machines whose default is broken or is a utility
-// distribution (e.g. docker-desktop).
-func distroArgs() []string {
-	if d := strings.TrimSpace(os.Getenv("FORCEFIELD_WSL_DISTRO")); d != "" {
-		return []string{"--distribution", d}
+// resolveDistro picks the distribution for an invocation: an explicit
+// configuration value wins; otherwise the historical FORCEFIELD_WSL_DISTRO
+// environment fallback applies; empty means WSL's default distribution.
+func resolveDistro(explicit string) string {
+	if d := strings.TrimSpace(explicit); d != "" {
+		return d
 	}
-	return nil
+	return strings.TrimSpace(os.Getenv("FORCEFIELD_WSL_DISTRO"))
 }
 
-// ensureBackend probes WSL once per Shell and caches the outcome, so a
-// machine without a usable WSL installation produces one clear, structured
-// error per command instead of a confusing per-command failure. A probe
-// aborted by caller cancellation is reported but not cached.
-func (s *Shell) ensureBackend(ctx context.Context) error {
-	s.backendMu.Lock()
-	defer s.backendMu.Unlock()
-	if s.backendProbed {
-		return s.backendErr
+// distroFlagArgs renders the arguments selecting a distribution. Callers
+// must pass names through Policy validation (ValidDistroName) or accept
+// whatever FORCEFIELD_WSL_DISTRO held historically for native mode.
+func distroFlagArgs(distro string) []string {
+	if distro == "" {
+		return nil
 	}
-	err := probeWSL(ctx)
-	if ctx.Err() == nil {
-		s.backendProbed, s.backendErr = true, err
-	}
-	return err
+	return []string{"--distribution", distro}
 }
 
-// probeWSL verifies that wsl.exe can actually run /bin/bash in the selected
-// distribution: WSL may be installed yet have no distribution, or a
-// distribution whose disk fails to mount. Probing with `bash -c true` also
-// confirms Bash itself exists inside the distribution.
-func probeWSL(ctx context.Context) error {
-	exe, err := wslExePath()
-	if err != nil {
-		return wslMissingError()
-	}
+// probeWSLDistro verifies that wsl.exe can actually run /bin/bash in the
+// named distribution ("": the default): WSL may be installed yet have no
+// distribution, or one whose disk fails to mount. Probing with
+// `bash -c true` also confirms Bash itself exists inside the distribution.
+func probeWSLDistro(ctx context.Context, exe, distro string) error {
 	pctx, cancel := context.WithTimeout(ctx, wslPreflightTimeout)
 	defer cancel()
-	probe := exec.CommandContext(pctx, exe, append(distroArgs(), "--exec", "/bin/bash", "-c", "true")...)
+	probe := exec.CommandContext(pctx, exe, append(distroFlagArgs(distro), "--exec", "/bin/bash", "-c", "true")...)
 	out, err := probe.CombinedOutput()
 	if pctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("Bash on Windows runs through WSL, but WSL did not respond within %s; try `wsl --shutdown` and retry", wslPreflightTimeout)
@@ -124,48 +117,6 @@ func probeWSL(ctx context.Context) error {
 	return errors.New(msg)
 }
 
-// buildCommand runs command through GNU Bash inside the WSL distribution by
-// invoking wsl.exe (see the comment at the top of this file for the exact
-// invocation). It never executes /bin/bash from Windows and never falls back
-// to PowerShell or cmd. The returned cleanup, when non-nil, removes a staged
-// script file and must be called once the command has run.
-func buildCommand(ctx context.Context, command, cwd string, extraEnv []string) (*exec.Cmd, func(), error) {
-	exe, err := wslExePath()
-	if err != nil {
-		return nil, nil, wslMissingError()
-	}
-
-	args := append([]string{}, distroArgs()...)
-	if cd := wslCdPath(cwd); cd != "" {
-		args = append(args, "--cd", cd)
-	}
-	args = append(args, "--exec")
-
-	var cleanup func()
-	if commandBudget(command, extraEnv) <= wslArgBudget {
-		if len(extraEnv) > 0 {
-			args = append(args, "/usr/bin/env")
-			args = append(args, extraEnv...)
-		}
-		args = append(args, "/bin/bash", "-lc", command)
-	} else {
-		script, remove, err := writeWslScript(extraEnv, command)
-		if err != nil {
-			return nil, nil, fmt.Errorf("shell: staging large command for WSL: %w", err)
-		}
-		cleanup = remove
-		args = append(args, "/bin/bash", "-l", script)
-	}
-
-	cmd := exec.CommandContext(ctx, exe, args...)
-	// wsl.exe needs its normal Windows environment to run; the Linux-side
-	// environment comes through the argv above, since WSL does not forward
-	// arbitrary Windows variables into the distribution. The host-side
-	// working directory is left alone (--cd handles chdir inside WSL).
-	cmd.Env = os.Environ()
-	return cmd, cleanup, nil
-}
-
 // commandBudget estimates the payload wsl.exe would carry on its command
 // line. Byte length is a safe over-estimate for non-ASCII text, which
 // shrinks when encoded as UTF-16.
@@ -179,9 +130,9 @@ func commandBudget(command string, extraEnv []string) int {
 
 // writeWslScript stages the environment exports and the command in a
 // temporary Bash script for payloads that exceed wsl.exe's command-line
-// limit. The script lives on the Windows filesystem, so it is visible inside
-// the distribution through the /mnt drvfs automount. The returned path is
-// the script's WSL path; the returned func removes the file.
+// limit. The script lives on the Windows filesystem, so it is visible
+// inside the distribution through the /mnt drvfs automount. The returned
+// path is the script's WSL path; the returned func removes the file.
 func writeWslScript(extraEnv []string, command string) (string, func(), error) {
 	f, err := os.CreateTemp("", "forcefield-cmd-*.sh")
 	if err != nil {
@@ -236,11 +187,13 @@ func wslPathFromWindows(p string) string {
 	return "/mnt/" + strings.ToLower(vol[:1]) + rest
 }
 
-// wslCdPath maps a working directory onto a form `wsl.exe --cd` understands.
-// --cd accepts absolute Windows paths (translated to the distribution's
-// /mnt automount), absolute Linux paths, and \\wsl$ paths as-is. Relative
-// paths are made absolute against the host process's working directory,
-// because --cd requires an absolute path.
+// wslCdPath maps a working directory onto a form `wsl.exe --cd`
+// understands. --cd accepts absolute Windows paths (translated to the
+// distribution's /mnt automount), absolute Linux paths, and \\wsl$ paths
+// as-is. Relative paths are made absolute against the host process's
+// working directory, because --cd requires an absolute path. Sandbox
+// callers never rely on this fallback: their directories are already
+// absolute after resolveWithin.
 func wslCdPath(dir string) string {
 	switch {
 	case dir == "":
@@ -258,16 +211,16 @@ func isLinuxAbs(p string) bool { return strings.HasPrefix(p, "/") }
 
 func isUNC(p string) bool { return strings.HasPrefix(p, `\\`) }
 
-// validWorkingDir reports whether dir is usable as the command's working
-// directory. Windows paths are checked on the host as usual. Absolute Linux
-// paths belong to the WSL filesystem, which the host cannot stat, so they
-// are verified inside the distribution: wsl.exe only warns when --cd fails
-// and still runs the command (in the wrong directory), so the check must
-// happen before the command is allowed to run.
-func validWorkingDir(dir string) bool {
+// validWorkingDir reports whether dir exists and is usable as the
+// command's working directory. Windows paths are checked on the host as
+// usual. Absolute Linux paths belong to the WSL filesystem, which the host
+// cannot stat, so they are verified inside the distribution: wsl.exe only
+// warns when --cd fails and still runs the command (in the wrong
+// directory), so the check must happen before the command runs.
+func validWorkingDir(exe, distro, dir string) bool {
 	switch {
 	case isLinuxAbs(dir):
-		return wslDirExists(dir)
+		return wslDirExists(exe, distro, dir)
 	case isUNC(dir):
 		// \\wsl$ paths address the distribution's own filesystem; the
 		// subsequent --cd reports if they don't exist.
@@ -281,14 +234,10 @@ func validWorkingDir(dir string) bool {
 // WSL itself is broken the check reports true so the failure surfaces
 // through the backend probe with its proper diagnosis instead of a
 // misleading "working directory does not exist".
-func wslDirExists(dir string) bool {
-	exe, err := wslExePath()
-	if err != nil {
-		return true
-	}
+func wslDirExists(exe, distro, dir string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), wslPreflightTimeout)
 	defer cancel()
-	check := exec.CommandContext(ctx, exe, append(distroArgs(), "--exec", "/usr/bin/test", "-d", dir)...)
+	check := exec.CommandContext(ctx, exe, append(distroFlagArgs(distro), "--exec", "/usr/bin/test", "-d", dir)...)
 	out, err := check.CombinedOutput()
 	if err == nil {
 		return true
@@ -390,4 +339,11 @@ func looksUTF16LE(b []byte) bool {
 		pairs++
 	}
 	return pairs >= 4 && ascii*4 > pairs*3
+}
+
+// BackendFailure exposes the WSL infrastructure-failure classifier so
+// callers of native-relay execution can distinguish "the command failed"
+// from "the command never ran". On non-Windows builds it never fires.
+func BackendFailure(stderr, stdout string) (detail, hint string) {
+	return backendFailure(stderr, stdout)
 }

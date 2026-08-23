@@ -16,8 +16,10 @@ import (
 // take before it's aborted.
 const defaultNvidiaTimeout = 0
 
-// NvidiaProvider talks to NVIDIA NIM's OpenAI-compatible Chat Completions
-// API at https://integrate.api.nvidia.com/v1.
+// NvidiaProvider talks to OpenAI-compatible Chat Completions APIs. It
+// powers NVIDIA NIM (https://integrate.api.nvidia.com/v1) and, via
+// NewLMStudioProvider, LM Studio's local server, which speak the same
+// wire protocol; only error wording and authentication differ.
 type NvidiaProvider struct {
 	Endpoint string
 	Model    string
@@ -25,6 +27,10 @@ type NvidiaProvider struct {
 	client   *http.Client
 	retry    retryPolicy
 	gate     *requestGate
+
+	// label is the human-facing service name used in errors ("NVIDIA NIM"
+	// by default). Empty means the default.
+	label string
 }
 
 // NewNvidiaProvider builds an NvidiaProvider pointed at the given endpoint
@@ -41,6 +47,61 @@ func NewNvidiaProvider(endpoint, model, apiKey string, client *http.Client) *Nvi
 		client:   client,
 		retry:    defaultRetryPolicy,
 		gate:     newRequestGate(),
+	}
+}
+
+// NewLMStudioProvider builds a provider for LM Studio's local server,
+// which exposes the same OpenAI-compatible chat completions API as NVIDIA
+// NIM but is unauthenticated. Errors are worded for LM Studio so a user
+// running locally is never told to go debug "NVIDIA NIM".
+func NewLMStudioProvider(endpoint, model string) *NvidiaProvider {
+	p := NewNvidiaProvider(endpoint, model, "", nil)
+	p.label = "LM Studio"
+	return p
+}
+
+// displayName returns the human-facing service name for error messages.
+func (n *NvidiaProvider) displayName() string {
+	if n.label != "" {
+		return n.label
+	}
+	return "NVIDIA NIM"
+}
+
+// providerName returns the lowercase name doWithRetry uses in status
+// errors ("nvidia nim returned status 404 …").
+func (n *NvidiaProvider) providerName() string {
+	return strings.ToLower(n.displayName())
+}
+
+// wrapTransport rewords connection-level failures so they say which
+// service to check and how.
+func (n *NvidiaProvider) wrapTransport(err error) error {
+	hint := ""
+	switch n.displayName() {
+	case "LM Studio":
+		hint = " (is the LM Studio local server running with the server enabled?)"
+	default:
+		hint = ""
+	}
+	return fmt.Errorf("could not reach %s at %s%s: %w", n.displayName(), n.Endpoint, hint, err)
+}
+
+// statusHint turns specific HTTP statuses into a concrete next step.
+func (n *NvidiaProvider) statusHint(status int, _ string) string {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		if n.displayName() == "LM Studio" {
+			return "LM Studio does not need an API key - make sure this endpoint points at an actual LM Studio server"
+		}
+		if n.APIKey == "" {
+			return "no API key is configured - set the NVIDIA_API_KEY environment variable and restart Forcefield"
+		}
+		return "check that NVIDIA_API_KEY is valid and that this account can access this model"
+	case http.StatusNotFound:
+		return fmt.Sprintf("model %q was not found on %s - pick another model with /model or set model.name in config.yaml", n.Model, n.displayName())
+	default:
+		return ""
 	}
 }
 
@@ -179,14 +240,10 @@ func (n *NvidiaProvider) StreamChat(ctx context.Context, messages []Message, too
 		return httpReq, nil
 	}
 
-	wrapTransport := func(err error) error {
-		return fmt.Errorf("could not reach NVIDIA NIM at %s: %w", n.Endpoint, err)
-	}
-
-	resp, err := doWithRetry(ctx, n.client, n.retry, "nvidia nim", n.Model, buildRequest, wrapTransport)
+	resp, err := doWithRetry(ctx, n.client, n.retry, n.providerName(), n.Model, buildRequest, n.wrapTransport)
 	if err != nil {
 		n.gate.release()
-		return nil, err
+		return nil, annotateStatusHint(err, n.statusHint)
 	}
 
 	events := make(chan StreamEvent)

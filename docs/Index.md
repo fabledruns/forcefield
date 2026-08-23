@@ -19,6 +19,7 @@ You can find the index of the contents in this file.
 | [Config](Config.md)       | `config`    | Loads, validates, and manages Forcefield's global YAML configuration file.                                      |
 | [Providers](Providers.md) | `providers` | Defines the model provider interface and its implementations for communicating with LLMs.                       |
 | [Runtime](Runtime.md)     | `runtime`   | Coordinates agents, providers, tools, skills, and sessions to execute model interactions.                       |
+| [Sandbox](Sandbox.md)     | `sandbox`   | Defines the execution boundary for shell commands: policies and the executors that enforce them.                 |
 | [Session](Session.md)     | `session`   | Manages chat sessions, message history, persistence, and provider-specific message conversion.                  |
 | [Skills](Skills.md)       | `skills`    | Discovers, indexes, and loads agent skills on demand from the local skill store.                                |
 | [Tools](Tools.md)         | `tools`     | Defines the tool framework, including tool registration, execution, and built-in tool implementations.          |

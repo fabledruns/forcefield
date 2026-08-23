@@ -47,6 +47,33 @@ When the user submits a line:
 5. Streamed text, tool activity, and the final response update the transcript.
 6. The session is saved locally.
 
+## Mouse Support
+
+Mouse events route through one centralized interaction layer (`mouse.go`).
+Rendering registers hit regions; incoming events resolve against them, in
+a fixed precedence: permission prompt → open modal → wheel scrolling →
+transcript blocks (tool/thinking) → footer (suggestions, input box). Events
+that land on nothing fall through untouched.
+
+| Interaction                        | Action                                        |
+| ---------------------------------- | --------------------------------------------- |
+| Wheel up/down                      | Scroll transcript (3 lines per notch).         |
+| Click a `…` tool block             | Toggle that block's detail view.               |
+| Click a Thinking header            | Toggle that reasoning block.                   |
+| Click a row in a picker modal      | Choose it (same as keyboard Enter).            |
+| Wheel over a picker modal          | Move its selection cursor.                     |
+| Click the input box                | Focus the editor.                              |
+| Click `/command` suggestion        | Complete the input with it.                    |
+| Click an answer label while a permission prompt is open | Same as pressing that key (y/n/a/d). |
+| <kbd>F2</kbd>                      | Toggle mouse capture off/on.                    |
+
+Text selection: with mouse capture on (default), native terminal
+selection needs Shift+drag on most terminals; press **F2** to hand mouse
+events back to the terminal entirely for ordinary click-drag selection.
+Keyboard behavior is identical in both modes. Hover feedback is subtle
+(underlined block headers, highlighted permission labels) and only
+refreshes on events Forcefield receives; no all-motion tracking is used.
+
 ## Command Integration
 
 The TUI implements `command.Context`.

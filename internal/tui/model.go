@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,14 +27,26 @@ import (
 // something usable instead of a zero-height viewport.
 const minTranscriptHeight = 3
 
-// headerHeight is the fixed number of terminal rows consumed by the
-// header line. Used to size the transcript viewport on every resize.
+// headerRows reports how many terminal rows the rendered header actually
+// occupies, so viewport sizing and mouse hit-testing both derive chrome
+// geometry from the real rendering instead of a hand-maintained constant.
+// (A stale constant here shifts every click target by the difference —
+// the header renders one row, but was long assumed to be two.)
 //
-// There is no equivalent fixed footerHeight: the footer now grows with
-// the input box, which itself grows with however many lines the prompt
-// holds (see minInputHeight/maxInputHeight and (*model).layout), so its
-// height is computed dynamically instead.
-const headerHeight = 2
+// There is no equivalent fixed footerHeight: the footer grows with the
+// input box, which itself grows with however many lines the prompt holds
+// (see minInputHeight/maxInputHeight and (*model).layout), so its height
+// is computed dynamically instead.
+func (m model) headerRows() int {
+	if m.width <= 0 {
+		return headerMinRows
+	}
+	return lipgloss.Height(m.renderHeader())
+}
+
+// headerMinRows bounds the header when no width has arrived yet and it
+// cannot be measured.
+const headerMinRows = 1
 
 // minInputHeight and maxInputHeight bound how many rows the prompt input
 // box is allowed to occupy. It grows automatically as the user types or
@@ -134,6 +147,20 @@ type model struct {
 	// not a submit. The window sits well under keyboard auto-repeat
 	// (~33ms at the default Windows rate), which never bursts.
 	lastKeyAt time.Time
+
+	// mouseEnabled mirrors whether Bubble Tea's mouse tracking is on.
+	// It starts enabled (cell motion: clicks, wheel, drag). F2 toggles it
+	// so users can hand mouse events back to the terminal for native text
+	// selection; keyboard behavior is identical in both modes.
+	mouseEnabled bool
+
+	// hoverID is the hit-region ID under the pointer, refreshed from
+	// every routed mouse event. Renderers apply subtle emphasis only.
+	hoverID string
+
+	// spans maps transcript content rows to interactive entries (tool and
+	// thinking blocks), rebuilt whenever the transcript re-renders.
+	spans []contentSpan
 }
 
 // pasteBurstWindow is the maximum gap between keystrokes for the run to
@@ -209,7 +236,11 @@ func newInput() textarea.Model {
 // the Runtime created below. asker resolves interactive "ask" permission
 // decisions via the permission modal instead of the runtime's stdin
 // default, which isn't usable once bubbletea has taken over the terminal.
-func newModel(cfg *config.Config, sess *session.Session, asker permissions.Asker) model {
+//
+// The error return covers runtime construction (config problems, skill or
+// memory loading failures); the caller shows them as a normal startup
+// failure instead of crashing.
+func newModel(cfg *config.Config, sess *session.Session, asker permissions.Asker) (model, error) {
 	input := newInput()
 
 	spin := spinner.New()
@@ -218,7 +249,7 @@ func newModel(cfg *config.Config, sess *session.Session, asker permissions.Asker
 
 	r, err := runtime.New()
 	if err != nil {
-		panic(fmt.Sprintf("failed to initialize runtime: %v", err))
+		return model{}, fmt.Errorf("initialize runtime: %w", err)
 	}
 	r.SetPermissionAsker(asker)
 
@@ -238,7 +269,8 @@ func newModel(cfg *config.Config, sess *session.Session, asker permissions.Asker
 		activeTools:  make(map[string]int),
 		following:    true,
 		showActivity: true,
-	}
+		mouseEnabled: true,
+	}, nil
 }
 
 // sessionEntries converts a session's saved messages into the transcript
@@ -300,6 +332,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleSelectPickerKey(msg)
 		}
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		next, consumed := m.routeMouse(msg)
+		if !consumed {
+			// Outside every interactive region: keep the pre-mouse
+			// forwarding behavior so nothing regresses.
+			var vpCmd tea.Cmd
+			next.viewport, vpCmd = next.viewport.Update(msg)
+			cmds := []tea.Cmd{vpCmd}
+			var inputCmd tea.Cmd
+			next.input, inputCmd = next.input.Update(msg)
+			cmds = append(cmds, inputCmd)
+			return next, tea.Batch(cmds...)
+		}
+		return next, nil
 
 	case permissionRequestMsg:
 		// A permission decision blocks the whole run, so it takes
@@ -692,6 +739,20 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlY:
 		return m, copyLastAssistantMessage(m.entries)
 
+	case tea.KeyF2:
+		// Toggle mouse capture. Off hands the pointer back to the terminal
+		// for native text selection; on restores scrolling/clicks. Keyboard
+		// behavior is identical either way.
+		m.mouseEnabled = !m.mouseEnabled
+		if m.hoverID != "" {
+			m.hoverID = ""
+			m.refreshTranscript()
+		}
+		if m.mouseEnabled {
+			return m, tea.EnableMouseCellMotion
+		}
+		return m, tea.DisableMouse
+
 	case tea.KeyEnter:
 		// Enter-with-modifier inserts a real newline instead of
 		// submitting; see newInput for which chords can actually reach
@@ -945,7 +1006,7 @@ func (m *model) layout() {
 	m.input.SetWidth(inputWidth)
 	m.syncInputHeight()
 
-	transcriptHeight := m.height - headerHeight - m.footerHeight()
+	transcriptHeight := m.height - m.headerRows() - m.footerHeight()
 	if transcriptHeight < minTranscriptHeight {
 		transcriptHeight = minTranscriptHeight
 	}
@@ -956,22 +1017,46 @@ func (m *model) layout() {
 	m.refreshTranscript()
 }
 
-// refreshTranscript re-renders all entries into the viewport. While the
-// user is following the conversation (at the bottom, or just submitted),
-// new output keeps the newest message visible; once they've scrolled up to
-// read older output, the scroll position is preserved instead of being
-// yanked back down on every stream chunk. While empty (showing the
-// FORCEFIELD splash), it stays at the top so the whole banner is visible.
+// refreshTranscript re-renders all entries into the viewport and rebuilds
+// the interactive-region layout spans. While the user is following the
+// conversation (at the bottom, or just submitted), new output keeps the
+// newest message visible; once they've scrolled up to read older output,
+// the scroll position is preserved instead of being yanked back down on
+// every stream chunk. While empty (showing the FORCEFIELD splash), it
+// stays at the top so the whole banner is visible.
 func (m *model) refreshTranscript() {
 	if m.viewport.Width == 0 {
 		return // not sized yet; layout() will call this again once it is
 	}
-	m.viewport.SetContent(renderTranscript(m.entries, m.viewport.Width))
+	content, spans := renderTranscriptWithLayout(m.entries, m.viewport.Width, m.hoverID)
+	m.spans = spans
+	m.viewport.SetContent(content)
 	if len(m.entries) == 0 {
 		m.viewport.GotoTop()
 	} else if m.following {
 		m.viewport.GotoBottom()
 	}
+}
+
+// transcriptRegionAt resolves a screen point to an interactive transcript
+// region (tool/thinking block), converting through the current scroll
+// offset. Spans live in content coordinates, so scrolling never
+// invalidates them.
+func (m model) transcriptRegionAt(x, y int) (HitRegion, bool) {
+	top := m.headerRows()
+	if y < top || y >= top+m.viewport.Height {
+		return HitRegion{}, false
+	}
+	contentY := y - top + m.viewport.YOffset
+	if span := spanAt(m.spans, contentY); span != nil {
+		return HitRegion{
+			ID:     span.id,
+			Rect:   m.contentBand(span.startLine, span.lines),
+			Action: span.action,
+			Arg:    strconv.Itoa(span.entry),
+		}, true
+	}
+	return HitRegion{}, false
 }
 
 // View satisfies tea.Model.
@@ -1029,13 +1114,13 @@ func (m model) renderHeader() string {
 
 func (m model) renderFooter() string {
 	if m.permissionPrompt != nil {
-		promptBox := inputBorderStyle.Width(m.width - 2).Render(m.permissionPrompt.footerPrompt())
-		return lipgloss.JoinVertical(lipgloss.Left, promptBox, helpStyle.Render("waiting for your answer"))
+		promptBox := inputBorderStyle.Width(m.width - 2).Render(m.permissionPrompt.footerPrompt(m.permHoverKey()))
+		return lipgloss.JoinVertical(lipgloss.Left, promptBox, helpStyle.Render("waiting for your answer · esc means no"))
 	}
 
 	inputBox := inputBorderStyle.Width(m.width - 2).Render(m.input.View())
 
-	status := helpStyle.Render("enter send · alt+enter newline · ctrl+e tool · ctrl+r think · ctrl+t status · esc quit")
+	status := helpStyle.Render("enter send · alt+enter newline · ctrl+e tool · ctrl+r think · ctrl+t status · f2 mouse/selection · esc quit")
 	if m.waiting {
 		activity := ""
 		if m.showActivity {

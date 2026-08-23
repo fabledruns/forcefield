@@ -1,0 +1,8 @@
+# INVALID: negative run limits are meaningless; the runtime ignores them,
+# the schema rejects them so the mistake surfaces at lint time.
+model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ornith:9b
+agent:
+  max_iterations: -5

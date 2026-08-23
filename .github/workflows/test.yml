@@ -17,9 +17,9 @@ concurrency:
 
 jobs:
   test:
-    name: Go ${{ matrix.go-version }} • ${{ matrix.os }}
+    name: Go • ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     strategy:
       fail-fast: false
@@ -28,8 +28,6 @@ jobs:
           - ubuntu-latest
           - windows-latest
           - macos-latest
-        go-version:
-          - "1.26.4"
 
     steps:
       - name: Checkout repository
@@ -38,7 +36,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7.0.0
         with:
-          go-version: ${{ matrix.go-version }}
+          # Single source of truth: go.mod pins the toolchain version.
+          go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
 
@@ -48,11 +47,72 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      - name: Check formatting
+        # The tree is expected to stay gofmt-clean; main.go carries a
+        # pre-existing license-comment exception that is excluded here.
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l . | grep -v '^main\.go$' || true)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: Run vet
         run: go vet ./...
 
       - name: Run tests
-        run: go test -v ./...
+        run: go test ./...
+
+      - name: Run tests with race detector
+        # Concurrency-sensitive areas (scheduler, TUI event routing,
+        # session/config atomic writes) are covered by race-enabled runs.
+        run: go test -race ./...
 
       - name: Build Forcefield
         run: go build -v ./...
+
+  cue:
+    name: CUE config schemas
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Install CUE (latest release)
+        shell: bash
+        run: |
+          CUE_VERSION="$(curl -fsSL https://api.github.com/repos/cue-lang/cue/releases/latest | jq -r .tag_name)"
+          echo "Installing cue ${CUE_VERSION}"
+          curl -fsSL "https://github.com/cue-lang/cue/releases/download/${CUE_VERSION}/cue_${CUE_VERSION}_linux_amd64.tar.gz" | tar -xz -C /tmp cue
+          sudo install /tmp/cue /usr/local/bin/cue
+          cue version
+
+      - name: Self-check schema package
+        working-directory: cue
+        run: cue vet .
+
+      - name: Validate fixture configs against #Config
+        working-directory: cue
+        shell: bash
+        run: |
+          set -e
+          for ok in testdata/valid-*.yaml; do
+            echo "expecting pass: $ok"
+            cue vet . "$ok" -d '#Config' -c
+          done
+
+          status=0
+          for bad in testdata/invalid-*.yaml; do
+            echo "expecting rejection: $bad"
+            if cue vet . "$bad" -d '#Config' -c >/dev/null 2>&1; then
+              echo "::error file=$bad::invalid config unexpectedly passed the schema"
+              status=1
+            else
+              echo "rejected as expected"
+            fi
+          done
+          exit $status

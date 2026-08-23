@@ -56,6 +56,10 @@ type statusError struct {
 	Retries      int           // retries performed before giving up
 	RateLimited  bool
 	NonRetryable bool // quota/billing exhaustion: waiting cannot help
+	// Hint, when non-empty, is a user-facing suggestion for what to do
+	// next (e.g. "run ollama pull …"). Providers attach it after the
+	// fact based on status code and their own configuration.
+	Hint string
 }
 
 func (e *statusError) Error() string {
@@ -63,12 +67,14 @@ func (e *statusError) Error() string {
 		e.Provider, e.Status, e.Model, strings.TrimSpace(e.Body))
 	switch {
 	case e.NonRetryable:
-		return msg + " (quota or billing limit reached; not retryable - check the provider account for this API key)"
+		msg += " (quota or billing limit reached; not retryable - check the provider account for this API key)"
 	case e.Retries > 0:
-		return msg + fmt.Sprintf(" (rate limited; gave up after %d retries)", e.Retries)
-	default:
-		return msg
+		msg += fmt.Sprintf(" (rate limited; gave up after %d retries)", e.Retries)
 	}
+	if e.Hint != "" {
+		msg += "\n" + e.Hint
+	}
+	return msg
 }
 
 // parseRetryAfter interprets a Retry-After header value - delta-seconds or
@@ -223,6 +229,22 @@ func doWithRetry(
 // provider while one is still streaming. The agent loop is sequential by
 // design, so this always indicates a bug worth surfacing, not queueing.
 var errRequestInFlight = errors.New("another inference request is already in flight for this provider")
+
+// annotateStatusHint attaches a provider-specific action hint to a
+// returned *statusError (found via errors.As) and returns it; any other
+// error passes through unchanged. Keeping the classification at the call
+// site lets each provider speak for itself without doWithRetry needing to
+// know which service is on the other end of the wire.
+func annotateStatusHint(err error, hintFor func(status int, body string) string) error {
+	var se *statusError
+	if !errors.As(err, &se) {
+		return err
+	}
+	if h := hintFor(se.Status, se.Body); h != "" {
+		se.Hint = h
+	}
+	return se
+}
 
 // requestGate enforces one in-flight inference request per provider
 // instance, structurally preventing accidental duplicate concurrent

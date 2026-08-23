@@ -1,0 +1,6 @@
+# Only the required section: everything else is optional at runtime and
+# in the schema, so this minimal file must validate.
+model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ornith:9b

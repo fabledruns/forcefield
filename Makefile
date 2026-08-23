@@ -12,7 +12,7 @@ else
 	BINARY_EXT=
 endif
 
-.PHONY: all build run test clean fmt vet lint install tidy help
+.PHONY: all build run test clean fmt vet cue-check lint install tidy help
 
 all: build
 
@@ -35,6 +35,11 @@ fmt:
 
 vet:
 	$(GO) vet ./...
+
+cue-check:
+	cd cue && cue vet .
+	cd cue && cue vet . testdata/valid-config.yaml -d "#Config" -c
+	cd cue && cue vet . testdata/valid-minimal.yaml -d "#Config" -c
 
 lint:
 	golangci-lint run
@@ -62,6 +67,7 @@ help:
 	@echo "  make coverage   Generate coverage"
 	@echo "  make fmt        Format code"
 	@echo "  make vet        Run go vet"
+	@echo "  make cue-check  Validate CUE config schemas"
 	@echo "  make lint       Run linter"
 	@echo "  make clean      Remove builds"
 	@echo "  make tidy       Update modules"

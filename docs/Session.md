@@ -70,13 +70,15 @@ func (s *Session) Save() error
 
 Writes the session to disk as indented JSON. The function creates the sessions directory if needed and updates `UpdatedAt`.
 
+The write is atomic: data goes to a temporary file in the same directory, is flushed, and is then renamed over the real file. If Forcefield is killed during a save, readers see either the previous complete file or the new complete file — never a truncated one.
+
 ### `Load`
 
 ```go
 func Load(id string) (*Session, error)
 ```
 
-Reads one session file by ID.
+Reads one session file by ID. IDs containing path separators or dot segments are rejected. A corrupted session file is reported with an error that names the file; the file itself is never modified or deleted.
 
 ### `List`
 
@@ -84,7 +86,15 @@ Reads one session file by ID.
 func List() ([]Session, error)
 ```
 
-Reads all session JSON files from the sessions directory. If the directory does not exist, the function returns an empty list.
+Reads all session JSON files from the sessions directory. One unreadable or malformed file does not fail the listing: healthy sessions are returned and broken files are skipped. Use `ListCorrupt` to get the skipped files as well. If the directory does not exist, the function returns an empty list.
+
+### `ListCorrupt`
+
+```go
+func ListCorrupt() ([]Session, []Corruption, error)
+```
+
+Like `List`, but also returns every file that could not be read or parsed, so callers can surface exactly what was skipped instead of silently losing sessions.
 
 ### `ProviderMessages`
 
@@ -106,4 +116,6 @@ Converts session messages into provider messages for a model call. This conversi
 
 - Session data stays on the local machine.
 - Each session file is independent JSON.
+- Saves are atomic, so a crash cannot corrupt the session store.
+- Corrupted files are reported and skipped, never silently deleted or rewritten.
 - The package does not talk to the model. It only stores and converts history.

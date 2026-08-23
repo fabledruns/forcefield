@@ -124,18 +124,30 @@ Shows stored sessions.
 ```
 
 ```text
-/resume <session-id>
-Loads a previous session.
+/status
+Shows the active provider, model, session size, and tools.
 ```
 
 ```text
 /tools
-Shows available tools.
+Lists the tools available to the agent.
 ```
 
 ```text
 /memory
-Manages agent memory.
+Manages agent memory (via the ff memory CLI subcommand).
+```
+
+---
+
+# Diagnostics
+
+Run `ff doctor` to check common local problems: invalid configuration,
+unreachable providers, missing models, broken session files, and shell
+backend issues. Doctor never prints secret values such as API keys.
+
+```bash
+ff doctor
 ```
 
 ---
@@ -170,6 +182,25 @@ The configuration file defines:
 - Model endpoint
 - Model name
 - Agent instructions
+- Optional shell execution sandbox (see `docs/Sandbox.md`)
+
+---
+
+# Shell Execution Boundary
+
+Shell commands run through a configurable executor:
+
+```text
+native   no isolation (default; historical behavior)
+wsl      commands run inside a WSL distribution with a pinned working
+         directory, restricted environment, and optional enforced
+         network isolation. Requires Windows; unavailable WSL is an
+         error, never a silent fallback.
+```
+
+WSL mode does not confine filesystems (the distribution reaches all
+Windows drives through /mnt); permission prompts and `ff doctor` state
+exactly what is and is not isolated.
 
 ---
 

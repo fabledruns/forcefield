@@ -1,0 +1,5 @@
+# INVALID: model.name and model.endpoint are required non-empty strings.
+model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ""

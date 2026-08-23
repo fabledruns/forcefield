@@ -1,0 +1,6 @@
+# INVALID: "openai" was never implemented in the runtime; only ollama,
+# lmstudio, and nvidia construct providers. The schema must reject it.
+model:
+  provider: openai
+  endpoint: https://api.openai.com/v1
+  name: gpt-5

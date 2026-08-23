@@ -9,6 +9,7 @@ import (
 
 	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
+	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 )
 
@@ -284,6 +285,14 @@ func (s *scheduler) checkPermission(ctx context.Context, call providers.ToolCall
 	return true, result
 }
 
+// executionEnforcementSource is implemented by tools whose process
+// execution has a policy story (the shell tool, via its sandbox
+// executor). The scheduler consults it so permission requests can state
+// exactly what will run and under what boundary.
+type executionEnforcementSource interface {
+	ExecutionEnforcement(ctx context.Context) (sandbox.Enforcement, bool)
+}
+
 // resolveAsk prompts for a decision and persists "always" responses.
 func (s *scheduler) resolveAsk(ctx context.Context, call providers.ToolCall) (permissions.Decision, error) {
 	if s.asker == nil {
@@ -292,7 +301,14 @@ func (s *scheduler) resolveAsk(ctx context.Context, call providers.ToolCall) (pe
 		return permissions.Deny, fmt.Errorf("tool %q requires approval but no permission prompt is configured", call.Name)
 	}
 
-	prompt, err := s.asker.Ask(ctx, permissions.Request{Tool: call.Name, Arguments: call.Arguments})
+	req := permissions.Request{Tool: call.Name, Arguments: call.Arguments}
+	if src, ok := s.lookupEnforcementSource(call.Name); ok {
+		if e, ok := src.ExecutionEnforcement(ctx); ok {
+			req.Execution = &e
+		}
+	}
+
+	prompt, err := s.asker.Ask(ctx, req)
 	if err != nil {
 		return permissions.Deny, err
 	}
@@ -321,6 +337,17 @@ func (s *scheduler) deniedResult(call providers.ToolCall, reason string) *ToolRe
 		Content:    reason,
 	}
 	return result
+}
+
+// lookupEnforcementSource resolves the registered tool implementing the
+// enforcement-source interface, if any.
+func (s *scheduler) lookupEnforcementSource(name string) (executionEnforcementSource, bool) {
+	tool, ok := s.manager.Lookup(name)
+	if !ok {
+		return nil, false
+	}
+	src, ok := tool.(executionEnforcementSource)
+	return src, ok
 }
 
 func execute(ctx context.Context, tool tools.Tool, args map[string]any, onChunk func(tools.StreamChunk)) (tools.Result, error) {

@@ -9,8 +9,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"forcefield/internal/sandbox"
 )
 
 // Model describes how to reach a local model provider.
@@ -44,11 +48,35 @@ type Permissions struct {
 	Tools   map[string]string `yaml:"tools"`
 }
 
+// Sandbox configures the execution boundary for shell commands.
+//
+// Mode "" means "native": historical behavior with NO isolation, kept so
+// existing users are unaffected until they opt in. "wsl" executes shell
+// commands inside a WSL distribution under a restricted policy; see
+// internal/sandbox and docs/Sandbox.md for exactly what is enforced and
+// what is not.
+type Sandbox struct {
+	Mode string     `yaml:"mode"`
+	WSL  SandboxWSL `yaml:"wsl"`
+}
+
+// SandboxWSL holds the WSL-specific sandbox settings.
+type SandboxWSL struct {
+	// Distribution selects the WSL distribution ("": system default).
+	Distribution string `yaml:"distribution"`
+	// Network is the requested network policy: "disabled" (default,
+	// enforced via an in-distribution network namespace when possible -
+	// commands refuse to run when it cannot be established) or "host"
+	// (inherit WSL/host networking; never isolated).
+	Network string `yaml:"network"`
+}
+
 // Config is the top-level shape of config.yaml.
 type Config struct {
 	Model       Model       `yaml:"model"`
 	Agent       Agent       `yaml:"agent"`
 	Permissions Permissions `yaml:"permissions"`
+	Sandbox     Sandbox     `yaml:"sandbox"`
 }
 
 const defaultConfigTemplate = `model:
@@ -71,6 +99,22 @@ permissions:
     write_file: ask
     shell: ask
     add_project_memory: ask
+
+sandbox:
+  # Execution boundary for shell commands.
+  #   native - no isolation (historical behavior; commands run with your
+  #            user's permissions and the full host environment).
+  #   wsl    - run shell commands inside a WSL distribution under a
+  #            restricted policy. Requires Windows; Forcefield refuses to
+  #            run commands if WSL is unavailable rather than falling
+  #            back. See docs/Sandbox.md for exactly what is enforced
+  #            (pinned working directory, restricted environment, optional
+  #            network namespace) and what is not (general filesystem
+  #            confinement).
+  mode: native
+  wsl:
+    distribution: ""    # empty = the system default distribution
+    network: disabled   # "disabled" (enforced when possible, else refused) or "host"
 `
 
 // Dir returns the Forcefield home directory (~/.forcefield), creating it
@@ -126,14 +170,103 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid config at %s: %w", path, err)
 	}
 
-	cfg.Model.APIKey = os.Getenv("NVIDIA_API_KEY")
+	key, _, err := ResolveAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	cfg.Model.APIKey = key
 
 	return &cfg, nil
+}
+
+// apiKeyName is the environment variable / .env key Forcefield reads its
+// NVIDIA NIM API key from.
+const apiKeyName = "NVIDIA_API_KEY"
+
+// ResolveAPIKey returns the NVIDIA API key along with where it came from:
+// the process environment first, then .env files (project-local, then
+// ~/.forcefield/.env).
+//
+// A key found in .env is returned to the caller instead of being written
+// back into the process environment on purpose: everything in the process
+// environment is inherited by every command the shell tool runs, so
+// importing .env contents into os.Environ would hand the key to every
+// subprocess. Providers receive the key through the config struct, which
+// is never persisted (yaml:"-") and never printed.
+//
+// A .env file that contains malformed non-comment lines is rejected with
+// a named-file error rather than being partially applied.
+func ResolveAPIKey() (key, source string, err error) {
+	if v := os.Getenv(apiKeyName); v != "" {
+		return strings.TrimSpace(v), "environment", nil
+	}
+
+	// Project-local .env wins over the global one; the environment wins
+	// over both.
+	candidates := []string{filepath.Join(".", ".env")}
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		candidates = append(candidates, filepath.Join(home, ".forcefield", ".env"))
+	}
+
+	for _, path := range candidates {
+		data, readErr := os.ReadFile(path)
+		if os.IsNotExist(readErr) {
+			continue
+		}
+		if readErr != nil {
+			return "", "", fmt.Errorf("read %s: %w", path, readErr)
+		}
+
+		value, parseErr := parseDotEnv(string(data))
+		if parseErr != nil {
+			return "", "", fmt.Errorf("%s: %w", path, parseErr)
+		}
+		if v := value[apiKeyName]; v != "" {
+			return v, fmt.Sprintf(".env file %s", path), nil
+		}
+	}
+	return "", "", nil
+}
+
+// parseDotEnv parses the small .env subset Forcefield needs: KEY=VALUE
+// lines, blank lines, and # comments. Values may be wrapped in single or
+// double quotes. Anything else is reported as a malformed line so a typo
+// never silently disables a setting the user believes is active.
+func parseDotEnv(body string) (map[string]string, error) {
+	values := make(map[string]string)
+	for i, line := range strings.Split(body, "\n") {
+		lineNo := i + 1
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name, value, found := strings.Cut(line, "=")
+		if !found {
+			return nil, fmt.Errorf("line %d is malformed (expected KEY=VALUE): %q", lineNo, line)
+		}
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" {
+			return nil, fmt.Errorf("line %d has an empty variable name", lineNo)
+		}
+		if len(value) >= 2 {
+			if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+				value = value[1 : len(value)-1]
+			}
+		}
+		values[name] = value
+	}
+	return values, nil
 }
 
 // Save writes the config back to config.yaml. APIKey is never
 // round-tripped (it's tagged yaml:"-" and always sourced from the
 // environment), so it's never written to disk.
+//
+// The write is atomic (temp file + rename + flush), so a crash or kill
+// during a model/provider/permission switch can never leave a truncated
+// config.yaml behind; readers see either the old or the new complete
+// file.
 func (c *Config) Save() error {
 	path, err := Path()
 	if err != nil {
@@ -145,10 +278,53 @@ func (c *Config) Save() error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(path, out, 0o644); err != nil {
+	if err := writeFileAtomic(path, out, 0o644); err != nil {
 		return fmt.Errorf("write config file %s: %w", path, err)
 	}
 	return nil
+}
+
+// writeFileAtomic writes data to path via a temporary file in the same
+// directory that is flushed and then renamed over the destination. The
+// rename is retried briefly because Windows can transiently refuse to
+// replace a destination another handle still references (antivirus,
+// indexing) - see session.replaceFile for the same rationale.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpName)
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write data: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("flush data: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return fmt.Errorf("set permissions: %w", err)
+	}
+
+	var renameErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 5 * time.Millisecond)
+		}
+		if renameErr = os.Rename(tmpName, path); renameErr == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("replace file: %w", renameErr)
 }
 
 // validate performs minimal sanity checks so failures surface early with a
@@ -171,6 +347,18 @@ func (c *Config) validate() error {
 		if err := validatePermissionValue(fmt.Sprintf("permissions.tools.%s", tool), value); err != nil {
 			return err
 		}
+	}
+
+	if _, err := sandbox.ParseMode(c.Sandbox.Mode); err != nil {
+		return fmt.Errorf("sandbox.mode: %w", err)
+	}
+	if _, err := sandbox.ParseNetwork(c.Sandbox.WSL.Network); err != nil {
+		return fmt.Errorf("sandbox.wsl.network: %w", err)
+	}
+	if c.Sandbox.Mode == string(sandbox.ModeWSL) &&
+		c.Sandbox.WSL.Distribution != "" && !sandbox.ValidDistroName(c.Sandbox.WSL.Distribution) {
+		return fmt.Errorf("sandbox.wsl.distribution %q is invalid (allowed: letters, digits, '.', '_', '-', and it may not start with '-')",
+			c.Sandbox.WSL.Distribution)
 	}
 
 	return nil

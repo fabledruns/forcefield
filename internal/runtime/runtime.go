@@ -4,12 +4,15 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"os"
+	"unicode/utf8"
 
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
 	"forcefield/internal/memory"
 	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
+	"forcefield/internal/sandbox"
 	"forcefield/internal/skills"
 	"forcefield/internal/task"
 	"forcefield/internal/tools"
@@ -84,7 +87,12 @@ func New() (*Runtime, error) {
 		return nil, err
 	}
 
-	manager, err := builtin.NewManager()
+	executor, err := newExecutor(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	manager, err := builtin.NewManager(builtin.WithExecutor(executor))
 	if err != nil {
 		return nil, fmt.Errorf("create tool manager: %w", err)
 	}
@@ -153,6 +161,17 @@ func (r *Runtime) CurrentModel() string { return r.cfg.Model.Name }
 // CurrentProvider returns the active provider name.
 func (r *Runtime) CurrentProvider() string { return r.cfg.Model.Provider }
 
+// ToolSummaries returns one "name: description" line per registered
+// tool, in registration order, for /tools-style reporting.
+func (r *Runtime) ToolSummaries() []string {
+	defs := r.manager.Definitions()
+	out := make([]string, 0, len(defs))
+	for _, d := range defs {
+		out = append(out, d.Name+": "+d.Description)
+	}
+	return out
+}
+
 // SetModel switches the active model, keeping the current provider and
 // endpoint, and takes effect starting with the next request.
 func (r *Runtime) SetModel(name string) error {
@@ -197,6 +216,49 @@ func (r *Runtime) SetProvider(name string) error {
 	r.cfg = &cfg
 	r.provider = provider
 	return nil
+}
+
+// newExecutor constructs the sandbox executor for shell commands from the
+// configured sandbox section and the current project root. Construction
+// fails loudly for unsupported combinations (e.g. wsl mode on Unix);
+// there is never a silent fallback to a weaker backend.
+func newExecutor(cfg *config.Config) (sandbox.Executor, error) {
+	mode, err := sandbox.ParseMode(cfg.Sandbox.Mode)
+	if err != nil {
+		return nil, fmt.Errorf("invalid sandbox.mode: %w", err)
+	}
+	network, err := sandbox.ParseNetwork(cfg.Sandbox.WSL.Network)
+	if err != nil {
+		return nil, fmt.Errorf("invalid sandbox.wsl.network: %w", err)
+	}
+
+	policy := sandbox.Policy{
+		Mode:      mode,
+		Workspace: projectWorkspace(),
+		Distro:    cfg.Sandbox.WSL.Distribution,
+		Network:   network,
+	}
+	executor, err := sandbox.NewExecutor(policy)
+	if err != nil {
+		return nil, fmt.Errorf("create %s executor (sandbox.mode = %q): %w", mode, cfg.Sandbox.Mode, err)
+	}
+	return executor, nil
+}
+
+// projectWorkspace resolves the directory shell commands treat as their
+// working context: the Git repository root when the process runs inside
+// one, otherwise the current directory. Failures fall back to "" so the
+// executor resolves per-request instead of failing startup.
+func projectWorkspace() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	root, err := memory.ProjectRoot(cwd)
+	if err != nil {
+		return cwd
+	}
+	return root
 }
 
 func (r *Runtime) buildMessages(history []providers.Message) []providers.Message {
@@ -377,8 +439,23 @@ func truncateToolResult(content string) string {
 	if len(content) <= maxToolResultChars {
 		return content
 	}
-	kept := content[:maxToolResultChars]
-	return fmt.Sprintf("%s\n\n[...output truncated, %d bytes total. Re-run with narrower output (e.g. filters, -run, grep) if you need the rest.]", kept, len(content))
+
+	// Cut on a rune boundary so multi-byte characters at the limit are
+	// never split into invalid UTF-8, which would poison every later
+	// provider request that replays this tool result.
+	cut := 0
+	for i, r := range content {
+		if i+utf8.RuneLen(r) > maxToolResultChars {
+			break
+		}
+		cut = i + utf8.RuneLen(r)
+	}
+	if cut == 0 {
+		cut = 1
+	}
+
+	return fmt.Sprintf("%s\n\n[...output truncated at %d bytes, %d bytes total. Re-run with narrower output (e.g. filters, -run, grep) if you need the rest.]",
+		content[:cut], cut, len(content))
 }
 
 // goalFrom returns the first user message for task-state display.
@@ -448,8 +525,9 @@ func newProvider(cfg *config.Config) (providers.ModelProvider, error) {
 		return providers.NewNvidiaProvider("https://integrate.api.nvidia.com/v1", cfg.Model.Name, cfg.Model.APIKey, nil), nil
 	case "lmstudio":
 		// LM Studio exposes the same OpenAI-compatible chat completions
-		// API as NVIDIA NIM, just unauthenticated and local.
-		return providers.NewNvidiaProvider(cfg.Model.Endpoint, cfg.Model.Name, "", nil), nil
+		// API as NVIDIA NIM, just unauthenticated and local; only the
+		// error wording differs.
+		return providers.NewLMStudioProvider(cfg.Model.Endpoint, cfg.Model.Name), nil
 	default:
 		return nil, fmt.Errorf(
 			"unsupported model provider %q (only \"ollama\", \"lmstudio\", and \"nvidia\" are supported in this prototype)",

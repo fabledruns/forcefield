@@ -38,14 +38,20 @@ const liveThinkingLines = 3
 // renderThinking renders one reasoning block as a collapsible transcript
 // entry. While reasoning streams, a short tail of the text stays visible so
 // progress is obvious; once the turn moves on it collapses to the header
-// line until expanded with ctrl+r.
-func renderThinking(t *thinkingRecord, width int) string {
+// line until expanded with ctrl+r. hovered marks the block under the
+// pointer for subtle emphasis.
+func renderThinking(t *thinkingRecord, width int, hovered bool) string {
 	caret := IconCollapsed
 	if t.expanded {
 		caret = IconExpanded
 	}
-	header := thinkStyle.Render(fmt.Sprintf("%s %s Thinking  %s",
-		caret, IconThink, formatThinkingDuration(t.duration())))
+	header := fmt.Sprintf("%s %s Thinking  %s",
+		caret, IconThink, formatThinkingDuration(t.duration()))
+	if hovered {
+		header = hoverEmphasisStyle.Render(header)
+	} else {
+		header = thinkStyle.Render(header)
+	}
 
 	var lines []string
 	if text := strings.TrimRight(t.text, "\n"); text != "" {

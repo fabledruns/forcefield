@@ -1,0 +1,30 @@
+# A complete, current config exercising every supported section:
+# model selection, agent run limits, permission overrides, and the WSL
+# sandbox. cue vet must accept this file.
+model:
+  provider: nvidia
+  endpoint: https://integrate.api.nvidia.com/v1
+  name: z-ai/glm-5.2
+
+agent:
+  name: default
+  system_prompt: |
+    You are Forcefield, a local-first coding agent.
+  max_iterations: 40
+  max_tool_calls: 200
+  max_consecutive_failures: 4
+
+permissions:
+  default: ask
+  tools:
+    read_file: allow
+    list_files: allow
+    pwd: allow
+    write_file: ask
+    shell: ask
+
+sandbox:
+  mode: wsl
+  wsl:
+    distribution: Ubuntu-22.04
+    network: disabled

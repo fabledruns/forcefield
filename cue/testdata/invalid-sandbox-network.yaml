@@ -1,0 +1,9 @@
+# INVALID: sandbox.wsl.network only accepts disabled or host (or empty).
+model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ornith:9b
+sandbox:
+  mode: wsl
+  wsl:
+    network: blocked-ish

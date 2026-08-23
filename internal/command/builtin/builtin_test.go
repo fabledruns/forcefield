@@ -25,6 +25,9 @@ type fakeContext struct {
 
 	openedProviderPicker bool
 	openedModelPicker    bool
+
+	stats     command.SessionStats
+	toolLines []string
 }
 
 func (f *fakeContext) Println(format string, args ...any) {
@@ -57,6 +60,15 @@ func (f *fakeContext) OpenSessionPicker(sessions []session.Session) {
 
 func (f *fakeContext) OpenProviderPicker() { f.openedProviderPicker = true }
 func (f *fakeContext) OpenModelPicker()    { f.openedModelPicker = true }
+
+func (f *fakeContext) SessionStats() command.SessionStats { return f.stats }
+
+func (f *fakeContext) Tools() []string {
+	if len(f.toolLines) == 0 {
+		return []string{"read_file: reads files"}
+	}
+	return f.toolLines
+}
 
 func TestExit(t *testing.T) {
 	ctx := &fakeContext{}

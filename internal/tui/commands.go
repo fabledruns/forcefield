@@ -20,6 +20,8 @@ func newRegistry() *command.Registry {
 	reg.Register(builtin.NewProvider())
 	reg.Register(builtin.NewHelp(reg))
 	reg.Register(builtin.NewSessions())
+	reg.Register(builtin.NewStatus())
+	reg.Register(builtin.NewTools())
 	return reg
 }
 
@@ -94,6 +96,23 @@ func (m *model) OpenProviderPicker() {
 // active provider.
 func (m *model) OpenModelPicker() {
 	m.selectPicker = newModelPicker(m.providerName, m.modelName)
+}
+
+// SessionStats describes the active conversation for /status.
+func (m *model) SessionStats() command.SessionStats {
+	stats := command.SessionStats{ID: m.session.ID, Messages: len(m.session.Messages)}
+	for _, msg := range m.session.Messages {
+		stats.Chars += len(msg.Content)
+	}
+	return stats
+}
+
+// Tools returns one line per registered tool for /tools and /status.
+func (m *model) Tools() []string {
+	if m.runtime == nil {
+		return nil
+	}
+	return m.runtime.ToolSummaries()
 }
 
 // chooseProvider switches to the provider with the given ID and prints

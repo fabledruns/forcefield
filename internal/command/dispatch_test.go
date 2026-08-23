@@ -52,6 +52,12 @@ func (f *fakeContext) OpenSessionPicker(sessions []session.Session) {
 func (f *fakeContext) OpenProviderPicker() {}
 func (f *fakeContext) OpenModelPicker()    {}
 
+func (f *fakeContext) SessionStats() SessionStats {
+	return SessionStats{ID: "test-session", Messages: 2, Chars: 100}
+}
+
+func (f *fakeContext) Tools() []string { return []string{"read_file: reads files"} }
+
 // echoCommand records the args it was called with and can be told to fail.
 type echoCommand struct {
 	calledWith []string

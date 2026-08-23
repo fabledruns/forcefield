@@ -1,11 +1,23 @@
 package permissions
 
-import "context"
+import (
+	"context"
+
+	"forcefield/internal/sandbox"
+)
 
 // Request identifies the tool invocation being approved or rejected.
 type Request struct {
 	Tool      string
 	Arguments map[string]any
+
+	// Execution describes what will actually happen if this request is
+	// allowed - execution mode, isolation facts, limitations. It is nil
+	// for tools without a meaningful execution story (everything but
+	// shell today) and is filled in by the runtime from the active
+	// executor; approval surfaces must derive their wording from it
+	// rather than hardcoding claims.
+	Execution *sandbox.Enforcement
 }
 
 // Prompt is the user's answer to an interactive permission prompt. It's a
