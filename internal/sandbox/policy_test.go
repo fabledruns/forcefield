@@ -96,12 +96,18 @@ func TestResolveWithinDefaultsAndRelative(t *testing.T) {
 	}
 
 	// Relative requests anchor at the workspace, not at the process cwd.
+	// Compare canonically: on CI runners the result resolves under a
+	// different spelling (/private/var, RUNNER~1) than the raw join.
 	got, err = resolveWithinWorkspace(ws, filepath.Join("..", filepath.Base(ws), "sub"))
 	if err != nil {
 		t.Fatalf("relative dir error = %v", err)
 	}
-	if !within(got, sub) && !within(sub, got) && !strings.EqualFold(got, sub) {
-		t.Errorf("relative resolution = %q, want %q", got, sub)
+	wantSub, err := filepath.EvalSymlinks(sub)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(sub) error = %v", err)
+	}
+	if !samePath(got, wantSub) {
+		t.Errorf("relative resolution = %q, want canonical %q", got, wantSub)
 	}
 }
 
@@ -136,8 +142,14 @@ func TestResolveWithinMixedWorkspaceSpellings(t *testing.T) {
 			t.Errorf("workspace=%q dir=%q unexpected error: %v", tc.workspace, tc.dir, err)
 			continue
 		}
-		if !withinAny(realRoot, link, got) {
-			t.Errorf("resolved to %q, outside both spellings of the root", got)
+		// got is fully resolved, so the accepted spellings must be too.
+		candA, e1 := filepath.EvalSymlinks(realRoot)
+		candB, e2 := filepath.EvalSymlinks(link)
+		if e1 != nil || e2 != nil {
+			t.Fatalf("EvalSymlinks candidates: %v / %v", e1, e2)
+		}
+		if !withinAny(candA, candB, got) && !samePath(got, candA) && !samePath(got, candB) {
+			t.Errorf("resolved to %q, outside both canonical spellings (%q, %q)", got, candA, candB)
 		}
 	}
 
