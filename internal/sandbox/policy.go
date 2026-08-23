@@ -106,20 +106,32 @@ func resolveWithinWorkspace(workspace, dir string) (string, error) {
 		return "", fmt.Errorf("resolve working directory %s: %w", target, err)
 	}
 
-	// Containment is checked on the pre-symlink path first so a rooted
-	// request outside the workspace reports an escape even when the target
-	// does not exist (existence errors must not mask scope violations).
-	if !within(wsAbs, abs) {
-		return "", fmt.Errorf("%w: %s is outside %s", ErrWorkspaceEscape, abs, wsAbs)
-	}
-
+	// The workspace has two equally valid spellings after resolution
+	// (e.g. /var/x vs /private/var/x on macOS, or long vs 8.3 short user
+	// names on Windows); EvalSymlinks may return either depending on which
+	// components it walks. Containment therefore accepts any KNOWN
+	// spelling of the same root - and nothing else. Targets that resolve
+	// under some third path are escapes.
+	//
+	// Resolve first, classify second: symlinks can point INWARD (a
+	// differently-spelled alias of the workspace) or OUTWARD (an escape),
+	// and only the resolved form tells them apart. The unresolved path is
+	// used solely to classify failures for nonexistent directories.
 	resolved, evalErr := filepath.EvalSymlinks(abs)
 	if evalErr != nil {
+		if !withinAny(wsAbs, wsResolved, abs) {
+			return "", fmt.Errorf("%w: %s is outside %s", ErrWorkspaceEscape, abs, wsResolved)
+		}
 		return "", fmt.Errorf("%w: %s", ErrInvalidDir, abs)
 	}
-	// And again after resolution, so a symlink inside the workspace that
-	// points outside is caught too.
-	if !within(wsResolved, resolved) {
+
+	// The workspace has two equally valid spellings after resolution
+	// (e.g. /var/x vs /private/var/x on macOS, or long vs 8.3 short user
+	// names on Windows); EvalSymlinks may return either depending on which
+	// components it walks. Containment therefore accepts any KNOWN
+	// spelling of the same root - and nothing else. A target that
+	// resolves under some third path is an escape.
+	if !withinAny(wsAbs, wsResolved, resolved) {
 		return "", fmt.Errorf("%w: %s resolves outside %s", ErrWorkspaceEscape, resolved, wsResolved)
 	}
 	return resolved, nil
@@ -148,6 +160,13 @@ func samePath(a, b string) bool {
 		return strings.EqualFold(a, b)
 	}
 	return a == b
+}
+
+// withinAny reports whether path lies under rootA or rootB - the two
+// spellings a workspace root may take after partial symlink resolution.
+// Both must denote the same directory by construction.
+func withinAny(rootA, rootB, path string) bool {
+	return within(rootA, path) || within(rootB, path)
 }
 
 // runtimeCaseInsensitive reports whether the host compares paths

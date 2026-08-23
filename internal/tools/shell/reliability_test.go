@@ -27,6 +27,11 @@ func TestShell_InvalidTimeoutIsArgumentError(t *testing.T) {
 }
 
 func TestShell_NonexistentCwdIsResultError(t *testing.T) {
+	// The cwd check runs inside the executor, after the backend probe, so
+	// a usable Bash backend is required for the working-directory error to
+	// be reachable. Runners without WSL (GitHub windows-latest) skip:
+	// they'd otherwise hit the backend-unavailable message instead.
+	requireShellBackend(t)
 	s := NewShell()
 	result, err := s.Execute(context.Background(), map[string]any{
 		"command": "echo hi",

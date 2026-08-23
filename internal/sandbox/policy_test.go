@@ -79,12 +79,20 @@ func TestResolveWithinDefaultsAndRelative(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The contract returns the CANONICAL (symlink-resolved) form, which
+	// differs from the raw path on macOS (/var -> /private/var) and
+	// Windows (long user names -> 8.3 short names).
+	wantRoot, err := filepath.EvalSymlinks(ws)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(workspace) error = %v", err)
+	}
+
 	got, err := resolveWithinWorkspace(ws, "")
 	if err != nil {
 		t.Fatalf("empty dir error = %v", err)
 	}
-	if !samePath(got, ws) && !strings.EqualFold(got, ws) {
-		t.Errorf("empty dir resolved to %q, want workspace %q", got, ws)
+	if !samePath(got, wantRoot) {
+		t.Errorf("empty dir resolved to %q, want canonical workspace %q", got, wantRoot)
 	}
 
 	// Relative requests anchor at the workspace, not at the process cwd.
@@ -92,8 +100,52 @@ func TestResolveWithinDefaultsAndRelative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("relative dir error = %v", err)
 	}
-	if !within(got, sub) && !within(sub, got) {
+	if !within(got, sub) && !within(sub, got) && !strings.EqualFold(got, sub) {
 		t.Errorf("relative resolution = %q, want %q", got, sub)
+	}
+}
+
+// TestResolveWithinMixedWorkspaceSpellings reproduces the CI-only failure
+// class: on macOS the temp root lives behind /var -> /private/var and on
+// Windows behind long-vs-short user names. A workspace handed in under
+// one spelling must still accept targets that resolve under another.
+// Skipped on Windows, where creating directory symlinks needs privileges.
+func TestResolveWithinMixedWorkspaceSpellings(t *testing.T) {
+	realRoot := t.TempDir()
+	link := filepath.Join(t.TempDir(), "linked-root")
+	if err := os.Symlink(realRoot, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	sub := filepath.Join(realRoot, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Workspace spelled via the symlink; target resolves through the real
+	// path (and vice versa). Both directions must stay inside scope.
+	for _, tc := range []struct{ workspace, dir string }{
+		{link, sub},
+		{realRoot, filepath.Join(link, "sub")},
+	} {
+		got, err := resolveWithinWorkspace(tc.workspace, tc.dir)
+		if errors.Is(err, ErrWorkspaceEscape) || errors.Is(err, ErrInvalidDir) {
+			t.Errorf("workspace=%q dir=%q rejected: %v (mixed spellings must not look like escapes)", tc.workspace, tc.dir, err)
+			continue
+		}
+		if err != nil {
+			t.Errorf("workspace=%q dir=%q unexpected error: %v", tc.workspace, tc.dir, err)
+			continue
+		}
+		if !withinAny(realRoot, link, got) {
+			t.Errorf("resolved to %q, outside both spellings of the root", got)
+		}
+	}
+
+	// And a genuine escape through a differently-spelled parent is still
+	// caught: sibling-of-real-root reached by climbing out of the link.
+	outside := t.TempDir()
+	if _, err := resolveWithinWorkspace(link, filepath.Join("..", filepath.Base(outside))); !errors.Is(err, ErrWorkspaceEscape) {
+		t.Errorf("climb-out via linked spelling error = %v, want ErrWorkspaceEscape", err)
 	}
 }
 
