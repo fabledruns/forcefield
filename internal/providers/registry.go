@@ -11,11 +11,15 @@ type ModelInfo struct {
 }
 
 // ProviderInfo describes one selectable provider and the models known
-// to be available on it.
+// to be available on it. It is the display-oriented view of a catalog
+// preset; configuration can add further providers and models at runtime.
 type ProviderInfo struct {
-	Name        string
-	ID          string
-	Description string
+	Name         string
+	ID           string
+	Description  string
+	Capabilities Capabilities
+	Scope        Scope
+	Auth         AuthRequirement
 	// Endpoint is the default endpoint used when switching to this
 	// provider, so picking a provider doesn't require also knowing its
 	// URL.
@@ -23,45 +27,38 @@ type ProviderInfo struct {
 	Models   []ModelInfo
 }
 
-// Registry lists every provider Forcefield knows how to talk to, in the
-// order they're presented in the /provider picker. Adding a provider or
-// model means editing this list only — nothing else in the command or
-// TUI layers hardcodes provider or model names.
-var Registry = []ProviderInfo{
-	{
-		Name:        "Ollama",
-		ID:          "ollama",
-		Description: "Local models served by Ollama.",
-		Endpoint:    "http://localhost:11434",
-		Models: []ModelInfo{
-			{Name: "Ornith 9B", ID: "ornith:9b", Description: "Forcefield's default local model."},
-		},
-	},
-	{
-		Name:        "LM Studio",
-		ID:          "lmstudio",
-		Description: "Local models served by LM Studio.",
-		Endpoint:    "http://localhost:1234/v1",
-		Models: []ModelInfo{
-			{Name: "Local Model", ID: "local-model", Description: "Whatever model is currently loaded in LM Studio."},
-		},
-	},
-	{
-		Name:        "NVIDIA NIM",
-		ID:          "nvidia",
-		Description: "Hosted models served by NVIDIA NIM.",
-		Endpoint:    "https://integrate.api.nvidia.com/v1",
-		Models: []ModelInfo{
-			{Name: "Nemotron 3 Ultra", ID: "nvidia/nemotron-3-ultra-550b-a55b", Description: "NVIDIA's largest Nemotron model."},
-			{Name: "Inkling", ID: "thinkingmachines/inkling", Description: "Inkling is a multimodal (text + image) reasoning model from Thinking Machines."},
-			{Name: "GLM 5.2", ID: "z-ai/glm-5.2", Description: "GLM-5.2 is a flagship LLM for agentic workflows, coding, and long-horizon reasoning tasks."},
-			{Name: "Minimax M3", ID: "minimaxai/minimax-m3", Description: "MiniMax M3 Preview is a multimodal MoE vision-language model with strong reasoning, coding, and tool-calling capabilities."},
-			{Name: "DeepSeek V4 Pro", ID: "deepseek-ai/deepseek-v4-pro", Description: "DeepSeek V4 scales to 1M-token context windows with efficient MoE architecture for coding tasks."},
-		},
-	},
+// Registry lists every built-in provider, in display order, derived from
+// the service catalog. Adding a provider or model means editing the
+// catalog only — nothing else in the command or TUI layers hardcodes
+// provider or model names.
+var Registry = buildRegistry()
+
+func buildRegistry() []ProviderInfo {
+	out := make([]ProviderInfo, 0, len(Catalog))
+	capsByType := make(map[string]Capabilities)
+	for _, preset := range Catalog {
+		caps, cached := capsByType[preset.Type]
+		if !cached {
+			caps = CapabilitiesFor(preset.Type)
+			capsByType[preset.Type] = caps
+		}
+		models := make([]ModelInfo, len(preset.Models))
+		copy(models, preset.Models)
+		out = append(out, ProviderInfo{
+			Name:         preset.Name,
+			ID:           preset.ID,
+			Description:  preset.Description,
+			Capabilities: caps,
+			Scope:        preset.Scope,
+			Auth:         preset.Auth,
+			Endpoint:     preset.BaseURL,
+			Models:       models,
+		})
+	}
+	return out
 }
 
-// ByID looks up a provider by ID.
+// ByID looks up a built-in provider by ID.
 func ByID(id string) (ProviderInfo, bool) {
 	for _, p := range Registry {
 		if p.ID == id {

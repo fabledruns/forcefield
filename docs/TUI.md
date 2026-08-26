@@ -34,7 +34,22 @@ The CLI starts the TUI from:
 | Input box         | Text input for prompts and slash commands.                |
 | Spinner / status  | Shows that a model run is in progress.                    |
 | Session picker    | Modal list of saved sessions from `/sessions`.            |
+| Provider picker   | Modal list of providers from `/provider`, with capabilities and availability per row. |
+| Model picker      | Modal list of models for the active provider.             |
 | Banner / styles   | Visual presentation helpers.                              |
+
+### Provider and Model Pickers
+
+The provider picker lists every configured or known provider. Each row shows the service name plus a detail line describing scope, capabilities, and availability, e.g.:
+
+```text
+› Ollama
+    local · tools · streaming · reasoning
+  OpenAI
+    cloud · tools · streaming · api key missing
+```
+
+Availability is checked without network I/O: a cloud provider whose API key cannot be resolved is marked unavailable instead of failing silently later. Selecting a provider switches immediately - no restart - and opens the model picker when more than one model is known (from configuration or the built-in catalog). The pickers are presentation only; they read summaries from the runtime and switch through it.
 
 ## Input Handling
 

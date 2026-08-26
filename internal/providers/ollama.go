@@ -9,6 +9,7 @@ import (
 	"forcefield/internal/tools"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // OllamaProvider talks to a local Ollama server's /api/chat endpoint.
@@ -18,6 +19,69 @@ type OllamaProvider struct {
 	client   *http.Client
 	retry    retryPolicy
 	gate     *requestGate
+}
+
+// Capabilities reports what this adapter supports.
+func (o *OllamaProvider) Capabilities() Capabilities {
+	return Capabilities{
+		Streaming:   true,
+		ToolCalling: true,
+		Reasoning:   true,
+	}
+}
+
+// ListModels enumerates the models installed on the Ollama server.
+func (o *OllamaProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	if err := o.gate.acquire(); err != nil {
+		return nil, err
+	}
+	defer o.gate.release()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(o.Endpoint, "/")+"/api/tags", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request to %s: %w", o.Endpoint, err)
+	}
+
+	resp, err := doWithRetry(ctx, o.client, o.retry, "ollama", "", func() (*http.Request, error) { return req, nil }, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		Models []struct {
+			Name       string `json:"name"`
+			Model      string `json:"model"`
+			Details    struct {
+				Family            string `json:"family"`
+				ParameterSize     string `json:"parameter_size"`
+				QuantizationLevel string `json:"quantization_level"`
+			} `json:"details"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&body); err != nil {
+		return nil, &protocolError{msg: fmt.Sprintf("decode model list: %v", err)}
+	}
+
+	models := make([]ModelInfo, 0, len(body.Models))
+	for _, m := range body.Models {
+		id := m.Name
+		if id == "" {
+			id = m.Model
+		}
+		if id == "" {
+			continue
+		}
+		description := ""
+		if m.Details.ParameterSize != "" {
+			description = m.Details.ParameterSize
+			if m.Details.QuantizationLevel != "" {
+				description += " · " + m.Details.QuantizationLevel
+			}
+		}
+		models = append(models, ModelInfo{Name: id, ID: id, Description: description})
+	}
+	return models, nil
 }
 
 // NewOllamaProvider builds an OllamaProvider pointed at the given endpoint

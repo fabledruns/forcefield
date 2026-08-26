@@ -76,7 +76,6 @@ func TestLoadRejectsMalformedYAML(t *testing.T) {
 func TestLoadRejectsMissingRequiredFields(t *testing.T) {
 	for name, body := range map[string]string{
 		"provider": "model:\n  endpoint: http://localhost:11434\n  name: m\n",
-		"endpoint": "model:\n  provider: ollama\n  name: m\n",
 		"name":     "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -91,6 +90,43 @@ func TestLoadRejectsMissingRequiredFields(t *testing.T) {
 				t.Errorf("error %q does not name the missing field %q", err, name)
 			}
 		})
+	}
+}
+
+// TestLoadDefaultsEndpointFromCatalog pins that known providers get their
+// default base URL from the built-in catalog, so a cloud provider can be
+// selected without repeating its endpoint.
+func TestLoadDefaultsEndpointFromCatalog(t *testing.T) {
+	isolateHome(t)
+	writeConfig(t, "model:\n  provider: openai\n  name: gpt-4o-mini\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	resolved, err := cfg.ResolveProvider("openai", cfg.Model.Name)
+	if err != nil {
+		t.Fatalf("ResolveProvider(openai) error = %v", err)
+	}
+	if resolved.BaseURL != "https://api.openai.com/v1" {
+		t.Errorf("base URL = %q, want the OpenAI catalog default", resolved.BaseURL)
+	}
+}
+
+// TestLoadRejectsCustomProviderWithoutAnyEndpoint makes sure a provider
+// with no catalog default still fails loudly when no endpoint is given.
+func TestLoadRejectsCustomProviderWithoutAnyEndpoint(t *testing.T) {
+	isolateHome(t)
+	writeConfig(t,
+		"model:\n  provider: local-llm\n  name: m\n"+
+			"providers:\n  local-llm:\n    type: openai-compatible\n")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() accepted a custom provider with no base_url")
+	}
+	if !strings.Contains(err.Error(), "base_url") {
+		t.Errorf("error %q does not point at the missing base_url", err)
 	}
 }
 

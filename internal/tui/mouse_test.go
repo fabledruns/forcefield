@@ -521,15 +521,20 @@ func TestSessionPickerClickOutsideBoxIgnored(t *testing.T) {
 
 func TestSelectPickerRowClickChoosesProvider(t *testing.T) {
 	m := newFullTestModel(t)
-	m.selectPicker = newProviderPicker("ollama")
+	summaries := m.runtime.ProviderSummaries()
+	m.selectPicker = newSelectPicker("Provider", providerOptions(summaries, "ollama"), scopeProvider)
+	if len(summaries) < 2 {
+		t.Fatalf("provider summaries = %d, want at least two rows to click", len(summaries))
+	}
 
 	bx, by := m.selectPicker.boxOrigin(m.width, m.height)
-	clickY := by + pickerRowsTop + 1 // second registered provider
+	clickY := by + pickerRowsTop + 2 // second option's label row (2-row options)
 	next, _ := m.routeMouse(leftClick(bx+5, clickY))
 	m = next
 
-	if m.providerName != "lmstudio" {
-		t.Errorf("provider = %q, want lmstudio after clicking its row", m.providerName)
+	want := summaries[1].ID
+	if m.providerName != want {
+		t.Errorf("provider = %q, want %q after clicking its row", m.providerName, want)
 	}
 	if m.selectPicker != nil {
 		t.Error("select picker stayed open after clicking a row")

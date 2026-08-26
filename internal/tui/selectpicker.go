@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"forcefield/internal/providers"
+	"forcefield/internal/runtime"
 )
 
 // pickerScope distinguishes what a selectPicker is choosing between:
@@ -18,10 +19,12 @@ const (
 )
 
 // selectOption is one row in a selectPicker: a friendly label, the real
-// ID to switch to, and whether it's the currently active choice.
+// ID to switch to, an optional muted detail line (capabilities,
+// availability), and whether it's the currently active choice.
 type selectOption struct {
 	Label   string
 	ID      string
+	Detail  string
 	Current bool
 }
 
@@ -30,45 +33,68 @@ type selectOption struct {
 // holds a snapshot of its options and a cursor, and never switches
 // anything itself — the caller reads Selected() once Enter is pressed.
 type selectPicker struct {
-	title    string
-	options  []selectOption
-	cursor   int
-	scope    pickerScope
+	title   string
+	options []selectOption
+	cursor  int
+	scope   pickerScope
 	provider string // providerID this picker's models belong to; only set for scopeModel
+
+	// heights caches how many terminal rows each option rendered to.
+	// Options with a detail line occupy two rows; a detail too long for
+	// the modal width may wrap further, so heights are measured from the
+	// real rendering instead of assumed. Options never change after
+	// construction, so the cache never goes stale.
+	heights []int
 }
 
-// newProviderPicker builds a picker over every registered provider,
-// with currentID's row highlighted as the active choice.
-func newProviderPicker(currentID string) *selectPicker {
-	options := make([]selectOption, len(providers.Registry))
+// newSelectPicker builds a picker over the given options. Options may
+// carry detail lines; rows with details render taller and hit-testing
+// follows the real rendered geometry.
+func newSelectPicker(title string, options []selectOption, scope pickerScope) *selectPicker {
 	cursor := 0
-	for i, p := range providers.Registry {
-		options[i] = selectOption{Label: p.Name, ID: p.ID, Current: p.ID == currentID}
-		if options[i].Current {
+	for i, opt := range options {
+		if opt.Current {
 			cursor = i
 		}
 	}
-	return &selectPicker{title: "Provider", options: options, cursor: cursor, scope: scopeProvider}
+	return &selectPicker{title: title, options: options, cursor: cursor, scope: scope}
 }
 
-// newModelPicker builds a picker over the models registered for
-// providerID, with currentID's row highlighted as the active choice. If
-// providerID isn't registered, the picker has no options.
-func newModelPicker(providerID, currentID string) *selectPicker {
-	p, ok := providers.ByID(providerID)
-	if !ok {
-		return &selectPicker{title: "Model", scope: scopeModel, provider: providerID}
+// providerOptions builds the /provider picker's rows from the runtime's
+// provider summaries: display name plus a local/cloud · capabilities ·
+// availability detail line.
+func providerOptions(summaries []runtime.ProviderSummary, currentID string) []selectOption {
+	options := make([]selectOption, 0, len(summaries))
+	for _, s := range summaries {
+		options = append(options, selectOption{
+			Label:   s.Name,
+			ID:      s.ID,
+			Detail:  s.Detail,
+			Current: s.ID == currentID,
+		})
 	}
+	return options
+}
 
-	options := make([]selectOption, len(p.Models))
-	cursor := 0
-	for i, mi := range p.Models {
-		options[i] = selectOption{Label: mi.Name, ID: mi.ID, Current: mi.ID == currentID}
-		if options[i].Current {
-			cursor = i
+// modelOptions builds the /model picker's rows for one provider from its
+// known model IDs, resolving friendly display names where they exist.
+func modelOptions(summaries []runtime.ProviderSummary, providerID, currentID string) []selectOption {
+	var ids []string
+	for _, s := range summaries {
+		if s.ID == providerID {
+			ids = s.Models
+			break
 		}
 	}
-	return &selectPicker{title: "Model", options: options, cursor: cursor, scope: scopeModel, provider: providerID}
+	options := make([]selectOption, 0, len(ids))
+	for _, id := range ids {
+		options = append(options, selectOption{
+			Label:   providers.ModelDisplayName(providerID, id),
+			ID:      id,
+			Current: id == currentID,
+		})
+	}
+	return options
 }
 
 // moveUp/moveDown move the selection cursor, clamped to the list bounds.
@@ -123,22 +149,49 @@ func (p *selectPicker) boxOrigin(width, height int) (x, y int) {
 	return x, y
 }
 
-// rowAt resolves a point to an option-row index inside the modal.
-func (p *selectPicker) rowAt(x, y, width, height int) (int, bool) {
-	bx, by := p.boxOrigin(width, height)
-	first := by + pickerRowsTop
-	if y < first || y >= first+len(p.options) {
-		return -1, false
+// rowsTop is how many rows separate the box's top edge from its first
+// option row (border + padding + title + blank line). It must match box().
+const selectRowsTop = pickerRowsTop
+
+// optionHeights measures (once) and returns each option's rendered row
+// count. Measuring the real rendering keeps click targets aligned even
+// when a detail line wraps.
+func (p *selectPicker) optionHeights() []int {
+	if p.heights == nil || len(p.heights) != len(p.options) {
+		p.heights = make([]int, len(p.options))
+		for i, opt := range p.options {
+			p.heights[i] = lipgloss.Height(p.renderRow(i, opt))
+		}
 	}
-	innerX := bx + 3
-	if x < innerX-1 || x >= innerX+pickerWidth {
-		return -1, false
-	}
-	return y - first, true
+	return p.heights
 }
 
-// renderRow formats a single option row: a selection cursor, the
-// friendly label, and a checkmark if it's the active choice.
+// rowAt resolves a point to an option index inside the modal. Each
+// option occupies its measured band of rows; clicking anywhere inside it
+// (label or detail line) selects it.
+func (p *selectPicker) rowAt(x, y, width, height int) (int, bool) {
+	bx, by := p.boxOrigin(width, height)
+	offset := y - (by + selectRowsTop)
+	if offset < 0 {
+		return -1, false
+	}
+	start := 0
+	for i, h := range p.optionHeights() {
+		if offset < start+h {
+			innerX := bx + 3
+			if x < innerX-1 || x >= innerX+pickerWidth {
+				return -1, false
+			}
+			return i, true
+		}
+		start += h
+	}
+	return -1, false
+}
+
+// renderRow formats a single option row: a selection cursor, the friendly
+// label, a checkmark if it's the active choice, and — when present — a
+// muted second line with the capability/availability detail.
 func (p *selectPicker) renderRow(i int, opt selectOption) string {
 	cursor := "  "
 	if i == p.cursor {
@@ -150,8 +203,17 @@ func (p *selectPicker) renderRow(i int, opt selectOption) string {
 		line += " " + pickerActiveStyle.Render("✓")
 	}
 
+	style := pickerMetaStyle
 	if i == p.cursor {
-		return pickerSelectedStyle.Width(pickerWidth - 4).Render(line)
+		style = pickerSelectedStyle
 	}
-	return pickerMetaStyle.Width(pickerWidth - 4).Render(line)
+
+	if opt.Detail == "" {
+		return style.Width(pickerWidth - 4).Render(line)
+	}
+
+	detailLine := "    " + pickerDetailStyle.Render(opt.Detail)
+	body := style.Width(pickerWidth - 4).Render(line) + "\n" +
+		pickerMetaStyle.Width(pickerWidth - 4).Render(detailLine)
+	return body
 }

@@ -95,51 +95,111 @@ func doctorConfig(report func(verdict, string, ...any)) *config.Config {
 		return nil
 	}
 
+	resolved, err := cfg.ResolveProvider(cfg.Model.Provider, cfg.Model.Name)
+	endpoint := ""
+	if err == nil {
+		endpoint = resolved.BaseURL
+	}
+	if endpoint == "" {
+		endpoint = cfg.Model.Endpoint
+	}
 	report(vOK, "config: %s (%s provider, model %q)", path, cfg.Model.Provider, cfg.Model.Name)
-	if cfg.Model.Endpoint == "" {
-		report(vFail, "config: model.endpoint is empty")
+	if endpoint == "" {
+		report(vFail, "config: no endpoint resolves for provider %q", cfg.Model.Provider)
 	}
 	return cfg
 }
 
-// doctorAPIKey reports where the NVIDIA API key would come from when the
-// nvidia provider is selected - naming only its presence, never its value.
+// doctorAPIKey reports where the active provider's API key would come
+// from when it needs one - naming only its presence, never its value.
 func doctorAPIKey(cfg *config.Config, report func(verdict, string, ...any)) {
-	if cfg == nil || cfg.Model.Provider != "nvidia" {
+	if cfg == nil {
+		return
+	}
+	resolved, err := cfg.ResolveProvider(cfg.Model.Provider, cfg.Model.Name)
+	if err != nil {
+		return // already reported by doctorConfig/doctorProvider
+	}
+	if !resolved.AuthRequired || resolved.AuthEnvVar == "" {
 		return
 	}
 
-	_, source, err := config.ResolveAPIKey()
 	switch {
-	case err != nil:
-		report(vFail, "nvidia: could not resolve an API key: %v", err)
-	case source == "":
-		report(vWarn, "nvidia: NVIDIA_API_KEY is not set (environment or .env); requests will fail until you provide it")
-	case source == "environment":
-		report(vOK, "nvidia: NVIDIA_API_KEY is set via the environment (value hidden)")
+	case resolved.APIKeySource == "":
+		report(vWarn, "%s: %s is not set (environment or .env); requests will fail until you provide it",
+			resolved.Label, resolved.AuthEnvVar)
+	case resolved.APIKeySource == "environment":
+		report(vOK, "%s: %s is set via the environment (value hidden)",
+			resolved.Label, resolved.AuthEnvVar)
 	default:
-		report(vOK, "nvidia: NVIDIA_API_KEY found in %s (value hidden)", source)
+		report(vOK, "%s: %s found in %s (value hidden)", resolved.Label, resolved.AuthEnvVar, resolved.APIKeySource)
 	}
 }
 
 // doctorProvider probes the configured provider's endpoint for
 // reachability and, where the protocol allows, confirms the configured
-// model actually exists there.
+// model actually exists there. The probe is chosen by the provider's wire
+// protocol, so every OpenAI-compatible service gets the same check.
 func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 	if cfg == nil {
 		return
 	}
 
-	client := &http.Client{Timeout: probeTimeout}
+	resolved, err := cfg.ResolveProvider(cfg.Model.Provider, cfg.Model.Name)
+	if err != nil {
+		report(vFail, "provider %q: %v", cfg.Model.Provider, err)
+		return
+	}
 
-	switch cfg.Model.Provider {
+	// A required key that is absent turns every probe into a bare 401;
+	// say that once instead of probing.
+	if resolved.AuthRequired && resolved.APIKey == "" {
+		report(vWarn, "%s: skipping reachability probe while %s is unset", resolved.Label, resolved.AuthEnvVar)
+		return
+	}
+
+	client := &http.Client{Timeout: probeTimeout}
+	base := strings.TrimRight(resolved.BaseURL, "/")
+
+	auth := func(req *http.Request) {}
+	switch resolved.Type {
+	case "ollama":
+		auth = func(req *http.Request) {}
+	case "openai-compatible":
+		key := resolved.APIKey
+		auth = func(req *http.Request) {
+			if key != "" {
+				req.Header.Set("Authorization", "Bearer "+key)
+			}
+		}
+	case "anthropic":
+		key := resolved.APIKey
+		auth = func(req *http.Request) {
+			if key != "" {
+				req.Header.Set("x-api-key", key)
+			}
+			req.Header.Set("anthropic-version", "2023-06-01")
+		}
+	case "gemini":
+		key := resolved.APIKey
+		auth = func(req *http.Request) {
+			if key != "" {
+				req.Header.Set("x-goog-api-key", key)
+			}
+		}
+	default:
+		report(vWarn, "provider %q has no reachability check; Forcefield will error clearly if it cannot connect", resolved.ID)
+		return
+	}
+
+	switch resolved.Type {
 	case "ollama":
 		var body struct {
 			Models []struct {
 				Name string `json:"name"`
 			} `json:"models"`
 		}
-		if !probeJSON(client, strings.TrimRight(cfg.Model.Endpoint, "/")+"/api/tags", "", &body, report, "ollama") {
+		if !probeJSON(client, base+"/api/tags", auth, &body, report, resolved.Label) {
 			return
 		}
 		names := make([]string, 0, len(body.Models))
@@ -151,70 +211,70 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 			}
 		}
 		if !found {
-			report(vFail, "ollama: model %q is not installed - run `ollama pull %s` (installed: %s)",
-				cfg.Model.Name, cfg.Model.Name, orNone(names))
+			report(vFail, "%s: model %q is not installed - run `ollama pull %s` (installed: %s)",
+				resolved.Label, cfg.Model.Name, cfg.Model.Name, orNone(names))
 			return
 		}
-		report(vOK, "ollama: model %q is available (%d installed)", cfg.Model.Name, len(names))
+		report(vOK, "%s: model %q is available (%d installed)", resolved.Label, cfg.Model.Name, len(names))
 
-	case "lmstudio":
+	case "openai-compatible":
 		var body struct {
 			Data []struct {
 				ID string `json:"id"`
 			} `json:"data"`
 		}
-		if !probeJSON(client, strings.TrimRight(cfg.Model.Endpoint, "/")+"/models", "", &body, report, "lmstudio") {
+		if !probeJSON(client, base+"/models", auth, &body, report, resolved.Label) {
 			return
 		}
 		ids := make([]string, 0, len(body.Data))
 		for _, m := range body.Data {
 			ids = append(ids, m.ID)
 		}
-		report(vOK, "lmstudio: server is up (%d models loaded: %s)", len(ids), orNone(ids))
+		report(vOK, "%s: server is up (%d models visible: %s)", resolved.Label, len(ids), orNone(ids))
 
-	case "nvidia":
-		key, _, err := config.ResolveAPIKey()
-		if err != nil {
-			report(vFail, "nvidia: could not resolve an API key: %v", err)
-			return
-		}
+	case "anthropic":
 		var body struct {
 			Data []struct {
 				ID string `json:"id"`
 			} `json:"data"`
 		}
-		if !probeJSON(client, strings.TrimRight(cfg.Model.Endpoint, "/")+"/models", key, &body, report, "nvidia") {
+		if !probeJSON(client, base+"/v1/models", auth, &body, report, resolved.Label) {
 			return
 		}
-		report(vOK, "nvidia: API accepted the request (%d models visible)", len(body.Data))
+		report(vOK, "%s: API accepted the request (%d models visible)", resolved.Label, len(body.Data))
 
-	default:
-		report(vWarn, "provider %q has no reachability check; Forcefield will error clearly if it cannot connect",
-			cfg.Model.Provider)
+	case "gemini":
+		var body struct {
+			Models []struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		}
+		if !probeJSON(client, base+"/v1beta/models", auth, &body, report, resolved.Label) {
+			return
+		}
+		report(vOK, "%s: API accepted the request (%d models visible)", resolved.Label, len(body.Models))
 	}
 }
 
 // probeJSON performs one authenticated-optional GET and decodes a JSON
 // body, reporting a FAIL line with an actionable message when any step
-// breaks. It reports whether the full check succeeded.
-func probeJSON(client *http.Client, url, apiKey string, into any, report func(verdict, string, ...any), service string) bool {
+// breaks. The auth hook stamps provider-specific credentials onto the
+// request. It reports whether the full check succeeded.
+func probeJSON(client *http.Client, url string, auth func(*http.Request), into any, report func(verdict, string, ...any), service string) bool {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		report(vFail, "%s: bad endpoint URL %s: %v", service, url, err)
 		return false
 	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
+	auth(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		switch service {
-		case "ollama":
+		if strings.Contains(service, "Ollama") {
 			report(vFail, "%s: could not reach %s - is `ollama serve` running?", service, url)
-		case "lmstudio":
+		} else if strings.Contains(service, "LM Studio") {
 			report(vFail, "%s: could not reach %s - is the LM Studio local server running?", service, url)
-		default:
+		} else {
 			report(vFail, "%s: could not reach %s (%v)", service, url, err)
 		}
 		return false

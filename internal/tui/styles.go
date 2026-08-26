@@ -141,6 +141,9 @@ var (
 	pickerMetaStyle = lipgloss.NewStyle().
 			Foreground(colorMuted)
 
+	pickerDetailStyle = lipgloss.NewStyle().
+				Foreground(colorMuted)
+
 	pickerHelpStyle = lipgloss.NewStyle().
 			Foreground(colorMuted)
 )

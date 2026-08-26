@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,12 +18,43 @@ import (
 	"forcefield/internal/sandbox"
 )
 
-// Model describes how to reach a local model provider.
+// Model describes the active model selection. Provider and Endpoint are
+// legacy first-class fields kept for compatibility; richer per-provider
+// settings live in Providers.
 type Model struct {
 	Provider string `yaml:"provider"`
 	Endpoint string `yaml:"endpoint"`
 	Name     string `yaml:"name"`
 	APIKey   string `yaml:"-"`
+}
+
+// ProviderConfig is one entry under "providers:" in config.yaml. It
+// describes how to reach one provider service; values left empty fall
+// back to that service's built-in defaults.
+//
+// Secrets are never stored here: APIKeyEnv names an environment variable
+// (or .env file key) holding the actual key, and the resolved value lives
+// only in memory. There is deliberately no literal api_key field, so a
+// saved config.yaml can never contain credentials.
+type ProviderConfig struct {
+	// Type selects the wire protocol or a known service preset:
+	// "ollama", "openai-compatible", "anthropic", "gemini", or a service
+	// id like "openai", "xai", "nvidia", "lmstudio".
+	Type string `yaml:"type,omitempty"`
+	// BaseURL overrides the service's default API root.
+	BaseURL string `yaml:"base_url,omitempty"`
+	// APIKeyEnv names the environment variable (or .env key) holding the
+	// API key. Empty means "use the service's default variable".
+	APIKeyEnv string `yaml:"api_key_env,omitempty"`
+	// Model optionally records the default model to switch to when this
+	// provider is selected.
+	Model string `yaml:"model,omitempty"`
+	// Headers are extra HTTP headers sent with every request to this
+	// provider (e.g. OpenRouter's HTTP-Referer).
+	Headers map[string]string `yaml:"headers,omitempty"`
+	// Models optionally lists model IDs offered by this provider, for
+	// services that cannot enumerate their models.
+	Models []string `yaml:"models,omitempty"`
 }
 
 // Agent describes the default agent's identity, base system prompt, and
@@ -73,10 +105,11 @@ type SandboxWSL struct {
 
 // Config is the top-level shape of config.yaml.
 type Config struct {
-	Model       Model       `yaml:"model"`
-	Agent       Agent       `yaml:"agent"`
-	Permissions Permissions `yaml:"permissions"`
-	Sandbox     Sandbox     `yaml:"sandbox"`
+	Model       Model                       `yaml:"model"`
+	Providers   map[string]ProviderConfig   `yaml:"providers,omitempty"`
+	Agent       Agent                       `yaml:"agent"`
+	Permissions Permissions                 `yaml:"permissions"`
+	Sandbox     Sandbox                     `yaml:"sandbox"`
 }
 
 const defaultConfigTemplate = `model:
@@ -170,34 +203,44 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid config at %s: %w", path, err)
 	}
 
-	key, _, err := ResolveAPIKey()
+	// Populate the legacy convenience field with the active provider's
+	// resolved key (if any). The authoritative per-provider resolution is
+	// ResolveProvider; this only keeps existing readers working.
+	resolved, err := cfg.ResolveProvider(cfg.Model.Provider, cfg.Model.Name)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid config at %s: %w", path, err)
 	}
-	cfg.Model.APIKey = key
+	cfg.Model.APIKey = resolved.APIKey
 
 	return &cfg, nil
 }
 
 // apiKeyName is the environment variable / .env key Forcefield reads its
-// NVIDIA NIM API key from.
+// NVIDIA NIM API key from. Kept for compatibility with existing setups;
+// per-provider keys are resolved through ResolveProvider instead.
 const apiKeyName = "NVIDIA_API_KEY"
 
 // ResolveAPIKey returns the NVIDIA API key along with where it came from:
 // the process environment first, then .env files (project-local, then
-// ~/.forcefield/.env).
+// ~/.forcefield/.env). See ResolveEnvValue for the generalized lookup.
+func ResolveAPIKey() (key, source string, err error) {
+	return ResolveEnvValue(apiKeyName)
+}
+
+// ResolveEnvValue returns the value of a named environment variable,
+// falling back to .env files: .env in the current project directory
+// first, then ~/.forcefield/.env.
 //
-// A key found in .env is returned to the caller instead of being written
+// A value found in .env is returned to the caller instead of being written
 // back into the process environment on purpose: everything in the process
 // environment is inherited by every command the shell tool runs, so
-// importing .env contents into os.Environ would hand the key to every
-// subprocess. Providers receive the key through the config struct, which
-// is never persisted (yaml:"-") and never printed.
+// importing .env contents into os.Environ would hand secrets to every
+// subprocess.
 //
 // A .env file that contains malformed non-comment lines is rejected with
 // a named-file error rather than being partially applied.
-func ResolveAPIKey() (key, source string, err error) {
-	if v := os.Getenv(apiKeyName); v != "" {
+func ResolveEnvValue(name string) (value, source string, err error) {
+	if v := os.Getenv(name); v != "" {
 		return strings.TrimSpace(v), "environment", nil
 	}
 
@@ -217,11 +260,11 @@ func ResolveAPIKey() (key, source string, err error) {
 			return "", "", fmt.Errorf("read %s: %w", path, readErr)
 		}
 
-		value, parseErr := parseDotEnv(string(data))
+		values, parseErr := parseDotEnv(string(data))
 		if parseErr != nil {
 			return "", "", fmt.Errorf("%s: %w", path, parseErr)
 		}
-		if v := value[apiKeyName]; v != "" {
+		if v := values[name]; v != "" {
 			return v, fmt.Sprintf(".env file %s", path), nil
 		}
 	}
@@ -333,11 +376,27 @@ func (c *Config) validate() error {
 	if c.Model.Provider == "" {
 		return fmt.Errorf("model.provider is required (e.g. \"ollama\")")
 	}
-	if c.Model.Endpoint == "" {
-		return fmt.Errorf("model.endpoint is required (e.g. \"http://localhost:11434\")")
-	}
 	if c.Model.Name == "" {
 		return fmt.Errorf("model.name is required (e.g. \"llama3\")")
+	}
+	if c.Model.Endpoint != "" {
+		u, err := url.Parse(c.Model.Endpoint)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("model.endpoint %q must be an absolute http:// or https:// URL", c.Model.Endpoint)
+		}
+	}
+
+	for id, entry := range c.Providers {
+		if err := validateEntry(id, entry); err != nil {
+			return err
+		}
+	}
+
+	// Resolve the active provider now so unknown types and missing
+	// endpoints fail at startup with a clear pointer at the offending
+	// field instead of on the first request.
+	if _, err := c.ResolveProvider(c.Model.Provider, ""); err != nil {
+		return fmt.Errorf("model.provider %q: %w", c.Model.Provider, err)
 	}
 
 	if err := validatePermissionValue("permissions.default", c.Permissions.Default); err != nil {

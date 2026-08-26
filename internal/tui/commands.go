@@ -8,6 +8,7 @@ import (
 	"forcefield/internal/command"
 	"forcefield/internal/command/builtin"
 	"forcefield/internal/providers"
+	"forcefield/internal/runtime"
 	"forcefield/internal/session"
 )
 
@@ -87,15 +88,26 @@ func (m *model) OpenSessionPicker(sessions []session.Session) {
 	m.picker = newSessionPicker(sessions, m.session.ID)
 }
 
-// OpenProviderPicker opens the /provider modal.
+// OpenProviderPicker opens the /provider modal over every configured or
+// known provider, with capabilities and availability per row.
 func (m *model) OpenProviderPicker() {
-	m.selectPicker = newProviderPicker(m.providerName)
+	m.selectPicker = newSelectPicker("Provider", providerOptions(m.providerSummaries(), m.providerName), scopeProvider)
 }
 
 // OpenModelPicker opens the /model modal, scoped to the currently
 // active provider.
 func (m *model) OpenModelPicker() {
-	m.selectPicker = newModelPicker(m.providerName, m.modelName)
+	m.selectPicker = newSelectPicker("Model", modelOptions(m.providerSummaries(), m.providerName, m.modelName), scopeModel)
+}
+
+// providerSummaries asks the runtime which providers exist right now.
+// It returns an empty slice rather than panicking in tests that build
+// partial models without a runtime.
+func (m *model) providerSummaries() []runtime.ProviderSummary {
+	if m.runtime == nil {
+		return nil
+	}
+	return m.runtime.ProviderSummaries()
 }
 
 // SessionStats describes the active conversation for /status.
@@ -127,15 +139,14 @@ func (m model) chooseProvider(id string) (tea.Model, tea.Cmd) {
 	}
 	m.Println("✓ Provider: %s", providers.DisplayName(id))
 
-	if p, ok := providers.ByID(id); ok {
-		switch len(p.Models) {
-		case 0:
-			// No known models for this provider; leave the model as-is.
-		case 1:
-			return m.chooseModel(p.Models[0].ID)
-		default:
-			m.selectPicker = newModelPicker(id, m.modelName)
-		}
+	models := modelOptions(m.providerSummaries(), id, "")
+	switch len(models) {
+	case 0:
+		// No known models for this provider; leave the model as-is.
+	case 1:
+		return m.chooseModel(models[0].ID)
+	default:
+		m.selectPicker = newSelectPicker("Model", models, scopeModel)
 	}
 
 	m.refreshTranscript()

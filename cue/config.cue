@@ -10,9 +10,10 @@
 //	cue vet . path/to/config.yaml -d '#Config' -c
 package config
 
-// Provider lists the model providers the runtime can construct. Anything
-// else fails in runtime.newProvider ("unsupported model provider").
-#Provider: "ollama" | "lmstudio" | "nvidia"
+// Provider lists the values accepted for a providers entry's type:
+// either a wire protocol Forcefield ships adapters for, or a known
+// service whose defaults (endpoint, auth variable) are built in.
+#Provider: "ollama" | "lmstudio" | "nvidia" | "openai" | "anthropic" | "gemini" | "xai" | "openrouter" | "groq" | "mistral" | "together" | "openai-compatible"
 
 // Permission values for permissions.default and every permissions.tools
 // entry. "" is accepted everywhere and means "unset behaves like ask",
@@ -30,16 +31,33 @@ package config
 
 // nonEmpty constrains strings the runtime requires to be present.
 #nonEmpty: string & != ""
+#httpURL: string & =~ "^https?://.+"
 
-// Config is the top-level shape of config.yaml. Only model.* is strictly
-// required: every other section is tolerated when absent, mirroring
-// config.Load.
+// ProviderEntry is one section under providers:. Every field is optional;
+// omitted fields fall back to the service's catalog defaults. Secrets are
+// never stored here - api_key_env names an environment variable or .env
+// key instead, so a saved config.yaml can never contain credentials.
+#ProviderEntry: {
+	type?:       #Provider
+	base_url?:   #httpURL
+	api_key_env?: string
+	model?:      string
+	headers?:    [string]: string
+	models?:     [...#nonEmpty]
+}
+
+// Config is the top-level shape of config.yaml. model.provider and
+// model.name are strictly required; endpoint is optional when the active
+// provider has catalog defaults; every other section is tolerated when
+// absent, mirroring config.Load.
 #Config: {
 	model!: {
-		provider!: #Provider
-		endpoint!: #nonEmpty // e.g. http://localhost:11434
+		provider!: #nonEmpty // e.g. ollama, openai, or a configured providers key
+		endpoint?: #httpURL  // e.g. http://localhost:11434; optional with catalog defaults
 		name!:     #nonEmpty // e.g. ornith:9b
 	}
+
+	providers?: [string]: #ProviderEntry
 
 	agent?: {
 		name?:          string

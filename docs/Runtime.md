@@ -26,16 +26,23 @@ func New() (*Runtime, error)
 
 ## Public Methods
 
-| Method            | Description                                                      |
-| ----------------- | ---------------------------------------------------------------- |
-| `CurrentModel`    | Returns the active model name.                                   |
-| `CurrentProvider` | Returns the active provider name.                                |
-| `SetModel`        | Switches the model for the next request.                         |
-| `SetProvider`     | Switches the provider for the next request.                      |
-| `StreamChat`      | Runs the agent loop and emits structured events as they happen.  |
-| `Stream`          | Compatibility alias for `StreamChat`.                            |
-| `Run`             | Runs the agent loop and returns the final response.              |
-| `RunContext`      | Same as `Run`, with caller-controlled cancellation.              |
+| Method              | Description                                                      |
+| ------------------- | ---------------------------------------------------------------- |
+| `CurrentModel`      | Returns the active model name.                                   |
+| `CurrentProvider`   | Returns the active provider name.                                |
+| `SetModel`          | Switches the model for the next request.                         |
+| `SetProvider`       | Switches the provider for the next request.                      |
+| `ProviderSummaries` | Describes every selectable provider with capabilities and availability. |
+| `StreamChat`        | Runs the agent loop and emits structured events as they happen.  |
+| `Stream`            | Compatibility alias for `StreamChat`.                            |
+| `Run`               | Runs the agent loop and returns the final response.              |
+| `RunContext`        | Same as `Run`, with caller-controlled cancellation.              |
+
+## Provider Selection
+
+The runtime never constructs providers directly and never branches on which provider is active. Configuration resolves to a `Spec`; the providers factory registry builds the matching adapter; the loop runs against `providers.ModelProvider`. Switching provider or model takes effect on the next request without a restart, and streaming, tool calling, sessions, and cancellation behave identically across transports.
+
+If the active provider requires an API key that is missing, startup still succeeds; the model turn fails with an error naming the variable to set.
 
 ## Events
 

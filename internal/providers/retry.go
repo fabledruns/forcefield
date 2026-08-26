@@ -52,6 +52,7 @@ type statusError struct {
 	Model        string
 	Status       int
 	Body         string
+	Kind         ErrorKind // normalized classification of Status
 	RetryAfter   time.Duration // server hint, 0 when absent
 	Retries      int           // retries performed before giving up
 	RateLimited  bool
@@ -189,6 +190,7 @@ func doWithRetry(
 			Model:      model,
 			Status:     resp.StatusCode,
 			Body:       string(body),
+			Kind:       statusForKind(resp.StatusCode),
 			RetryAfter: hint,
 			Retries:    retry,
 		}
@@ -202,6 +204,7 @@ func doWithRetry(
 		// it; fail immediately instead of burning the attempt budget.
 		if quotaExhausted(string(body)) {
 			statusErr.NonRetryable = true
+			statusErr.Kind = ErrKindQuota
 			return nil, statusErr
 		}
 

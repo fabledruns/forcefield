@@ -104,9 +104,36 @@ Forcefield sends the prompt to the local model, runs any requested tools, and sh
 | `/model`             | Show the active model.                      |
 | `/model <name>`      | Switch model for the next request.          |
 | `/provider`          | Show the active provider.                   |
+| `/provider <name>`   | Switch provider for the next request.       |
 | `/sessions`          | Open the saved session picker.              |
 | `/clear`             | Clear the visible transcript.               |
 | `/exit`              | End the session.                            |
+
+Provider and model switches take effect immediately - no restart needed.
+
+## Using Other Providers
+
+Forcefield is not limited to Ollama. It speaks the OpenAI Chat Completions protocol (LM Studio, OpenRouter, NVIDIA NIM, Groq, Mistral, Together AI, xAI, OpenAI, and any self-hosted compatible server), Anthropic's native API, and Google Gemini.
+
+To add a provider, extend `providers:` in `~/.forcefield/config.yaml`:
+
+```yaml
+providers:
+  openai:
+    type: openai
+
+  local-llm:
+    type: openai-compatible
+    base_url: http://localhost:1234/v1
+```
+
+API keys come from environment variables or `.env` files - never from config.yaml:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+Then switch inside a session with `/provider`, or set `model.provider: openai` in the config first. See [Config](Config.md) and [Providers](Providers.md) for all supported services and options, and run `ff doctor` to verify reachability.
 
 ## One-Shot Prompt
 

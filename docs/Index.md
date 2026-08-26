@@ -61,13 +61,15 @@ Forcefield follows a modular architecture where each package has a single respon
    Agent    Session    Config
      │
      ▼
-   Provider
+   Provider Registry
+     │
+     ├── Ollama (local)
+     ├── OpenAI-compatible APIs (LM Studio, NIM, Groq, Mistral, Together, OpenRouter, xAI, OpenAI, self-hosted)
+     ├── Anthropic Messages API
+     └── Google Gemini API
      │
      ▼
- Local LLM (Ollama)
-     │
-     ▼
- Tool Calls
+  Tool Calls
      │
      ▼
     Tools
@@ -76,7 +78,7 @@ Forcefield follows a modular architecture where each package has a single respon
   Skill Loading
      │
      ▼
- Final Response
+  Final Response
 ```
 
 ### Request Flow

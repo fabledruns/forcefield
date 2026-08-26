@@ -28,4 +28,10 @@ type ToolCall struct {
 type Response struct {
 	Content   string
 	ToolCalls []ToolCall
+
+	// StopReason is why the turn ended (stop, tool_calls, length), when
+	// the provider reported it.
+	StopReason FinishReason
+	// Usage holds token counts for the turn, when reported.
+	Usage Usage
 }

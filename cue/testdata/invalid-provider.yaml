@@ -1,6 +1,12 @@
-# INVALID: "openai" was never implemented in the runtime; only ollama,
-# lmstudio, and nvidia construct providers. The schema must reject it.
+# INVALID: providers entries must declare one of the supported types
+# (a wire protocol or a known service). "telegram" is neither.
+# Note: model.provider itself may name any configured providers key, so
+# unknown active providers are rejected by config.Load's resolution step
+# rather than by this static schema.
 model:
   provider: openai
-  endpoint: https://api.openai.com/v1
-  name: gpt-5
+  name: gpt-4o-mini
+
+providers:
+  weird:
+    type: telegram

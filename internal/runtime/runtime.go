@@ -49,6 +49,13 @@ type Runtime struct {
 	skills    *skills.Store
 	scheduler *scheduler
 	limits    Limits
+
+	// authRequired/authEnvVar describe whether the active provider needs
+	// an API key and where it would come from. A missing key does not stop
+	// construction (users can still browse, switch providers, or run
+	// doctor); it fails the model turn with an actionable error instead.
+	authRequired bool
+	authEnvVar   string
 }
 
 func New() (*Runtime, error) {
@@ -113,7 +120,7 @@ func New() (*Runtime, error) {
 
 	asker := permissions.NewStdinAsker()
 
-	return &Runtime{
+	r := &Runtime{
 		cfg:       cfg,
 		provider:  provider,
 		agent:     a,
@@ -121,7 +128,36 @@ func New() (*Runtime, error) {
 		skills:    skillStore,
 		scheduler: newScheduler(manager, permManager, asker, DefaultSchedulerConfig),
 		limits:    limitsFromConfig(cfg),
-	}, nil
+	}
+	r.refreshAuthState()
+	return r, nil
+}
+
+// refreshAuthState re-reads the active provider's authentication
+// requirements after construction, provider switch, or model switch.
+func (r *Runtime) refreshAuthState() {
+	resolved, err := r.cfg.ResolveProvider(r.cfg.Model.Provider, r.cfg.Model.Name)
+	if err != nil {
+		r.authRequired, r.authEnvVar = false, ""
+		return
+	}
+	r.authRequired = resolved.AuthRequired
+	r.authEnvVar = resolved.AuthEnvVar
+}
+
+// checkAuth reports an actionable error when the active provider needs an
+// API key that was not found.
+func (r *Runtime) checkAuth() error {
+	if !r.authRequired || r.authEnvVar == "" {
+		return nil
+	}
+	if key, _, err := config.ResolveEnvValue(r.authEnvVar); err == nil && key != "" {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s requires an API key - set %s in your environment or .env file and restart Forcefield",
+		providers.DisplayName(r.cfg.Model.Provider), r.authEnvVar,
+	)
 }
 
 // limitsFromConfig builds Limits from cfg.Agent, falling back to
@@ -161,6 +197,74 @@ func (r *Runtime) CurrentModel() string { return r.cfg.Model.Name }
 // CurrentProvider returns the active provider name.
 func (r *Runtime) CurrentProvider() string { return r.cfg.Model.Provider }
 
+// ProviderSummary describes one selectable provider for pickers and
+// status output: who it is, what it supports, and whether it is usable
+// right now. Availability is checked without network I/O - a cloud
+// provider with its key missing is reported as unavailable rather than
+// silently failing later.
+type ProviderSummary struct {
+	ID   string
+	Name string
+	// Detail is the compact descriptor shown under picker rows, e.g.
+	// "local · tools · streaming" or "cloud · tools · api key missing".
+	Detail string
+	// Models lists known model IDs (configured or catalog defaults).
+	Models []string
+	// Available reports whether switching to this provider would work.
+	Available bool
+}
+
+// ProviderSummaries describes every configured or known provider in
+// catalog order (custom entries last). The active provider is included;
+// callers mark it current.
+func (r *Runtime) ProviderSummaries() []ProviderSummary {
+	resolved, _ := r.cfg.ResolveAll(r.cfg.Model.Name)
+	out := make([]ProviderSummary, 0, len(resolved))
+	for _, p := range resolved {
+		caps := providers.CapabilitiesFor(p.Type)
+		scope := "local"
+		if preset, ok := providers.PresetByID(p.ID); ok {
+			scope = string(preset.Scope)
+		}
+		detail := scope + capsSuffix(caps)
+		available := true
+		if p.AuthRequired && p.APIKey == "" {
+			detail += " · api key missing"
+			available = false
+		} else if p.AuthRequired {
+			detail += " · key set"
+		}
+		models := append([]string(nil), p.Models...)
+		if p.Model != "" && !contains(models, p.Model) {
+			models = append([]string{p.Model}, models...)
+		}
+		out = append(out, ProviderSummary{
+			ID:        p.ID,
+			Name:      p.Label,
+			Detail:    detail,
+			Models:    models,
+			Available: available,
+		})
+	}
+	return out
+}
+
+func capsSuffix(caps providers.Capabilities) string {
+	if detail := caps.Detail(); detail != "" {
+		return " · " + detail
+	}
+	return ""
+}
+
+func contains(list []string, s string) bool {
+	for _, item := range list {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
 // ToolSummaries returns one "name: description" line per registered
 // tool, in registration order, for /tools-style reporting.
 func (r *Runtime) ToolSummaries() []string {
@@ -189,32 +293,42 @@ func (r *Runtime) SetModel(name string) error {
 	}
 	r.cfg = &cfg
 	r.provider = provider
+	r.refreshAuthState()
 	return nil
 }
 
 // SetProvider switches the active provider, keeping the current model
-// name, and takes effect starting with the next request. If the
-// provider is registered, its default endpoint is adopted too, so
-// switching providers never leaves the endpoint pointed at the
-// previous one.
+// name, and takes effect starting with the next request. If the provider
+// has a known default endpoint (from its configuration entry or the
+// built-in catalog), it is adopted too, so switching providers never
+// leaves the endpoint pointed at the previous one.
 func (r *Runtime) SetProvider(name string) error {
 	if name == "" {
 		return fmt.Errorf("provider name cannot be empty")
 	}
 	cfg := *r.cfg
-	cfg.Model.Provider = name
-	if info, ok := providers.ByID(name); ok {
-		cfg.Model.Endpoint = info.Endpoint
-	}
-	provider, err := newProvider(&cfg)
+	resolved, err := cfg.ResolveProvider(name, cfg.Model.Name)
 	if err != nil {
 		return err
+	}
+	if resolved.AuthRequired && resolved.APIKey == "" {
+		return fmt.Errorf(
+			"%s requires an API key - set %s in your environment or .env file and restart Forcefield",
+			resolved.Label, resolved.AuthEnvVar,
+		)
+	}
+	cfg.Model.Provider = name
+	cfg.Model.Endpoint = resolved.BaseURL
+	provider, err := providers.DefaultFactories().Create(resolved.Spec(cfg.Model.Name))
+	if err != nil {
+		return fmt.Errorf("create provider %q: %w", name, err)
 	}
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
 	r.cfg = &cfg
 	r.provider = provider
+	r.refreshAuthState()
 	return nil
 }
 
@@ -474,6 +588,10 @@ func (r *Runtime) runModelTurn(ctx context.Context, messages []providers.Message
 		return providers.Response{}, context.Canceled
 	}
 
+	if err := r.checkAuth(); err != nil {
+		return providers.Response{}, err
+	}
+
 	stream, err := r.provider.StreamChat(ctx, messages, r.manager.Definitions())
 	if err != nil {
 		return providers.Response{}, fmt.Errorf("model call failed: %w", err)
@@ -499,6 +617,12 @@ func (r *Runtime) runModelTurn(ctx context.Context, messages []providers.Message
 		}
 
 		response.ToolCalls = append(response.ToolCalls, event.ToolCalls...)
+		if event.Usage != nil {
+			response.Usage = *event.Usage
+		}
+		if event.StopReason != providers.FinishNone {
+			response.StopReason = event.StopReason
+		}
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -516,22 +640,26 @@ func Run(messages []providers.Message) (providers.Response, error) {
 	return rt.Run(messages)
 }
 
-// newProvider constructs the configured model provider.
+// newProvider constructs the configured model provider through the
+// provider registry: configuration resolves to a Spec, the registry picks
+// the adapter that speaks that wire protocol. The runtime itself never
+// branches on which provider is active.
 func newProvider(cfg *config.Config) (providers.ModelProvider, error) {
-	switch cfg.Model.Provider {
-	case "ollama":
-		return providers.NewOllamaProvider(cfg.Model.Endpoint, cfg.Model.Name), nil
-	case "nvidia":
-		return providers.NewNvidiaProvider("https://integrate.api.nvidia.com/v1", cfg.Model.Name, cfg.Model.APIKey, nil), nil
-	case "lmstudio":
-		// LM Studio exposes the same OpenAI-compatible chat completions
-		// API as NVIDIA NIM, just unauthenticated and local; only the
-		// error wording differs.
-		return providers.NewLMStudioProvider(cfg.Model.Endpoint, cfg.Model.Name), nil
-	default:
-		return nil, fmt.Errorf(
-			"unsupported model provider %q (only \"ollama\", \"lmstudio\", and \"nvidia\" are supported in this prototype)",
-			cfg.Model.Provider,
-		)
+	return ProviderFor(cfg, cfg.Model.Provider)
+}
+
+// ProviderFor resolves one configured provider and builds it via the
+// registry. It fails with actionable messages for unknown types and
+// malformed endpoints; a missing API key is tolerated here so Forcefield
+// still starts (the model turn fails with guidance instead).
+func ProviderFor(cfg *config.Config, id string) (providers.ModelProvider, error) {
+	resolved, err := cfg.ResolveProvider(id, cfg.Model.Name)
+	if err != nil {
+		return nil, err
 	}
+	provider, err := providers.DefaultFactories().Create(resolved.Spec(cfg.Model.Name))
+	if err != nil {
+		return nil, fmt.Errorf("create provider %q: %w", id, err)
+	}
+	return provider, nil
 }
