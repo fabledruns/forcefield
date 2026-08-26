@@ -33,10 +33,10 @@ type selectOption struct {
 // holds a snapshot of its options and a cursor, and never switches
 // anything itself — the caller reads Selected() once Enter is pressed.
 type selectPicker struct {
-	title   string
-	options []selectOption
-	cursor  int
-	scope   pickerScope
+	title    string
+	options  []selectOption
+	cursor   int
+	scope    pickerScope
 	provider string // providerID this picker's models belong to; only set for scopeModel
 
 	// heights caches how many terminal rows each option rendered to.
@@ -213,7 +213,7 @@ func (p *selectPicker) renderRow(i int, opt selectOption) string {
 	}
 
 	detailLine := "    " + pickerDetailStyle.Render(opt.Detail)
-	body := style.Width(pickerWidth - 4).Render(line) + "\n" +
-		pickerMetaStyle.Width(pickerWidth - 4).Render(detailLine)
+	body := style.Width(pickerWidth-4).Render(line) + "\n" +
+		pickerMetaStyle.Width(pickerWidth-4).Render(detailLine)
 	return body
 }

@@ -52,7 +52,7 @@ type statusError struct {
 	Model        string
 	Status       int
 	Body         string
-	Kind         ErrorKind // normalized classification of Status
+	Kind         ErrorKind     // normalized classification of Status
 	RetryAfter   time.Duration // server hint, 0 when absent
 	Retries      int           // retries performed before giving up
 	RateLimited  bool

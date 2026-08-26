@@ -50,9 +50,9 @@ func (o *OllamaProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 
 	var body struct {
 		Models []struct {
-			Name       string `json:"name"`
-			Model      string `json:"model"`
-			Details    struct {
+			Name    string `json:"name"`
+			Model   string `json:"model"`
+			Details struct {
 				Family            string `json:"family"`
 				ParameterSize     string `json:"parameter_size"`
 				QuantizationLevel string `json:"quantization_level"`

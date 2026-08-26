@@ -105,11 +105,11 @@ type SandboxWSL struct {
 
 // Config is the top-level shape of config.yaml.
 type Config struct {
-	Model       Model                       `yaml:"model"`
-	Providers   map[string]ProviderConfig   `yaml:"providers,omitempty"`
-	Agent       Agent                       `yaml:"agent"`
-	Permissions Permissions                 `yaml:"permissions"`
-	Sandbox     Sandbox                     `yaml:"sandbox"`
+	Model       Model                     `yaml:"model"`
+	Providers   map[string]ProviderConfig `yaml:"providers,omitempty"`
+	Agent       Agent                     `yaml:"agent"`
+	Permissions Permissions               `yaml:"permissions"`
+	Sandbox     Sandbox                   `yaml:"sandbox"`
 }
 
 const defaultConfigTemplate = `model:
