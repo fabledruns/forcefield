@@ -128,7 +128,13 @@ func TestIntegrationBracketedPastePreservesNewlines(t *testing.T) {
 func TestIntegrationKeystrokeBurstPasteKeepsNewlines(t *testing.T) {
 	// Console-driver paste simulation: no bracketed-paste markers, the
 	// embedded CR arrives as a plain Enter keystroke inside a rapid burst.
-	m := driveProgram(t, 3*time.Millisecond, "line one", "\r", "line two")
+	//
+	// The burst window is measured between key events as the model
+	// processes them, so the bytes must arrive in one write: separate
+	// writes can be scheduled more than pasteBurstWindow apart on a
+	// loaded machine (CI included), which would turn this test into a
+	// real submission instead of a paste.
+	m := driveProgram(t, time.Second, "line one\rline two")
 
 	if got := m.input.Value(); got != "line one\nline two" {
 		t.Errorf("input.Value() = %q, want %q (burst Enter must insert a newline)", got, "line one\nline two")

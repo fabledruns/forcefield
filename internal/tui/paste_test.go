@@ -76,11 +76,16 @@ func TestPasteWithCodeBlockPreservesStructure(t *testing.T) {
 // newSubmitTestModel builds a full model via newModel, the same
 // constructor production code uses, so the Enter/submit path (which goes
 // through m.runtime and m.session) can be exercised too. It sandboxes
-// HOME and the working directory so config/session files land in a
-// throwaway temp dir instead of the real environment.
+// HOME/USERPROFILE and the working directory so config/session files land
+// in a throwaway temp dir instead of the real environment - on Windows,
+// os.UserHomeDir prefers USERPROFILE, so both must be redirected or the
+// test would read (and submit against) the developer's real provider
+// configuration.
 func newSubmitTestModel(t *testing.T) model {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	tmp := t.TempDir()
+	t.Setenv("USERPROFILE", tmp)
+	t.Setenv("HOME", tmp)
 	t.Chdir(t.TempDir())
 
 	cfg, err := config.Load()
