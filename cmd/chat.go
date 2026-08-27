@@ -7,6 +7,11 @@ import (
 	"forcefield/internal/tui"
 )
 
+// chatStarter and newChatSession are package vars so tests can inject
+// fakes without redesigning the command architecture.
+var chatStarter = tui.Start
+var newChatSession = session.New
+
 var chatCmd = &cobra.Command{
 	Use:   "chat",
 	Short: "Start an interactive chat session",
@@ -17,7 +22,7 @@ scrollable, persistent session instead of one command per question.`,
 	Args: cobra.NoArgs,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return tui.Start(session.New())
+		return chatStarter(newChatSession())
 	},
 }
 

@@ -78,9 +78,10 @@ func (s *Store) Load() ([]Entry, error) {
 
 // save overwrites the store's file with entries.
 func (s *Store) save(entries []Entry) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("create memory directory for %s: %w", s.path, err)
 	}
+	_ = os.Chmod(filepath.Dir(s.path), 0o700)
 
 	if entries == nil {
 		entries = []Entry{}
@@ -91,10 +92,46 @@ func (s *Store) save(entries []Entry) error {
 		return fmt.Errorf("marshal memory entries: %w", err)
 	}
 
-	if err := os.WriteFile(s.path, data, 0o644); err != nil {
+	// Write atomically with restrictive permissions and preserve existing mode.
+	targetPerm := os.FileMode(0o600)
+	if info, err := os.Stat(s.path); err == nil {
+		targetPerm = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat memory file %s: %w", s.path, err)
+	}
+	dir := filepath.Dir(s.path)
+	tmp, err := os.CreateTemp(dir, "memory-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file for %s: %w", s.path, err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	_ = os.Chmod(tmpName, 0o600)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
 		return fmt.Errorf("write memory file %s: %w", s.path, err)
 	}
-	return nil
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("flush memory file %s: %w", s.path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file for %s: %w", s.path, err)
+	}
+	if err := os.Chmod(tmpName, targetPerm); err != nil {
+		return fmt.Errorf("set permissions on %s: %w", tmpName, err)
+	}
+	// Atomic replace with retry for Windows.
+	var renameErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 5 * time.Millisecond)
+		}
+		if renameErr = os.Rename(tmpName, s.path); renameErr == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("replace memory file %s: %w", s.path, renameErr)
 }
 
 // ErrEmptyText is returned by Add when given blank text.

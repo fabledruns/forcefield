@@ -158,8 +158,13 @@ func Dir() (string, error) {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 	dir := filepath.Join(home, ".forcefield")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create forcefield home %s: %w", dir, err)
+	}
+	// Ensure restrictive permissions even if the directory already existed
+	// with a more permissive mode (e.g. from an older version).
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", fmt.Errorf("set permissions on %s: %w", dir, err)
 	}
 	return dir, nil
 }
@@ -181,9 +186,11 @@ func Load() (*Config, error) {
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := os.WriteFile(path, []byte(defaultConfigTemplate), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(defaultConfigTemplate), 0o600); err != nil {
 			return nil, fmt.Errorf("write default config to %s: %w", path, err)
 		}
+		// Ensure restrictive permissions even if umask is permissive.
+		_ = os.Chmod(path, 0o600)
 		fmt.Printf("Created default config at %s\n", path)
 	} else if err != nil {
 		return nil, fmt.Errorf("stat config file %s: %w", path, err)
@@ -321,7 +328,7 @@ func (c *Config) Save() error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	if err := writeFileAtomic(path, out, 0o644); err != nil {
+	if err := writeFileAtomic(path, out, 0o600); err != nil {
 		return fmt.Errorf("write config file %s: %w", path, err)
 	}
 	return nil
@@ -334,6 +341,14 @@ func (c *Config) Save() error {
 // indexing) - see session.replaceFile for the same rationale.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
+	// Preserve existing permissions when overwriting, otherwise use perm.
+	// This avoids accidentally making a private file world-readable.
+	targetPerm := perm
+	if info, err := os.Stat(path); err == nil {
+		targetPerm = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat destination: %w", err)
+	}
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
@@ -342,6 +357,9 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	defer func() {
 		_ = os.Remove(tmpName)
 	}()
+
+	// Ensure temp file is restrictive from the start.
+	_ = os.Chmod(tmpName, 0o600)
 
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
@@ -354,7 +372,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	if err := os.Chmod(tmpName, perm); err != nil {
+	if err := os.Chmod(tmpName, targetPerm); err != nil {
 		return fmt.Errorf("set permissions: %w", err)
 	}
 

@@ -56,9 +56,19 @@ func (WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result, 
 		}
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	// Preserve existing file mode when overwriting; otherwise default to 0600.
+	targetPerm := os.FileMode(0o600)
+	if info, err := os.Stat(path); err == nil {
+		targetPerm = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
+
+	if err := os.WriteFile(path, []byte(content), targetPerm); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+	}
+	// Ensure restrictive permissions even if umask is permissive.
+	_ = os.Chmod(path, targetPerm)
 
 	return tools.Result{Content: fmt.Sprintf("wrote %d bytes to %s", len(content), path)}, nil
 }

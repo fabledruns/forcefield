@@ -11,6 +11,11 @@ import (
 
 var resumeID string
 
+// rootTuiStarter is a package var so tests can inject a fake.
+var rootTuiStarter = tui.Start
+var loadSession = session.Load
+var newSession = session.New
+
 var rootCmd = &cobra.Command{
 	Use:   "ff",
 	Short: "A local-first agent harness.",
@@ -25,16 +30,16 @@ AI-powered workflows without requiring cloud services.`,
 		var sess *session.Session
 
 		if resumeID != "" {
-			loaded, err := session.Load(resumeID)
+			loaded, err := loadSession(resumeID)
 			if err != nil {
 				return err
 			}
 			sess = loaded
 		} else {
-			sess = session.New()
+			sess = newSession()
 		}
 
-		return tui.Start(sess)
+		return rootTuiStarter(sess)
 	},
 }
 

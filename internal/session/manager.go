@@ -67,13 +67,23 @@ func (s *Session) Save() error {
 	s.UpdatedAt = time.Now()
 
 	dir := filepath.Join(".", filepath.FromSlash(sessionsDir))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create sessions directory: %w", err)
 	}
+	_ = os.Chmod(dir, 0o700)
 
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode session %s: %w", s.ID, err)
+	}
+
+	path := filepath.Join(dir, s.ID+".json")
+	// Preserve existing permissions when overwriting.
+	targetPerm := os.FileMode(0o600)
+	if info, err := os.Stat(path); err == nil {
+		targetPerm = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat session file %s: %w", path, err)
 	}
 
 	tmp, err := os.CreateTemp(dir, s.ID+".json.tmp-*")
@@ -88,6 +98,8 @@ func (s *Session) Save() error {
 		_ = os.Remove(tmpName)
 	}()
 
+	_ = os.Chmod(tmpName, 0o600)
+
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return fmt.Errorf("write session %s: %w", s.ID, err)
@@ -99,8 +111,10 @@ func (s *Session) Save() error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close session %s: %w", s.ID, err)
 	}
+	if err := os.Chmod(tmpName, targetPerm); err != nil {
+		return fmt.Errorf("set permissions on %s: %w", tmpName, err)
+	}
 
-	path := filepath.Join(dir, s.ID+".json")
 	if err := replaceFile(tmpName, path); err != nil {
 		return fmt.Errorf("replace session file %s: %w", path, err)
 	}

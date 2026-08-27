@@ -12,7 +12,7 @@ else
 	BINARY_EXT=
 endif
 
-.PHONY: all build run test clean fmt vet cue-check lint install tidy help
+.PHONY: all build run test clean fmt vet cue-check lint install tidy coverage-gate help
 
 all: build
 
@@ -29,6 +29,13 @@ test:
 coverage:
 	$(GO) test ./... -coverprofile=coverage.out
 	$(GO) tool cover -html=coverage.out
+
+coverage-gate:
+	@echo "Checking cmd coverage >=30%..."
+	@$(GO) test ./cmd -coverprofile=coverage_cmd.out -covermode=count
+	@pct=$$(go tool cover -func=coverage_cmd.out | awk '/total:/ {print $$3}' | tr -d '%'); \
+	echo "cmd coverage: $${pct}%"; \
+	awk -v pct="$$pct" 'BEGIN { if (pct+0 < 30) { print "FAIL: cmd coverage " pct "% is below 30% gate"; exit 1 } else { print "PASS: coverage gate passed" } }'
 
 fmt:
 	$(GO) fmt ./...

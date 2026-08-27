@@ -73,6 +73,29 @@ jobs:
       - name: Build Forcefield
         run: go build -v ./...
 
+  coverage:
+    name: Coverage gate (cmd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Check cmd coverage >=30%
+        shell: bash
+        run: |
+          go test ./cmd -coverprofile=coverage_cmd.out -covermode=count
+          pct=$(go tool cover -func=coverage_cmd.out | awk '/total:/ {print $3}' | tr -d '%')
+          echo "cmd coverage: ${pct}%"
+          awk -v pct="$pct" 'BEGIN { if (pct+0 < 30) { print "::error::cmd coverage " pct "% is below 30% gate (want >=30%)"; exit 1 } else { print "coverage gate passed" } }'
+
   cue:
     name: CUE config schemas
     runs-on: ubuntu-latest

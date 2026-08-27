@@ -83,9 +83,12 @@ func slugify(s string) string {
 // projectRoot, under forcefieldHome/memory/projects/.
 func ProjectStore(forcefieldHome, projectRoot string) (*Store, error) {
 	dir := filepath.Join(forcefieldHome, "memory", "projects")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create project memory directory %s: %w", dir, err)
 	}
+	_ = os.Chmod(dir, 0o700)
+	// Also ensure parent memory dir is restrictive.
+	_ = os.Chmod(filepath.Join(forcefieldHome, "memory"), 0o700)
 
 	path := filepath.Join(dir, projectKey(projectRoot)+".json")
 	return newStore(path), nil
@@ -95,9 +98,10 @@ func ProjectStore(forcefieldHome, projectRoot string) (*Store, error) {
 // project, kept separate from any project-scoped store.
 func GlobalStore(forcefieldHome string) (*Store, error) {
 	dir := filepath.Join(forcefieldHome, "memory")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create memory directory %s: %w", dir, err)
 	}
+	_ = os.Chmod(dir, 0o700)
 
 	return newStore(filepath.Join(dir, "global.json")), nil
 }
