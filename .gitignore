@@ -25,3 +25,6 @@ Thumbs.db
 .claude/
 
 .zcode/
+.opencode/
+opencode.json
+SKILL.md
