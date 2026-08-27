@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"forcefield/internal/tools"
@@ -516,41 +517,72 @@ func (a *AnthropicProvider) Complete(ctx context.Context, messages []Message, de
 	return response, nil
 }
 
-// ListModels enumerates models visible to the API key (first page).
+// anthropicModelsPageSize and anthropicModelsMaxPages bound model-list
+// pagination: pages are followed while the API reports has_more, but a
+// runaway server can never make discovery fetch forever.
+const (
+	anthropicModelsPageSize = 100
+	anthropicModelsMaxPages = 20
+)
+
+// ListModels enumerates every model visible to the API key by following
+// the endpoint's cursor pagination (has_more + after_id) until the final
+// page.
 func (a *AnthropicProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
-	resp, err := a.do(ctx, http.MethodGet, "/v1/models", "application/json", nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	a.gate.release()
+	var models []ModelInfo
+	seen := make(map[string]struct{})
+	cursor := ""
 
-	var out struct {
-		Data []struct {
-			ID          string `json:"id"`
-			DisplayName string `json:"display_name"`
-		} `json:"data"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
-		return nil, &protocolError{msg: fmt.Sprintf("decode model list: %v", err)}
-	}
-	if out.Error != nil && out.Error.Message != "" {
-		return nil, errors.New(out.Error.Message)
-	}
+	for page := 0; ; page++ {
+		path := fmt.Sprintf("/v1/models?limit=%d", anthropicModelsPageSize)
+		if cursor != "" {
+			path += "&after_id=" + url.QueryEscape(cursor)
+		}
 
-	models := make([]ModelInfo, 0, len(out.Data))
-	for _, m := range out.Data {
-		if m.ID == "" {
-			continue
+		resp, err := a.do(ctx, http.MethodGet, path, "application/json", nil)
+		if err != nil {
+			return nil, err
 		}
-		name := m.DisplayName
-		if name == "" {
-			name = m.ID
+
+		var out struct {
+			Data []struct {
+				ID          string `json:"id"`
+				DisplayName string `json:"display_name"`
+			} `json:"data"`
+			HasMore bool   `json:"has_more"`
+			LastID  string `json:"last_id"`
+			Error   *struct {
+				Message string `json:"message"`
+			} `json:"error"`
 		}
-		models = append(models, ModelInfo{Name: name, ID: m.ID})
+		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out)
+		resp.Body.Close()
+		a.gate.release()
+		if decodeErr != nil {
+			return nil, &protocolError{msg: fmt.Sprintf("decode model list: %v", decodeErr)}
+		}
+		if out.Error != nil && out.Error.Message != "" {
+			return nil, errors.New(out.Error.Message)
+		}
+
+		for _, m := range out.Data {
+			if m.ID == "" {
+				continue
+			}
+			if _, dup := seen[m.ID]; dup {
+				continue
+			}
+			seen[m.ID] = struct{}{}
+			name := m.DisplayName
+			if name == "" {
+				name = m.ID
+			}
+			models = append(models, ModelInfo{Name: name, ID: m.ID})
+		}
+
+		if !out.HasMore || out.LastID == "" || page+1 >= anthropicModelsMaxPages {
+			return models, nil
+		}
+		cursor = out.LastID
 	}
-	return models, nil
 }

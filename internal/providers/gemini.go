@@ -456,26 +456,31 @@ func (g *GeminiProvider) Complete(ctx context.Context, messages []Message, defs 
 	return response, nil
 }
 
-// ListModels enumerates models visible to the API key.
+// ListModels enumerates models visible to the API key. The response's
+// supportedGenerationMethods is reliable protocol-level information about
+// usability, so models that cannot serve generateContent (embedding and
+// a4a endpoints) are excluded rather than shown as unusable entries.
 func (g *GeminiProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	resp, err := g.do(ctx, http.MethodGet, "/v1beta/models?pageSize=200", "application/json", nil)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	g.gate.release()
 
 	var out struct {
 		Models []struct {
-			Name        string `json:"name"`
-			DisplayName string `json:"displayName"`
+			Name                       string   `json:"name"`
+			DisplayName                string   `json:"displayName"`
+			SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
 		} `json:"models"`
 		Error *struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
-		return nil, &protocolError{msg: fmt.Sprintf("decode model list: %v", err)}
+	decodeErr := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out)
+	resp.Body.Close()
+	g.gate.release()
+	if decodeErr != nil {
+		return nil, &protocolError{msg: fmt.Sprintf("decode model list: %v", decodeErr)}
 	}
 	if out.Error != nil && out.Error.Message != "" {
 		return nil, errors.New(out.Error.Message)
@@ -483,6 +488,9 @@ func (g *GeminiProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 
 	models := make([]ModelInfo, 0, len(out.Models))
 	for _, m := range out.Models {
+		if !supportsGenerateContent(m.SupportedGenerationMethods) {
+			continue
+		}
 		id := strings.TrimPrefix(m.Name, "models/")
 		if id == "" {
 			continue
@@ -494,4 +502,20 @@ func (g *GeminiProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		models = append(models, ModelInfo{Name: name, ID: id})
 	}
 	return models, nil
+}
+
+// supportsGenerateContent reports whether the model can answer chat
+// requests. An explicitly empty method list is protocol evidence that it
+// cannot; a missing field carries no information either way and the model
+// is kept rather than guessed about.
+func supportsGenerateContent(methods []string) bool {
+	if methods == nil {
+		return true
+	}
+	for _, m := range methods {
+		if m == "generateContent" {
+			return true
+		}
+	}
+	return false
 }
