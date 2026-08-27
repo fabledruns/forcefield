@@ -38,7 +38,7 @@ type selectPicker struct {
 	title    string
 	options  []selectOption
 	cursor   int
-	offset   int       // first visible option index, for vertical scrolling
+	offset   int // first visible option index, for vertical scrolling
 	scope    pickerScope
 	provider string // providerID this picker's models belong to; only set for scopeModel
 
