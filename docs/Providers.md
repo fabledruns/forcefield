@@ -99,7 +99,50 @@ type ModelLister interface {
 }
 ```
 
-Providers without discovery are driven entirely by configured or catalog-known models.
+## Model Discovery
+
+Automatic model discovery lets Forcefield populate `/model` with what a provider currently serves, without editing configuration.
+
+### Flow
+
+```text
+config providers entry → resolved Spec
+        → factory registry builds that transport's adapter
+        → ListModels()
+        → Discovery service (single-flight, cache)
+        → runtime ModelCatalog (ordering, de-duplication)
+        → TUI model picker
+```
+
+The TUI contains no provider-specific logic: it consumes generic `providers.Model` values (`ID`, `Name`, `Provider`, `ContextWindow`) and a three-state listing (`fresh`, `stale`, `unsupported`).
+
+### Supported discovery protocols
+
+| Transport   | Endpoint                          | Notes                                                        |
+| ----------- | --------------------------------- | ------------------------------------------------------------ |
+| Ollama      | `GET /api/tags`                   | Locally installed models; unavailable server is a soft failure. |
+| OpenAI-compatible | `GET {base_url}/models`     | One implementation for OpenAI, NVIDIA NIM, LM Studio, xAI, OpenRouter, Groq, Mistral, Together AI, and custom endpoints - auth and custom headers come from configuration. |
+| Anthropic   | `GET /v1/models`                  | Follows cursor pagination (`has_more` / `after_id`) to the last page. |
+| Gemini      | `GET /v1beta/models`              | Key rides the `x-goog-api-key` header, never the URL; IDs normalized (`models/` prefix stripped). |
+
+Gemini additionally filters using `supportedGenerationMethods`: models explicitly reporting an empty method list or lacking `generateContent` are hidden. That is protocol-level evidence; nothing is guessed, and models with no methods field at all are kept.
+
+### Caching
+
+Successful listings live in an in-memory cache for the process lifetime:
+
+- TTL is 10 minutes by default.
+- Keys combine provider ID, transport type, base URL, and an irreversible SHA-256 fingerprint of the API key - so distinct accounts on one endpoint keep separate listings while raw keys never appear in keys, logs, or errors.
+- Concurrent requests for the same key share a single fetch (single-flight).
+- A failed refresh keeps the previous cached listing.
+
+There is deliberately no disk persistence: discovery reflects live provider account state, and config/session storage must never hold it.
+
+### Laziness and fallback
+
+Discovery never runs at startup and `ModelCatalog` never touches the network. Fetching happens only when a model picker needs data or a refresh is requested. Until a fresh listing exists (or if discovery fails, is unsupported, or the machine is offline), the picker shows deterministic fallbacks: the active model first, then configured entry defaults, then catalog-known models, sorted and de-duplicated. A manually configured model always remains selectable even when absent from discovery - discovery enhances, never authorizes.
+
+Failures surface as a concise status line in the picker (built from the typed error kinds, credential-redacted) while previously visible models stay listed.
 
 ## Transports
 

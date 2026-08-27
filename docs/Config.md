@@ -72,9 +72,13 @@ Each key defines one selectable provider. Every field is optional; omitted value
 | `api_key_env` | Environment variable (or `.env` file key) holding the API key. Defaults to the service's standard variable. |
 | `model`       | Optional default model recorded for this provider.                             |
 | `headers`     | Extra HTTP headers sent with every request (e.g. OpenRouter's `HTTP-Referer`).  |
-| `models`      | Model IDs offered by providers that cannot enumerate their own models.          |
+| `models`      | Model IDs offered by providers that cannot enumerate their own models, and extra choices shown alongside discovered models. |
 
 Supported services and their protocols are documented in [Providers](Providers.md).
+
+### Model Discovery
+
+Providers that can enumerate their models do so automatically (lazily, when a picker needs them - never at startup), and results are cached in memory for about ten minutes. Entries under `providers.*.models` are always offered as fallbacks and remain selectable even when discovery returns something different; the active `model.name` is always listed first whether or not discovery knows it. See [Providers](Providers.md#model-discovery) for caching behavior, refresh semantics, and per-protocol details.
 
 ### Secrets
 

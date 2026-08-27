@@ -49,7 +49,29 @@ The provider picker lists every configured or known provider. Each row shows the
     cloud · tools · streaming · api key missing
 ```
 
-Availability is checked without network I/O: a cloud provider whose API key cannot be resolved is marked unavailable instead of failing silently later. Selecting a provider switches immediately - no restart - and opens the model picker when more than one model is known (from configuration or the built-in catalog). The pickers are presentation only; they read summaries from the runtime and switch through it.
+Availability is checked without network I/O: a cloud provider whose API key cannot be resolved is marked unavailable instead of failing silently later. Selecting a provider switches immediately - no restart - and opens the model picker when more than one model is known. The pickers are presentation only; they read summaries from the runtime and switch through it.
+
+#### Automatic Model Discovery
+
+When the model picker opens for a provider whose listing is not cached (or has expired), Forcefield fetches the provider's models in the background:
+
+```text
+OPENAI
+
+● custom-model          ← your configured model always leads
+  gpt-5.6
+  gpt-5.6-mini
+↻ Refresh models
+Fetching models…       ← non-blocking status while the request runs
+```
+
+- The picker never freezes: navigation and Esc work during the fetch.
+- When results arrive, rows are replaced by the discovered list, sorted deterministically with your active model first.
+- If discovery fails (no API key, unreachable endpoint, timeout, malformed response), the previously visible models stay listed and a concise warning line explains what happened.
+- Successful listings are cached in memory for ~10 minutes, so reopening `/model` is instant until then.
+- `r` or the "Refresh models" row forces a fresh request that bypasses the cache and keeps your highlighted selection when it still exists.
+
+Discovery is lazy: nothing is fetched at startup or for providers you never open. See [Providers](Providers.md) for protocol details per service.
 
 ## Input Handling
 
