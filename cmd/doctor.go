@@ -161,7 +161,7 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 	client := &http.Client{Timeout: probeTimeout}
 	base := strings.TrimRight(resolved.BaseURL, "/")
 
-	auth := func(req *http.Request) {}
+	var auth func(req *http.Request)
 	switch resolved.Type {
 	case "ollama":
 		auth = func(req *http.Request) {}
