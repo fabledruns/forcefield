@@ -269,6 +269,32 @@ func TestAnthropicAPIKeyRedactedFromErrors(t *testing.T) {
 	}
 }
 
+func TestAnthropicListModelsFollowsPagination(t *testing.T) {
+	var requests []string
+	p := anthropicServer(t, func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.RawQuery)
+		switch r.URL.Query().Get("after_id") {
+		case "":
+			fmt.Fprint(w, `{"data":[{"id":"claude-a"},{"id":"claude-b"}],"has_more":true,"last_id":"claude-b"}`)
+		case "claude-b":
+			fmt.Fprint(w, `{"data":[{"id":"claude-c"}],"has_more":false,"last_id":"claude-c"}`)
+		default:
+			t.Errorf("unexpected cursor %q", r.URL.Query().Get("after_id"))
+		}
+	})
+
+	models, err := p.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if len(models) != 3 || models[0].ID != "claude-a" || models[1].ID != "claude-b" || models[2].ID != "claude-c" {
+		t.Fatalf("models = %+v, want all three pages' entries in order", models)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests = %v, want exactly two pages", requests)
+	}
+}
+
 func TestAnthropicCompleteAndListModels(t *testing.T) {
 	p := anthropicServer(t, func(t *testing.T, w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

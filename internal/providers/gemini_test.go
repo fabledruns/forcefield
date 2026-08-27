@@ -276,6 +276,35 @@ func TestGeminiCompleteAndListModels(t *testing.T) {
 	}
 }
 
+func TestGeminiListModelsFiltersNonChatModels(t *testing.T) {
+	p := geminiServer(t, func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1beta/models" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"models":[
+			{"name":"models/gemini-pro","displayName":"Gemini Pro","supportedGenerationMethods":["generateContent"]},
+			{"name":"models/embedding-001","supportedGenerationMethods":["embedContent"]},
+			{"name":"models/legacy","supportedGenerationMethods":[]},
+			{"name":"models/mystery"}
+		]}`)
+	})
+
+	models, err := p.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	var ids []string
+	for _, m := range models {
+		ids = append(ids, m.ID)
+	}
+	// Only models that can serve generateContent (or report no methods at
+	// all) are offered - embedding endpoints are excluded on protocol
+	// evidence, not guesswork.
+	if strings.Join(ids, ",") != "gemini-pro,mystery" {
+		t.Fatalf("ids = %v, want gemini-pro,mystery", ids)
+	}
+}
+
 func TestGeminiCapabilities(t *testing.T) {
 	caps := CapabilitiesFor("gemini")
 	if !caps.Streaming || !caps.ToolCalling || !caps.ParallelToolCalls {
