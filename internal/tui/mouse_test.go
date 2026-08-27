@@ -536,8 +536,19 @@ func TestSelectPickerRowClickChoosesProvider(t *testing.T) {
 	if m.providerName != want {
 		t.Errorf("provider = %q, want %q after clicking its row", m.providerName, want)
 	}
-	if m.selectPicker != nil {
-		t.Error("select picker stayed open after clicking a row")
+
+	// Switching providers carries the previously active model over
+	// (model.name is still set until the user picks another one), so the
+	// model picker opens with at least the carried-over choice plus the
+	// new provider's fallback - plus the refresh row.
+	if m.selectPicker == nil {
+		t.Fatal("model picker did not open after choosing a provider")
+	}
+	if m.selectPicker.provider != want {
+		t.Errorf("open model picker is for %q, want %q", m.selectPicker.provider, want)
+	}
+	if !m.selectPicker.fetching {
+		t.Error("discovery was not started for the newly selected provider")
 	}
 }
 

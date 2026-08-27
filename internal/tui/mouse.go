@@ -236,10 +236,12 @@ func (m *model) routePickerClicks(msg tea.MouseMsg) {
 func (m *model) routeSelectPickerClicks(msg tea.MouseMsg) {
 	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonWheelUp {
 		m.selectPicker.moveUp()
+		m.selectPicker.ensureVisible(m.height)
 		return
 	}
 	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonWheelDown {
 		m.selectPicker.moveDown()
+		m.selectPicker.ensureVisible(m.height)
 		return
 	}
 	idx, ok := m.selectPicker.rowAt(msg.X, msg.Y, m.width, m.height)
@@ -249,6 +251,13 @@ func (m *model) routeSelectPickerClicks(msg tea.MouseMsg) {
 	m.selectPicker.cursor = clampIndex(idx, len(m.selectPicker.options))
 	opt := m.selectPicker.selected()
 	scope := m.selectPicker.scope
+	if scope == scopeModel && opt.ID == refreshOptionID {
+		// Clicking the refresh row re-runs discovery; the picker stays open.
+		next := m
+		next.triggerModelRefresh()
+		*m = *next
+		return
+	}
 	m.selectPicker = nil
 	var next tea.Model
 	if scope == scopeProvider {

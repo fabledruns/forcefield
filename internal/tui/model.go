@@ -95,6 +95,12 @@ type model struct {
 	// state.
 	selectPicker *selectPicker
 
+	// notify delivers messages into the running program from background
+	// work (model discovery). It is wired once Start owns the program;
+	// nil outside a live program (most tests), where background work is
+	// simply skipped.
+	notify func(tea.Msg)
+
 	// permissionPrompt is non-nil while a tool's "ask" permission
 	// decision is awaiting an answer. See permission.go and asker.go.
 	permissionPrompt *permissionPrompt
@@ -358,6 +364,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendActivity(m.permissionPrompt.summary())
 		m.refreshTranscript()
 		return m, nil
+
+	case modelsFetchedMsg:
+		next := m
+		next.applyDiscoveredModels(msg)
+		return next, nil
 
 	case streamEventMsg:
 		if msg.gen != m.streamGen {
@@ -890,15 +901,18 @@ func (m model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleSelectPickerKey processes keys while the /provider or /model
 // modal is open. On Enter it hands off to chooseProvider or
-// chooseModel depending on which one is open.
+// chooseModel depending on which one is open; the refresh row (and the
+// r hotkey) re-run discovery for the model picker instead.
 func (m model) handleSelectPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyUp:
 		m.selectPicker.moveUp()
+		m.selectPicker.ensureVisible(m.height)
 		return m, nil
 
 	case tea.KeyDown:
 		m.selectPicker.moveDown()
+		m.selectPicker.ensureVisible(m.height)
 		return m, nil
 
 	case tea.KeyEsc:
@@ -912,18 +926,45 @@ func (m model) handleSelectPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if scope == scopeProvider {
 			return m.chooseProvider(opt.ID)
 		}
+		if opt.ID == refreshOptionID {
+			next := m
+			next.openModelPickerFor(m.providerName)
+			next.triggerModelRefresh()
+			return next, nil
+		}
 		return m.chooseModel(opt.ID)
 	}
 
 	switch msg.String() {
 	case "k":
 		m.selectPicker.moveUp()
+		m.selectPicker.ensureVisible(m.height)
 	case "j":
 		m.selectPicker.moveDown()
+		m.selectPicker.ensureVisible(m.height)
 	case "q":
 		m.selectPicker = nil
+	case "r":
+		if m.selectPicker.scope == scopeModel {
+			next := m
+			next.triggerModelRefresh()
+			return next, nil
+		}
 	}
 	return m, nil
+}
+
+// triggerModelRefresh re-runs discovery for the open model picker,
+// bypassing the cache. The current rows stay visible with a fetching
+// indicator until the fresh result replaces them; a failure keeps the
+// rows and shows a concise status.
+func (m *model) triggerModelRefresh() {
+	if m.selectPicker == nil || m.selectPicker.scope != scopeModel || m.selectPicker.fetching {
+		return
+	}
+	m.selectPicker.fetching = true
+	m.selectPicker.status = ""
+	m.startDiscovery(m.selectPicker.provider, true)
 }
 
 // switchToSession loads the session with id from disk and replaces the

@@ -94,10 +94,34 @@ func (m *model) OpenProviderPicker() {
 	m.selectPicker = newSelectPicker("Provider", providerOptions(m.providerSummaries(), m.providerName), scopeProvider)
 }
 
-// OpenModelPicker opens the /model modal, scoped to the currently
-// active provider.
+// OpenModelPicker opens the /model modal for the currently active
+// provider. Models come from the runtime's catalog (active model first,
+// then discovered or fallback entries). When the listing is stale,
+// discovery starts immediately in the background and the picker shows a
+// "Fetching models…" line until it lands.
 func (m *model) OpenModelPicker() {
-	m.selectPicker = newSelectPicker("Model", modelOptions(m.providerSummaries(), m.providerName, m.modelName), scopeModel)
+	m.openModelPickerFor(m.providerName)
+}
+
+// openModelPickerFor opens the model picker for one provider and kicks
+// off lazy discovery when needed.
+func (m *model) openModelPickerFor(providerID string) {
+	current := ""
+	if providerID == m.providerName {
+		current = m.modelName
+	}
+
+	models, state := m.runtime.ModelCatalog(providerID)
+	options := modelOptions(models, current, state)
+
+	picker := newSelectPicker("Model", options, scopeModel)
+	picker.provider = providerID
+	picker.fetching = state == runtime.ModelsStale
+	m.selectPicker = picker
+
+	if picker.fetching {
+		m.startDiscovery(providerID, false)
+	}
 }
 
 // providerSummaries asks the runtime which providers exist right now.
@@ -128,9 +152,11 @@ func (m *model) Tools() []string {
 }
 
 // chooseProvider switches to the provider with the given ID and prints
-// a confirmation. Unless the new provider has zero or more than one
-// known model, it also opens the model picker automatically, so
-// picking a provider never leaves the user stuck on a stale model.
+// a confirmation. Unless the new provider has exactly one known model,
+// it also opens the model picker automatically, so picking a provider
+// never leaves the user stuck on a stale model. A stale listing starts
+// background discovery; the picker shows fallbacks plus "Fetching
+// models…" until the fresh list arrives.
 func (m model) chooseProvider(id string) (tea.Model, tea.Cmd) {
 	if err := m.SetProvider(id); err != nil {
 		m.entries = append(m.entries, chatEntry{Role: roleError, Content: err.Error()})
@@ -139,14 +165,20 @@ func (m model) chooseProvider(id string) (tea.Model, tea.Cmd) {
 	}
 	m.Println("✓ Provider: %s", providers.DisplayName(id))
 
-	models := modelOptions(m.providerSummaries(), id, "")
-	switch len(models) {
-	case 0:
-		// No known models for this provider; leave the model as-is.
-	case 1:
+	models, state := m.runtime.ModelCatalog(id)
+	switch {
+	case len(models) == 0 && state == runtime.ModelsUnsupported:
+		// Nothing selectable and nothing to discover; leave the model as-is.
+	case len(models) == 1:
 		return m.chooseModel(models[0].ID)
 	default:
-		m.selectPicker = newSelectPicker("Model", models, scopeModel)
+		picker := newSelectPicker("Model", modelOptions(models, m.modelName, state), scopeModel)
+		picker.provider = id
+		picker.fetching = state == runtime.ModelsStale
+		m.selectPicker = picker
+		if picker.fetching {
+			m.startDiscovery(id, false)
+		}
 	}
 
 	m.refreshTranscript()
