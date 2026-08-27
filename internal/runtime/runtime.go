@@ -50,6 +50,11 @@ type Runtime struct {
 	scheduler *scheduler
 	limits    Limits
 
+	// discovery caches model listings per provider for the process
+	// lifetime. It performs network I/O only when DiscoverModels is
+	// called; construction and ModelCatalog stay offline.
+	discovery *providers.Discovery
+
 	// authRequired/authEnvVar describe whether the active provider needs
 	// an API key and where it would come from. A missing key does not stop
 	// construction (users can still browse, switch providers, or run
@@ -128,6 +133,7 @@ func New() (*Runtime, error) {
 		skills:    skillStore,
 		scheduler: newScheduler(manager, permManager, asker, DefaultSchedulerConfig),
 		limits:    limitsFromConfig(cfg),
+		discovery: providers.NewDiscovery(providers.DefaultFactories()),
 	}
 	r.refreshAuthState()
 	return r, nil
