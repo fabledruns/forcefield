@@ -284,7 +284,6 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		}, nil
 	}
 	cmd, cleanup := prepared.Cmd, prepared.Cleanup
-	cwd = prepared.Dir
 	if cleanup != nil {
 		defer cleanup()
 	}
