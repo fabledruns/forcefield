@@ -60,10 +60,10 @@ const (
 // cachedBlock holds one transcript entry's last rendered block and the
 // fingerprint that produced it, so streaming can reuse stable entries.
 type cachedBlock struct {
-	rendered string
-	lines    int
-	role     role
-	content  string
+	rendered  string
+	lines     int
+	role      role
+	content   string
 	streaming bool
 	hovered   bool
 	// thinking, when present
