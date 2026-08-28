@@ -33,6 +33,8 @@ type AnthropicProvider struct {
 	gate   *requestGate
 
 	authHintEnv string
+
+	reasoning ReasoningConfig
 }
 
 // NewAnthropicProvider builds a provider from a resolved spec. BaseURL is
@@ -42,7 +44,7 @@ func NewAnthropicProvider(spec Spec) *AnthropicProvider {
 	spec.BaseURL = strings.TrimRight(spec.BaseURL, "/")
 	return &AnthropicProvider{
 		spec:        spec,
-		client:      &http.Client{},
+		client:      newDefaultClient(),
 		retry:       defaultRetryPolicy,
 		gate:        newRequestGate(),
 		authHintEnv: "ANTHROPIC_API_KEY",
@@ -65,6 +67,42 @@ func (a *AnthropicProvider) Capabilities() Capabilities {
 		Reasoning:         true,
 		ParallelToolCalls: true,
 	}
+}
+
+// SetReasoning stores the abstract reasoning config for the next request.
+func (a *AnthropicProvider) SetReasoning(cfg ReasoningConfig) {
+	deep := ReasoningConfig{Effort: cfg.Effort}
+	if cfg.Thinking != nil {
+		tc := ThinkingConfig{Level: cfg.Thinking.Level}
+		if cfg.Thinking.Enabled != nil {
+			v := *cfg.Thinking.Enabled
+			tc.Enabled = &v
+		}
+		if cfg.Thinking.Budget != nil {
+			v := *cfg.Thinking.Budget
+			tc.Budget = &v
+		}
+		deep.Thinking = &tc
+	}
+	a.reasoning = deep
+}
+
+// GetReasoning reports the last reasoning config set.
+func (a *AnthropicProvider) GetReasoning() ReasoningConfig {
+	deep := ReasoningConfig{Effort: a.reasoning.Effort}
+	if a.reasoning.Thinking != nil {
+		tc := ThinkingConfig{Level: a.reasoning.Thinking.Level}
+		if a.reasoning.Thinking.Enabled != nil {
+			v := *a.reasoning.Thinking.Enabled
+			tc.Enabled = &v
+		}
+		if a.reasoning.Thinking.Budget != nil {
+			v := *a.reasoning.Thinking.Budget
+			tc.Budget = &v
+		}
+		deep.Thinking = &tc
+	}
+	return deep
 }
 
 // statusHint turns specific HTTP statuses into a concrete next step.
@@ -123,6 +161,11 @@ type anthropicToolDef struct {
 	InputSchema map[string]any `json:"input_schema"`
 }
 
+type anthropicThinking struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+}
+
 type anthropicRequest struct {
 	Model     string             `json:"model"`
 	MaxTokens int                `json:"max_tokens"`
@@ -130,6 +173,27 @@ type anthropicRequest struct {
 	Messages  []anthropicMessage `json:"messages"`
 	Tools     []anthropicToolDef `json:"tools,omitempty"`
 	Stream    bool               `json:"stream"`
+	Thinking  *anthropicThinking `json:"thinking,omitempty"`
+}
+
+func anthropicThinkingFromReasoning(cfg ReasoningConfig) *anthropicThinking {
+	if cfg.Thinking == nil {
+		return nil
+	}
+	tc := cfg.Thinking
+	if tc.Enabled != nil && !*tc.Enabled {
+		return &anthropicThinking{Type: "disabled"}
+	}
+	if tc.Budget != nil {
+		if *tc.Budget == 0 {
+			return &anthropicThinking{Type: "disabled"}
+		}
+		return &anthropicThinking{Type: "enabled", BudgetTokens: *tc.Budget}
+	}
+	if tc.Enabled != nil && *tc.Enabled {
+		return &anthropicThinking{Type: "enabled", BudgetTokens: 4096}
+	}
+	return nil
 }
 
 type anthropicResponse struct {
@@ -280,6 +344,7 @@ func (a *AnthropicProvider) StreamChat(ctx context.Context, messages []Message, 
 		Messages:  history,
 		Tools:     toAnthropicTools(defs),
 		Stream:    true,
+		Thinking:  anthropicThinkingFromReasoning(a.reasoning),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode request: %w", err)
@@ -468,6 +533,7 @@ func (a *AnthropicProvider) Complete(ctx context.Context, messages []Message, de
 		System:    system,
 		Messages:  history,
 		Tools:     toAnthropicTools(defs),
+		Thinking:  anthropicThinkingFromReasoning(a.reasoning),
 	})
 	if err != nil {
 		return Response{}, fmt.Errorf("encode request: %w", err)

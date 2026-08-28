@@ -42,6 +42,8 @@ type OpenAICompatible struct {
 	// services that work without one (e.g. LM Studio), where a 401 means
 	// something else went wrong.
 	noKeyHint string
+
+	reasoning ReasoningConfig
 }
 
 // NewOpenAICompatible builds a provider for the given resolved spec.
@@ -49,12 +51,25 @@ func NewOpenAICompatible(spec Spec) *OpenAICompatible {
 	if spec.BaseURL != "" {
 		spec.BaseURL = strings.TrimRight(spec.BaseURL, "/")
 	}
-	return &OpenAICompatible{
+	p := &OpenAICompatible{
 		spec:   spec,
-		client: &http.Client{},
+		client: newDefaultClient(),
 		retry:  defaultRetryPolicy,
 		gate:   newRequestGate(),
 	}
+	// For NVIDIA models that support thinking, enable reasoning streaming by
+	// default to preserve existing behavior for those models (e.g., z-ai/glm-5.2).
+	// For models where thinking is not a separate capability (DeepSeek, Muse),
+	// do not send the field.
+	if isNvidiaSpec(spec) && ModelReasoningCapabilities(spec.ID, spec.Model).SupportsThinking() {
+		p.extraBody = map[string]any{
+			"chat_template_kwargs": map[string]any{
+				"enable_thinking": true,
+				"clear_thinking":  false,
+			},
+		}
+	}
+	return p
 }
 
 // displayName is the service name used in error messages.
@@ -72,6 +87,42 @@ func (o *OpenAICompatible) Capabilities() Capabilities {
 		ToolCalling: true,
 		Reasoning:   true,
 	}
+}
+
+// SetReasoning stores the abstract reasoning config for the next request.
+func (o *OpenAICompatible) SetReasoning(cfg ReasoningConfig) {
+	deep := ReasoningConfig{Effort: cfg.Effort}
+	if cfg.Thinking != nil {
+		tc := ThinkingConfig{Level: cfg.Thinking.Level}
+		if cfg.Thinking.Enabled != nil {
+			v := *cfg.Thinking.Enabled
+			tc.Enabled = &v
+		}
+		if cfg.Thinking.Budget != nil {
+			v := *cfg.Thinking.Budget
+			tc.Budget = &v
+		}
+		deep.Thinking = &tc
+	}
+	o.reasoning = deep
+}
+
+// GetReasoning reports the last reasoning config set.
+func (o *OpenAICompatible) GetReasoning() ReasoningConfig {
+	deep := ReasoningConfig{Effort: o.reasoning.Effort}
+	if o.reasoning.Thinking != nil {
+		tc := ThinkingConfig{Level: o.reasoning.Thinking.Level}
+		if o.reasoning.Thinking.Enabled != nil {
+			v := *o.reasoning.Thinking.Enabled
+			tc.Enabled = &v
+		}
+		if o.reasoning.Thinking.Budget != nil {
+			v := *o.reasoning.Thinking.Budget
+			tc.Budget = &v
+		}
+		deep.Thinking = &tc
+	}
+	return deep
 }
 
 // statusHint turns specific HTTP statuses into a concrete next step.
@@ -140,10 +191,11 @@ type ocFunctionCallData struct {
 }
 
 type ocChatRequest struct {
-	Model    string      `json:"model"`
-	Messages []ocMessage `json:"messages"`
-	Tools    []ocTool    `json:"tools,omitempty"`
-	Stream   bool        `json:"stream"`
+	Model           string      `json:"model"`
+	Messages        []ocMessage `json:"messages"`
+	Tools           []ocTool    `json:"tools,omitempty"`
+	Stream          bool        `json:"stream"`
+	ReasoningEffort string      `json:"reasoning_effort,omitempty"`
 }
 
 // ocToolCallDelta is one incremental piece of a streamed tool call. Servers
@@ -222,17 +274,19 @@ type ocToolCallBuf struct {
 // body fields on top.
 func (o *OpenAICompatible) buildPayload(stream bool, messages []Message, defs []tools.Definition) ([]byte, error) {
 	req := ocChatRequest{
-		Model:    o.spec.Model,
-		Messages: toOCMessages(messages),
-		Tools:    toOCTools(defs),
-		Stream:   stream,
+		Model:           o.spec.Model,
+		Messages:        toOCMessages(messages),
+		Tools:           toOCTools(defs),
+		Stream:          stream,
+		ReasoningEffort: o.reasoning.Effort,
 	}
 
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
-	if len(o.extraBody) == 0 {
+	needsMerge := len(o.extraBody) > 0 || (o.reasoning.Thinking != nil && o.reasoning.Thinking.Enabled != nil && isNvidiaSpec(o.spec))
+	if !needsMerge {
 		return payload, nil
 	}
 
@@ -243,11 +297,27 @@ func (o *OpenAICompatible) buildPayload(stream bool, messages []Message, defs []
 	for k, v := range o.extraBody {
 		merged[k] = v
 	}
+	if o.reasoning.Thinking != nil && o.reasoning.Thinking.Enabled != nil && isNvidiaSpec(o.spec) {
+		merged["chat_template_kwargs"] = map[string]any{
+			"enable_thinking": *o.reasoning.Thinking.Enabled,
+			"clear_thinking":  false,
+		}
+	}
 	payload, err = json.Marshal(merged)
 	if err != nil {
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	return payload, nil
+}
+
+func isNvidiaSpec(spec Spec) bool {
+	if strings.EqualFold(spec.ID, "nvidia") {
+		return true
+	}
+	if strings.Contains(strings.ToLower(spec.Label), "nvidia") {
+		return true
+	}
+	return false
 }
 
 func (o *OpenAICompatible) newRequest(ctx context.Context, method, url, accept string, body io.Reader) (*http.Request, error) {

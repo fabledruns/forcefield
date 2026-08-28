@@ -23,6 +23,8 @@ func newRegistry() *command.Registry {
 	reg.Register(builtin.NewSessions())
 	reg.Register(builtin.NewStatus())
 	reg.Register(builtin.NewTools())
+	reg.Register(builtin.NewEffort())
+	reg.Register(builtin.NewThinking())
 	return reg
 }
 
@@ -149,6 +151,54 @@ func (m *model) Tools() []string {
 		return nil
 	}
 	return m.runtime.ToolSummaries()
+}
+
+// ReasoningCapabilities reports the active model's reasoning capabilities.
+func (m *model) ReasoningCapabilities() providers.ReasoningCapabilities {
+	if m.runtime == nil {
+		return providers.ReasoningCapabilities{}
+	}
+	return m.runtime.CurrentReasoningCapabilities()
+}
+
+// Effort reports the current effort level.
+func (m *model) Effort() string {
+	if m.runtime == nil {
+		return ""
+	}
+	return m.runtime.CurrentEffort()
+}
+
+// SetEffort sets the effort level for the active model.
+func (m *model) SetEffort(level string) error {
+	if m.runtime == nil {
+		return fmt.Errorf("runtime not available")
+	}
+	return m.runtime.SetEffort(level)
+}
+
+// Thinking returns the current thinking config.
+func (m *model) Thinking() *providers.ThinkingConfig {
+	if m.runtime == nil {
+		return nil
+	}
+	return m.runtime.CurrentThinking()
+}
+
+// SetThinking sets the thinking config for the active model.
+func (m *model) SetThinking(cfg providers.ThinkingConfig) error {
+	if m.runtime == nil {
+		return fmt.Errorf("runtime not available")
+	}
+	return m.runtime.SetThinking(cfg)
+}
+
+// ToggleThinking toggles boolean thinking.
+func (m *model) ToggleThinking() (bool, error) {
+	if m.runtime == nil {
+		return false, fmt.Errorf("runtime not available")
+	}
+	return m.runtime.ToggleThinking()
 }
 
 // chooseProvider switches to the provider with the given ID and prints

@@ -12,11 +12,16 @@ A session is one conversation. Forcefield stores sessions as local JSON files so
 
 ### `Message`
 
-| Field     | Type        | Description                          |
-| --------- | ----------- | ------------------------------------ |
-| `Role`    | `string`    | Message role, for example `user`.    |
-| `Content` | `string`    | Message text.                        |
-| `Time`    | `time.Time` | Time when the message was added.     |
+| Field        | Type                  | Description                                                                 |
+| ------------ | --------------------- | --------------------------------------------------------------------------- |
+| `Role`       | `string`              | Message role, for example `user`, `assistant`, or `tool`.                  |
+| `Content`    | `string`              | Message text (or tool result).                                             |
+| `Time`       | `time.Time`           | Time when the message was added.                                           |
+| `ToolCalls`  | `[]providers.ToolCall`| Assistant tool calls in this turn (`omitempty`, backward compatible).      |
+| `ToolCallID` | `string`              | Tool result linkage (`omitempty`).                                         |
+| `Name`       | `string`              | Tool name for `tool` role (`omitempty`).                                   |
+
+Old session files containing only `role`/`content`/`time` continue to load because the new fields are `omitempty`.
 
 ### `Session`
 
@@ -102,7 +107,16 @@ Like `List`, but also returns every file that could not be read or parsed, so ca
 func (s *Session) ProviderMessages() []providers.Message
 ```
 
-Converts session messages into provider messages for a model call. This conversion keeps only role and content for the provider path used by chat history.
+Converts session messages into provider messages for a model call, preserving `ToolCalls`, `ToolCallID`, and `Name` when present so `/resume` can replay tool history with fidelity. Old files without those fields still convert correctly.
+
+### `AddProviderMessage` / `AddAssistantToolCalls` / `AddToolResult` / `AppendToolCallToLastAssistant`
+
+Helpers that persist tool-call state with fidelity:
+
+- `AddProviderMessage(providers.Message)` — stores any provider message verbatim.
+- `AddAssistantToolCalls(content string, calls []providers.ToolCall)` — stores an assistant turn with tool calls.
+- `AddToolResult(toolCallID, name, content string)` — stores a `tool` result linked to a call.
+- `AppendToolCallToLastAssistant(call providers.ToolCall, content string)` — appends to the last assistant batch (used by the TUI to coalesce concurrent tool calls per turn).
 
 ## How the CLI Uses Sessions
 

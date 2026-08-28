@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"forcefield/internal/providers"
 	"forcefield/internal/session"
 )
 
@@ -57,6 +58,32 @@ func (f *fakeContext) SessionStats() SessionStats {
 }
 
 func (f *fakeContext) Tools() []string { return []string{"read_file: reads files"} }
+
+func (f *fakeContext) ReasoningCapabilities() providers.ReasoningCapabilities {
+	return providers.ModelReasoningCapabilities(f.provider, f.model)
+}
+
+func (f *fakeContext) Effort() string { return "" }
+
+func (f *fakeContext) SetEffort(level string) error {
+	caps := f.ReasoningCapabilities()
+	return caps.ValidateEffort(level)
+}
+
+func (f *fakeContext) Thinking() *providers.ThinkingConfig { return nil }
+
+func (f *fakeContext) SetThinking(cfg providers.ThinkingConfig) error {
+	caps := f.ReasoningCapabilities()
+	return caps.ValidateThinking(cfg)
+}
+
+func (f *fakeContext) ToggleThinking() (bool, error) {
+	caps := f.ReasoningCapabilities()
+	if caps.Thinking == nil || caps.Thinking.Kind != providers.ThinkingKindBool {
+		return false, fmt.Errorf("Current model does not support thinking toggle.")
+	}
+	return true, nil
+}
 
 // echoCommand records the args it was called with and can be told to fail.
 type echoCommand struct {

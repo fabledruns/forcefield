@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 )
 
@@ -16,10 +17,16 @@ import (
 const maxReadSize = 5 << 20 // 5 MiB
 
 // ReadFile reads the contents of a file at a given path.
-type ReadFile struct{}
+type ReadFile struct {
+	policy sandbox.Policy
+}
 
 // NewReadFile returns a ready-to-register ReadFile tool.
 func NewReadFile() *ReadFile { return &ReadFile{} }
+
+// NewReadFileWithPolicy returns a ReadFile confined to policy.Workspace when
+// policy.Mode is wsl; otherwise it behaves like NewReadFile (native).
+func NewReadFileWithPolicy(p sandbox.Policy) *ReadFile { return &ReadFile{policy: p} }
 
 func (ReadFile) Name() string { return "read_file" }
 func (ReadFile) Description() string {
@@ -39,13 +46,22 @@ func (ReadFile) InputSchema() map[string]any {
 	}
 }
 
-func (ReadFile) Execute(_ context.Context, args map[string]any) (tools.Result, error) {
+func (r ReadFile) Execute(_ context.Context, args map[string]any) (tools.Result, error) {
 	path, err := tools.StringArg(args, "path")
 	if err != nil {
 		return tools.Result{}, err
 	}
 
-	info, err := os.Stat(path)
+	resolved := path
+	if r.policy.Mode == sandbox.ModeWSL {
+		rp, err := sandbox.ResolveWithinWorkspace(r.policy.Workspace, path)
+		if err != nil {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
+		}
+		resolved = rp
+	}
+
+	info, err := os.Stat(resolved)
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
 	}
@@ -58,7 +74,7 @@ func (ReadFile) Execute(_ context.Context, args map[string]any) (tools.Result, e
 		)}, nil
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(resolved)
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
 	}

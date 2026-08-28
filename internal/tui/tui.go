@@ -14,7 +14,7 @@ func Start(sess *session.Session) error {
 	}
 
 	asker := &tuiAsker{}
-	m, err := newModel(cfg, sess, asker)
+	m, err := newModelWithConfig(cfg, sess, asker)
 	if err != nil {
 		return err
 	}

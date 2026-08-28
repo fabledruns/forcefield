@@ -137,6 +137,102 @@ func resolveWithinWorkspace(workspace, dir string) (string, error) {
 	return resolved, nil
 }
 
+// ResolveWithinWorkspace is the exported, trusted primitive for
+// workspace-caged path resolution. It is the same enforcement shell
+// uses (resolveWithinWorkspace) and must be reused by filesystem
+// tools when sandbox.mode=wsl so the boundary is not duplicated.
+func ResolveWithinWorkspace(workspace, dir string) (string, error) {
+	return resolveWithinWorkspace(workspace, dir)
+}
+
+// ResolveExistingDir is the exported historical resolver used by
+// native mode (existence-only, no scope).
+func ResolveExistingDir(dir string) (string, error) {
+	return resolveExistingDir(dir)
+}
+
+// EnsureWithinWorkspace validates a path intended for creation (the
+// file may not yet exist) against the workspace. It lexically ensures
+// the target is inside the workspace, follows symlinks for the full
+// path when it exists, and otherwise walks existing ancestors to catch
+// symlink escapes. The returned path is the absolute, cleaned location
+// safe to use when the check succeeds.
+func EnsureWithinWorkspace(workspace, path string) (string, error) {
+	ws := workspace
+	if strings.TrimSpace(ws) == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolve workspace: %w", err)
+		}
+		ws = wd
+	}
+	wsAbs, err := filepath.Abs(filepath.Clean(ws))
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace %s: %w", ws, err)
+	}
+	wsResolved, err := filepath.EvalSymlinks(wsAbs)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s (%v)", ErrInvalidDir, wsAbs, err)
+	}
+	target := path
+	if strings.TrimSpace(target) == "" {
+		return wsResolved, nil
+	}
+	if runtimeCaseInsensitive() {
+		switch {
+		case strings.HasPrefix(target, "/"):
+			return "", fmt.Errorf("%w: %s is a Linux filesystem path; the sandboxed workspace is %s",
+				ErrWorkspaceEscape, target, wsResolved)
+		case len(target) >= 2 && target[1] == ':' && len(target) > 2 && target[2] != '\\' && target[2] != '/':
+			return "", fmt.Errorf("%w: %s is a drive-relative path", ErrInvalidDir, target)
+		case len(target) == 2 && target[1] == ':':
+			return "", fmt.Errorf("%w: %s is a bare drive letter", ErrInvalidDir, target)
+		}
+	}
+	base := wsResolved
+	if filepath.IsAbs(target) || isAbsLike(target) {
+		base = ""
+	}
+	abs, err := filepath.Abs(filepath.Join(base, filepath.Clean(target)))
+	if err != nil {
+		return "", fmt.Errorf("resolve path %s: %w", target, err)
+	}
+	if !withinAny(wsAbs, wsResolved, abs) {
+		return "", fmt.Errorf("%w: %s is outside %s", ErrWorkspaceEscape, abs, wsResolved)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		if !withinAny(wsAbs, wsResolved, resolved) {
+			return "", fmt.Errorf("%w: %s resolves outside %s", ErrWorkspaceEscape, resolved, wsResolved)
+		}
+		return resolved, nil
+	}
+	// Not existent: walk existing ancestors to catch symlink escapes.
+	cur := abs
+	for {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		cur = parent
+		if _, err := os.Lstat(cur); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			continue
+		}
+		resolvedParent, err := filepath.EvalSymlinks(cur)
+		if err != nil {
+			return "", fmt.Errorf("%w: %s", ErrInvalidDir, abs)
+		}
+		if !withinAny(wsAbs, wsResolved, resolvedParent) {
+			return "", fmt.Errorf("%w: %s resolves outside %s", ErrWorkspaceEscape, resolvedParent, wsResolved)
+		}
+		break
+	}
+	return abs, nil
+}
+
 // within reports whether path equals root or lies underneath it,
 // comparing case-insensitively on Windows-style volumes and exactly
 // elsewhere. Both arguments must be cleaned absolute paths.

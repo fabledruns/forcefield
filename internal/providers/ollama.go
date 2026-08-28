@@ -19,6 +19,8 @@ type OllamaProvider struct {
 	client   *http.Client
 	retry    retryPolicy
 	gate     *requestGate
+
+	reasoning ReasoningConfig
 }
 
 // Capabilities reports what this adapter supports.
@@ -28,6 +30,42 @@ func (o *OllamaProvider) Capabilities() Capabilities {
 		ToolCalling: true,
 		Reasoning:   true,
 	}
+}
+
+// SetReasoning stores the abstract reasoning config for the next request.
+func (o *OllamaProvider) SetReasoning(cfg ReasoningConfig) {
+	deep := ReasoningConfig{Effort: cfg.Effort}
+	if cfg.Thinking != nil {
+		tc := ThinkingConfig{Level: cfg.Thinking.Level}
+		if cfg.Thinking.Enabled != nil {
+			v := *cfg.Thinking.Enabled
+			tc.Enabled = &v
+		}
+		if cfg.Thinking.Budget != nil {
+			v := *cfg.Thinking.Budget
+			tc.Budget = &v
+		}
+		deep.Thinking = &tc
+	}
+	o.reasoning = deep
+}
+
+// GetReasoning reports the last reasoning config set.
+func (o *OllamaProvider) GetReasoning() ReasoningConfig {
+	deep := ReasoningConfig{Effort: o.reasoning.Effort}
+	if o.reasoning.Thinking != nil {
+		tc := ThinkingConfig{Level: o.reasoning.Thinking.Level}
+		if o.reasoning.Thinking.Enabled != nil {
+			v := *o.reasoning.Thinking.Enabled
+			tc.Enabled = &v
+		}
+		if o.reasoning.Thinking.Budget != nil {
+			v := *o.reasoning.Thinking.Budget
+			tc.Budget = &v
+		}
+		deep.Thinking = &tc
+	}
+	return deep
 }
 
 // ListModels enumerates the models installed on the Ollama server.
@@ -90,7 +128,7 @@ func NewOllamaProvider(endpoint, model string) *OllamaProvider {
 	return &OllamaProvider{
 		Endpoint: endpoint,
 		Model:    model,
-		client:   &http.Client{},
+		client:   newDefaultClient(),
 		retry:    defaultRetryPolicy,
 		gate:     newRequestGate(),
 	}
@@ -133,6 +171,7 @@ type ollamaChatRequest struct {
 	Messages []ollamaMessage `json:"messages"`
 	Tools    []ollamaTool    `json:"tools,omitempty"`
 	Stream   bool            `json:"stream"`
+	Think    *bool           `json:"think,omitempty"`
 }
 
 type ollamaStreamResponse struct {
@@ -169,6 +208,10 @@ func (o *OllamaProvider) StreamChat(ctx context.Context, messages []Message, too
 		Messages: ollamaMessages,
 		Tools:    ollamaTools,
 		Stream:   true,
+	}
+	if o.reasoning.Thinking != nil && o.reasoning.Thinking.Enabled != nil {
+		v := *o.reasoning.Thinking.Enabled
+		reqBody.Think = &v
 	}
 
 	payload, err := json.Marshal(reqBody)

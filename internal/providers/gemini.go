@@ -27,6 +27,8 @@ type GeminiProvider struct {
 	gate   *requestGate
 
 	authHintEnv string
+
+	reasoning ReasoningConfig
 }
 
 // NewGeminiProvider builds a provider from a resolved spec. BaseURL is
@@ -36,7 +38,7 @@ func NewGeminiProvider(spec Spec) *GeminiProvider {
 	spec.BaseURL = strings.TrimRight(spec.BaseURL, "/")
 	return &GeminiProvider{
 		spec:        spec,
-		client:      &http.Client{},
+		client:      newDefaultClient(),
 		retry:       defaultRetryPolicy,
 		gate:        newRequestGate(),
 		authHintEnv: "GEMINI_API_KEY",
@@ -59,6 +61,42 @@ func (g *GeminiProvider) Capabilities() Capabilities {
 		Reasoning:         true,
 		ParallelToolCalls: true,
 	}
+}
+
+// SetReasoning stores the abstract reasoning config for the next request.
+func (g *GeminiProvider) SetReasoning(cfg ReasoningConfig) {
+	deep := ReasoningConfig{Effort: cfg.Effort}
+	if cfg.Thinking != nil {
+		tc := ThinkingConfig{Level: cfg.Thinking.Level}
+		if cfg.Thinking.Enabled != nil {
+			v := *cfg.Thinking.Enabled
+			tc.Enabled = &v
+		}
+		if cfg.Thinking.Budget != nil {
+			v := *cfg.Thinking.Budget
+			tc.Budget = &v
+		}
+		deep.Thinking = &tc
+	}
+	g.reasoning = deep
+}
+
+// GetReasoning reports the last reasoning config set.
+func (g *GeminiProvider) GetReasoning() ReasoningConfig {
+	deep := ReasoningConfig{Effort: g.reasoning.Effort}
+	if g.reasoning.Thinking != nil {
+		tc := ThinkingConfig{Level: g.reasoning.Thinking.Level}
+		if g.reasoning.Thinking.Enabled != nil {
+			v := *g.reasoning.Thinking.Enabled
+			tc.Enabled = &v
+		}
+		if g.reasoning.Thinking.Budget != nil {
+			v := *g.reasoning.Thinking.Budget
+			tc.Budget = &v
+		}
+		deep.Thinking = &tc
+	}
+	return deep
 }
 
 // statusHint turns specific HTTP statuses into a concrete next step.
@@ -271,9 +309,33 @@ func (g *GeminiProvider) buildPayload(stream bool, messages []Message, defs []to
 	if decls := toGeminiTools(defs); decls != nil {
 		req["tools"] = decls
 	}
+	genConfig := map[string]any{}
 	if stream {
 		// Keep responses to one candidate; agent loops consume exactly one.
-		req["generationConfig"] = map[string]any{"candidateCount": 1}
+		genConfig["candidateCount"] = 1
+	}
+	if g.reasoning.Thinking != nil {
+		tc := g.reasoning.Thinking
+		// Budget-based thinking: thinkingBudget 0 disables, -1 dynamic, >0 enables.
+		// For Gemini, 0 means no thinking, positive budget enables.
+		if tc.Budget != nil {
+			thinkingConfig := map[string]any{"thinkingBudget": *tc.Budget}
+			if *tc.Budget > 0 {
+				thinkingConfig["includeThoughts"] = true
+			}
+			genConfig["thinkingConfig"] = thinkingConfig
+		} else if tc.Enabled != nil {
+			if *tc.Enabled {
+				thinkingConfig := map[string]any{"thinkingBudget": 1024, "includeThoughts": true}
+				genConfig["thinkingConfig"] = thinkingConfig
+			} else {
+				thinkingConfig := map[string]any{"thinkingBudget": 0}
+				genConfig["thinkingConfig"] = thinkingConfig
+			}
+		}
+	}
+	if len(genConfig) > 0 {
+		req["generationConfig"] = genConfig
 	}
 
 	payload, err := json.Marshal(req)

@@ -6,14 +6,21 @@ import (
 	"os"
 	"strings"
 
+	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 )
 
 // ListFiles lists the immediate contents of a directory.
-type ListFiles struct{}
+type ListFiles struct {
+	policy sandbox.Policy
+}
 
 // NewListFiles returns a ready-to-register ListFiles tool.
 func NewListFiles() *ListFiles { return &ListFiles{} }
+
+// NewListFilesWithPolicy returns a ListFiles confined to policy.Workspace when
+// policy.Mode is wsl; otherwise it behaves like NewListFiles (native).
+func NewListFilesWithPolicy(p sandbox.Policy) *ListFiles { return &ListFiles{policy: p} }
 
 func (ListFiles) Name() string { return "list_files" }
 
@@ -34,10 +41,19 @@ func (ListFiles) InputSchema() map[string]any {
 	}
 }
 
-func (ListFiles) Execute(_ context.Context, args map[string]any) (tools.Result, error) {
+func (l ListFiles) Execute(_ context.Context, args map[string]any) (tools.Result, error) {
 	path := tools.OptionalStringArg(args, "path", ".")
 
-	entries, err := os.ReadDir(path)
+	resolved := path
+	if l.policy.Mode == sandbox.ModeWSL {
+		rp, err := sandbox.ResolveWithinWorkspace(l.policy.Workspace, path)
+		if err != nil {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot list %s: %v", path, err)}, nil
+		}
+		resolved = rp
+	}
+
+	entries, err := os.ReadDir(resolved)
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot list %s: %v", path, err)}, nil
 	}

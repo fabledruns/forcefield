@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"fmt"
+	"strings"
 
 	"forcefield/internal/command"
 )
@@ -36,6 +37,49 @@ func (Status) Execute(ctx command.Context, _ []string) error {
 		ctx.Println("Tools:     %d available (/tools to list)", len(tools))
 	} else {
 		ctx.Println("Tools:     none")
+	}
+
+	caps := ctx.ReasoningCapabilities()
+	if caps.SupportsEffort() {
+		if lvl := ctx.Effort(); lvl != "" {
+			ctx.Println("Effort:    %s (available: %s)", lvl, strings.Join(caps.Effort.Levels, ", "))
+		} else {
+			ctx.Println("Effort:    (not set) (available: %s)", strings.Join(caps.Effort.Levels, ", "))
+		}
+	}
+	if caps.SupportsThinking() {
+		switch caps.Thinking.Kind {
+		case "bool":
+			if tc := ctx.Thinking(); tc != nil && tc.Enabled != nil {
+				if *tc.Enabled {
+					ctx.Println("Thinking:  on")
+				} else {
+					ctx.Println("Thinking:  off")
+				}
+			} else {
+				ctx.Println("Thinking:  (not set) (on/off)")
+			}
+		case "budget":
+			if tc := ctx.Thinking(); tc != nil {
+				if tc.Enabled != nil && !*tc.Enabled {
+					ctx.Println("Thinking:  off")
+				} else if tc.Budget != nil {
+					ctx.Println("Thinking:  budget %d (range %d-%d)", *tc.Budget, caps.Thinking.MinBudget, caps.Thinking.MaxBudget)
+				} else if tc.Enabled != nil && *tc.Enabled {
+					ctx.Println("Thinking:  on")
+				} else {
+					ctx.Println("Thinking:  (not set) (budget %d-%d)", caps.Thinking.MinBudget, caps.Thinking.MaxBudget)
+				}
+			} else {
+				ctx.Println("Thinking:  (not set) (budget %d-%d)", caps.Thinking.MinBudget, caps.Thinking.MaxBudget)
+			}
+		case "enum":
+			if tc := ctx.Thinking(); tc != nil && tc.Level != "" {
+				ctx.Println("Thinking:  %s (available: %s)", tc.Level, strings.Join(caps.Thinking.Levels, ", "))
+			} else {
+				ctx.Println("Thinking:  (not set) (available: %s)", strings.Join(caps.Thinking.Levels, ", "))
+			}
+		}
 	}
 	return nil
 }

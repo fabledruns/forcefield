@@ -174,4 +174,4 @@ cue vet . ~/.forcefield/config.yaml -d '#Config' -c
 
 - Configuration is local. Forcefield does not send config data to a remote service.
 - The default file gives a first-time user a working starting point.
-- Runtime model/provider switches persist by writing `model.name`, `model.provider`, and `model.endpoint` atomically. Provider entries under `providers:` are always user-owned: Forcefield never adds, edits, or removes them.
+- Runtime model/provider switches (e.g. `/model`, `/provider`, `SetModel`, `SetProvider`) are in-memory only and do not write `config.yaml` — this matches `AGENTS.md` and avoids silently stripping user comments via `yaml.Marshal`. To persist a switch, edit `config.yaml` manually or call `Runtime.SaveConfig` / `Config.Save` explicitly. Provider entries under `providers:` are always user-owned: Forcefield never adds, edits, or removes them.

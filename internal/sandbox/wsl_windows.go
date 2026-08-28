@@ -272,6 +272,7 @@ func (w *wslExecutor) Describe(ctx context.Context) Enforcement {
 		NetworkEnforced: false,
 		Notes: []string{
 			"the distribution can reach all Windows drives through /mnt and its own filesystem; only the working directory is validated",
+			"filesystem tools (read_file, write_file, list_files) are confined to the project workspace via tool-layer policy",
 		},
 	}
 	if e.Network == NetworkDisabled {

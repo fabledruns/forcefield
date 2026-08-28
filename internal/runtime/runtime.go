@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"forcefield/internal/agent"
@@ -61,6 +63,9 @@ type Runtime struct {
 	// doctor); it fails the model turn with an actionable error instead.
 	authRequired bool
 	authEnvVar   string
+
+	reasoningMu         sync.RWMutex
+	reasoningSelections map[string]providers.ReasoningConfig
 }
 
 func New() (*Runtime, error) {
@@ -68,7 +73,22 @@ func New() (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+	return NewFromConfig(cfg)
+}
 
+// NewFromConfig builds a Runtime from an already-loaded Config, reusing it
+// instead of loading a second time. This eliminates the duplicate
+// config.Load + config.Dir before the first frame in the TUI path while
+// keeping a global cache unnecessary; callers that already have a Config
+// (like tui.Start) should use this.
+func NewFromConfig(cfg *config.Config) (*Runtime, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config cannot be nil")
+	}
+	return newRuntime(cfg)
+}
+
+func newRuntime(cfg *config.Config) (*Runtime, error) {
 	forcefieldHome, err := config.Dir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve forcefield home: %w", err)
@@ -99,12 +119,16 @@ func New() (*Runtime, error) {
 		return nil, err
 	}
 
-	executor, err := newExecutor(cfg)
+	policy, err := newPolicy(cfg)
 	if err != nil {
 		return nil, err
 	}
+	executor, err := sandbox.NewExecutor(policy)
+	if err != nil {
+		return nil, fmt.Errorf("create %s executor (sandbox.mode = %q): %w", policy.Mode, cfg.Sandbox.Mode, err)
+	}
 
-	manager, err := builtin.NewManager(builtin.WithExecutor(executor))
+	manager, err := builtin.NewManager(builtin.WithExecutor(executor), builtin.WithPolicy(policy))
 	if err != nil {
 		return nil, fmt.Errorf("create tool manager: %w", err)
 	}
@@ -126,16 +150,18 @@ func New() (*Runtime, error) {
 	asker := permissions.NewStdinAsker()
 
 	r := &Runtime{
-		cfg:       cfg,
-		provider:  provider,
-		agent:     a,
-		manager:   manager,
-		skills:    skillStore,
-		scheduler: newScheduler(manager, permManager, asker, DefaultSchedulerConfig),
-		limits:    limitsFromConfig(cfg),
-		discovery: providers.NewDiscovery(providers.DefaultFactories()),
+		cfg:                 cfg,
+		provider:            provider,
+		agent:               a,
+		manager:             manager,
+		skills:              skillStore,
+		scheduler:           newScheduler(manager, permManager, asker, DefaultSchedulerConfig),
+		limits:              limitsFromConfig(cfg),
+		discovery:           providers.NewDiscovery(providers.DefaultFactories()),
+		reasoningSelections: make(map[string]providers.ReasoningConfig),
 	}
 	r.refreshAuthState()
+	r.applyReasoning()
 	return r, nil
 }
 
@@ -283,7 +309,11 @@ func (r *Runtime) ToolSummaries() []string {
 }
 
 // SetModel switches the active model, keeping the current provider and
-// endpoint, and takes effect starting with the next request.
+// endpoint, and takes effect starting with the next request. The change is
+// in-memory only; it does not write config.yaml. This matches AGENTS.md's
+// contract that runtime switching is temporary unless explicitly persisted,
+// avoids silently stripping user comments via yaml.Marshal, and keeps the
+// TUI picker fast and non-destructive. Call SaveConfig to persist.
 func (r *Runtime) SetModel(name string) error {
 	if name == "" {
 		return fmt.Errorf("model name cannot be empty")
@@ -294,12 +324,10 @@ func (r *Runtime) SetModel(name string) error {
 	if err != nil {
 		return err
 	}
-	if err := cfg.Save(); err != nil {
-		return fmt.Errorf("save config: %w", err)
-	}
 	r.cfg = &cfg
 	r.provider = provider
 	r.refreshAuthState()
+	r.applyReasoning()
 	return nil
 }
 
@@ -307,7 +335,8 @@ func (r *Runtime) SetModel(name string) error {
 // name, and takes effect starting with the next request. If the provider
 // has a known default endpoint (from its configuration entry or the
 // built-in catalog), it is adopted too, so switching providers never
-// leaves the endpoint pointed at the previous one.
+// leaves the endpoint pointed at the previous one. The change is in-memory
+// only; it does not write config.yaml. See SetModel for rationale.
 func (r *Runtime) SetProvider(name string) error {
 	if name == "" {
 		return fmt.Errorf("provider name cannot be empty")
@@ -329,13 +358,235 @@ func (r *Runtime) SetProvider(name string) error {
 	if err != nil {
 		return fmt.Errorf("create provider %q: %w", name, err)
 	}
-	if err := cfg.Save(); err != nil {
-		return fmt.Errorf("save config: %w", err)
-	}
 	r.cfg = &cfg
 	r.provider = provider
 	r.refreshAuthState()
+	r.applyReasoning()
 	return nil
+}
+
+// SaveConfig persists the current in-memory Config to config.yaml atomically.
+// Runtime switching via SetModel/SetProvider is temporary by default; call
+// this explicitly when the user opts into persistence (e.g. /save or
+// ff config). It never writes secrets.
+func (r *Runtime) SaveConfig() error {
+	if r == nil || r.cfg == nil {
+		return fmt.Errorf("no config to save")
+	}
+	if err := r.cfg.Save(); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	return nil
+}
+
+// reasoningKey returns the map key for per-model reasoning storage.
+func reasoningKey(provider, model string) string {
+	return strings.ToLower(strings.TrimSpace(provider)) + "\x00" + strings.ToLower(strings.TrimSpace(model))
+}
+
+// CurrentReasoningCapabilities returns the capabilities for the active model.
+func (r *Runtime) CurrentReasoningCapabilities() providers.ReasoningCapabilities {
+	if r == nil || r.cfg == nil {
+		return providers.ReasoningCapabilities{}
+	}
+	return providers.ModelReasoningCapabilities(r.cfg.Model.Provider, r.cfg.Model.Name)
+}
+
+// CurrentEffort returns the selected effort for the active model, or empty
+// when none is set or the model does not support effort.
+func (r *Runtime) CurrentEffort() string {
+	if r == nil || r.cfg == nil {
+		return ""
+	}
+	caps := r.CurrentReasoningCapabilities()
+	if caps.Effort == nil {
+		return ""
+	}
+	key := reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
+	r.reasoningMu.RLock()
+	cfg, ok := r.reasoningSelections[key]
+	r.reasoningMu.RUnlock()
+	if !ok {
+		return ""
+	}
+	// Only return if still valid for current capability (levels may have changed).
+	if err := caps.ValidateEffort(cfg.Effort); err != nil {
+		return ""
+	}
+	return cfg.Effort
+}
+
+// SetEffort validates and stores the effort level for the active model.
+func (r *Runtime) SetEffort(level string) error {
+	caps := r.CurrentReasoningCapabilities()
+	if err := caps.ValidateEffort(level); err != nil {
+		return err
+	}
+	canonical := caps.CanonicalEffort(level)
+	key := reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
+	r.reasoningMu.Lock()
+	if r.reasoningSelections == nil {
+		r.reasoningSelections = make(map[string]providers.ReasoningConfig)
+	}
+	cfg := r.reasoningSelections[key]
+	cfg.Effort = canonical
+	r.reasoningSelections[key] = cfg
+	r.reasoningMu.Unlock()
+	r.applyReasoning()
+	return nil
+}
+
+// CurrentThinking returns the thinking config for the active model, or nil.
+func (r *Runtime) CurrentThinking() *providers.ThinkingConfig {
+	if r == nil || r.cfg == nil {
+		return nil
+	}
+	caps := r.CurrentReasoningCapabilities()
+	if caps.Thinking == nil {
+		return nil
+	}
+	key := reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
+	r.reasoningMu.RLock()
+	cfg, ok := r.reasoningSelections[key]
+	r.reasoningMu.RUnlock()
+	if !ok || cfg.Thinking == nil {
+		return nil
+	}
+	if err := caps.ValidateThinking(*cfg.Thinking); err != nil {
+		return nil
+	}
+	deep := providers.ThinkingConfig{Level: cfg.Thinking.Level}
+	if cfg.Thinking.Enabled != nil {
+		v := *cfg.Thinking.Enabled
+		deep.Enabled = &v
+	}
+	if cfg.Thinking.Budget != nil {
+		v := *cfg.Thinking.Budget
+		deep.Budget = &v
+	}
+	return &deep
+}
+
+// SetThinking validates and stores the thinking config for the active model.
+func (r *Runtime) SetThinking(tc providers.ThinkingConfig) error {
+	caps := r.CurrentReasoningCapabilities()
+	if err := caps.ValidateThinking(tc); err != nil {
+		return err
+	}
+	// Canonicalize enum level casing.
+	if caps.Thinking != nil && caps.Thinking.Kind == providers.ThinkingKindEnum && tc.Level != "" {
+		tc.Level = caps.CanonicalThinkingLevel(tc.Level)
+	}
+	// Deep copy pointers to avoid aliasing the caller's variable.
+	deep := providers.ThinkingConfig{Level: tc.Level}
+	if tc.Enabled != nil {
+		v := *tc.Enabled
+		deep.Enabled = &v
+	}
+	if tc.Budget != nil {
+		v := *tc.Budget
+		deep.Budget = &v
+	}
+	key := reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
+	r.reasoningMu.Lock()
+	if r.reasoningSelections == nil {
+		r.reasoningSelections = make(map[string]providers.ReasoningConfig)
+	}
+	cfg := r.reasoningSelections[key]
+	cfg.Thinking = &deep
+	r.reasoningSelections[key] = cfg
+	r.reasoningMu.Unlock()
+	r.applyReasoning()
+	return nil
+}
+
+// ClearThinking removes thinking configuration for the active model.
+func (r *Runtime) ClearThinking() {
+	if r == nil || r.cfg == nil {
+		return
+	}
+	key := reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
+	r.reasoningMu.Lock()
+	if cfg, ok := r.reasoningSelections[key]; ok {
+		cfg.Thinking = nil
+		r.reasoningSelections[key] = cfg
+	}
+	r.reasoningMu.Unlock()
+	r.applyReasoning()
+}
+
+// ToggleThinking flips the boolean thinking state for models with bool kind.
+func (r *Runtime) ToggleThinking() (bool, error) {
+	caps := r.CurrentReasoningCapabilities()
+	if caps.Thinking == nil || caps.Thinking.Kind != providers.ThinkingKindBool {
+		return false, fmt.Errorf("Current model does not support thinking toggle.")
+	}
+	cur := r.CurrentThinking()
+	enabled := true
+	if cur != nil && cur.Enabled != nil {
+		enabled = !*cur.Enabled
+	}
+	tc := providers.ThinkingConfig{Enabled: &enabled}
+	if err := r.SetThinking(tc); err != nil {
+		return false, err
+	}
+	return enabled, nil
+}
+
+// applyReasoning filters the stored per-model reasoning config through the
+// current model's capabilities and pushes it to the provider adapter.
+func (r *Runtime) applyReasoning() {
+	if r == nil || r.provider == nil || r.cfg == nil {
+		return
+	}
+	caps := r.CurrentReasoningCapabilities()
+	key := reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
+	r.reasoningMu.RLock()
+	stored, ok := r.reasoningSelections[key]
+	r.reasoningMu.RUnlock()
+	effective := providers.ReasoningConfig{}
+	if ok {
+		if caps.Effort != nil && stored.Effort != "" {
+			if caps.ValidateEffort(stored.Effort) == nil {
+				effective.Effort = stored.Effort
+			}
+		}
+		if caps.Thinking != nil && stored.Thinking != nil {
+			if caps.ValidateThinking(*stored.Thinking) == nil {
+				deep := providers.ThinkingConfig{Level: stored.Thinking.Level}
+				if stored.Thinking.Enabled != nil {
+					v := *stored.Thinking.Enabled
+					deep.Enabled = &v
+				}
+				if stored.Thinking.Budget != nil {
+					v := *stored.Thinking.Budget
+					deep.Budget = &v
+				}
+				effective.Thinking = &deep
+			}
+		}
+	}
+	if p, ok := r.provider.(providers.ReasoningAware); ok {
+		p.SetReasoning(effective)
+	}
+}
+
+// newPolicy builds the sandbox policy for the current project workspace.
+func newPolicy(cfg *config.Config) (sandbox.Policy, error) {
+	mode, err := sandbox.ParseMode(cfg.Sandbox.Mode)
+	if err != nil {
+		return sandbox.Policy{}, fmt.Errorf("invalid sandbox.mode: %w", err)
+	}
+	network, err := sandbox.ParseNetwork(cfg.Sandbox.WSL.Network)
+	if err != nil {
+		return sandbox.Policy{}, fmt.Errorf("invalid sandbox.wsl.network: %w", err)
+	}
+	return sandbox.Policy{
+		Mode:      mode,
+		Workspace: projectWorkspace(),
+		Distro:    cfg.Sandbox.WSL.Distribution,
+		Network:   network,
+	}, nil
 }
 
 // newExecutor constructs the sandbox executor for shell commands from the
@@ -343,24 +594,13 @@ func (r *Runtime) SetProvider(name string) error {
 // fails loudly for unsupported combinations (e.g. wsl mode on Unix);
 // there is never a silent fallback to a weaker backend.
 func newExecutor(cfg *config.Config) (sandbox.Executor, error) {
-	mode, err := sandbox.ParseMode(cfg.Sandbox.Mode)
+	policy, err := newPolicy(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("invalid sandbox.mode: %w", err)
-	}
-	network, err := sandbox.ParseNetwork(cfg.Sandbox.WSL.Network)
-	if err != nil {
-		return nil, fmt.Errorf("invalid sandbox.wsl.network: %w", err)
-	}
-
-	policy := sandbox.Policy{
-		Mode:      mode,
-		Workspace: projectWorkspace(),
-		Distro:    cfg.Sandbox.WSL.Distribution,
-		Network:   network,
+		return nil, err
 	}
 	executor, err := sandbox.NewExecutor(policy)
 	if err != nil {
-		return nil, fmt.Errorf("create %s executor (sandbox.mode = %q): %w", mode, cfg.Sandbox.Mode, err)
+		return nil, fmt.Errorf("create %s executor (sandbox.mode = %q): %w", policy.Mode, cfg.Sandbox.Mode, err)
 	}
 	return executor, nil
 }
@@ -598,6 +838,7 @@ func (r *Runtime) runModelTurn(ctx context.Context, messages []providers.Message
 		return providers.Response{}, err
 	}
 
+	r.applyReasoning()
 	stream, err := r.provider.StreamChat(ctx, messages, r.manager.Definitions())
 	if err != nil {
 		return providers.Response{}, fmt.Errorf("model call failed: %w", err)

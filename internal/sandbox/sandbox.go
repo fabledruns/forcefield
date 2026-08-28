@@ -225,8 +225,11 @@ type Enforcement struct {
 	// workspace before every run.
 	CwdPinned bool
 	// FilesystemConfined: general filesystem access beyond the working
-	// directory is prevented. NO CURRENT BACKEND SETS THIS TRUE; WSL
+	// directory is prevented. For shell, NO BACKEND SETS THIS TRUE - WSL
 	// distributions reach all Windows drives through /mnt automounts.
+	// Filesystem tools (read_file, write_file, list_files) ARE confined
+	// to the workspace when Mode is wsl via tool-layer policy (see
+	// internal/tools/filesystem); shell remains not confined.
 	FilesystemConfined bool
 	// NetworkEnforced: the requested Network policy is actually
 	// implemented by this backend.

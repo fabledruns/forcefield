@@ -116,5 +116,5 @@ The runtime registers a special tool named `load_skill`.
 ## Design Notes
 
 - The runtime owns the multi-turn tool loop. Providers stream only one turn.
-- Model and provider switches take effect on the next request.
+- Model and provider switches (`SetModel`/`SetProvider`) take effect on the next request and are in-memory only (temporary) — they do not write `config.yaml` unless `SaveConfig` is called explicitly. See `docs/Config.md`.
 - Cancellation through context stops emission and ends the run cleanly when possible.

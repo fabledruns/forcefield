@@ -57,6 +57,34 @@ const (
 	maxInputHeight = 6
 )
 
+// cachedBlock holds one transcript entry's last rendered block and the
+// fingerprint that produced it, so streaming can reuse stable entries.
+type cachedBlock struct {
+	rendered string
+	lines    int
+	role     role
+	content  string
+	streaming bool
+	hovered   bool
+	// thinking, when present
+	thinkingText      string
+	thinkingExpanded  bool
+	thinkingStreaming bool
+	// tool, when present
+	toolPresent   bool
+	toolExpanded  bool
+	toolFinished  bool
+	toolEventType runtime.EventType
+	toolErr       string
+	toolContent   string
+	toolStdout    string
+	toolStderr    string
+	toolHasExit   bool
+	toolExitCode  int
+	toolDuration  time.Duration
+	toolArgsKey   string
+}
+
 // model is Forcefield's interactive chat state. It is a thin presentation
 // layer: it renders a transcript and forwards each submitted message through
 // the runtime's streaming agent loop. See the package doc for what it
@@ -167,6 +195,14 @@ type model struct {
 	// spans maps transcript content rows to interactive entries (tool and
 	// thinking blocks), rebuilt whenever the transcript re-renders.
 	spans []contentSpan
+
+	// transcript cache for M1/M5: per-entry rendered blocks to avoid
+	// full glamour re-parse on every streaming chunk or input keystroke.
+	tcacheWidth   int
+	tcacheHoverID string
+	tcacheBlocks  []cachedBlock
+	tcacheContent string
+	tcacheSpans   []contentSpan
 }
 
 // pasteBurstWindow is the maximum gap between keystrokes for the run to
@@ -247,13 +283,21 @@ func newInput() textarea.Model {
 // memory loading failures); the caller shows them as a normal startup
 // failure instead of crashing.
 func newModel(cfg *config.Config, sess *session.Session, asker permissions.Asker) (model, error) {
+	return newModelWithConfig(cfg, sess, asker)
+}
+
+// newModelWithConfig builds the initial chat model reusing the already-
+// loaded Config instead of loading it a second time. This eliminates the
+// duplicate config.Load between tui.Start and runtime.New before the first
+// frame. runtime.New is kept for the non-TUI ff run path.
+func newModelWithConfig(cfg *config.Config, sess *session.Session, asker permissions.Asker) (model, error) {
 	input := newInput()
 
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
 	spin.Style = spinnerStyle
 
-	r, err := runtime.New()
+	r, err := runtime.NewFromConfig(cfg)
 	if err != nil {
 		return model{}, fmt.Errorf("initialize runtime: %w", err)
 	}
@@ -399,10 +443,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.finishAssistantStream()
 			m.finishThinkingStream()
 			m.startToolActivity(msg.Event.ToolCall)
+			// Persist the assistant tool_calls batch for /resume replay. The
+			// first call of a turn creates a new assistant message; subsequent
+			// concurrent calls append to the same batch. Content from the
+			// same turn's text stream (assistantBuffer) is attached to the
+			// first insertion so provider replay sees identical messages to
+			// the in-memory run loop.
+			if msg.Event.ToolCall != nil {
+				content := strings.TrimSpace(m.assistantBuffer)
+				m.session.AppendToolCallToLastAssistant(*msg.Event.ToolCall, content)
+				// The buffer now belongs to the persisted assistant turn;
+				// start fresh for the next model turn's answer.
+				if content != "" {
+					m.assistantBuffer = ""
+				}
+				_ = m.session.Save()
+			}
 		case runtime.EventToolProgress:
 			m.updateToolActivity(msg.Event.ToolProgress)
 		case runtime.EventToolFinish, runtime.EventToolFailed, runtime.EventToolCancelled:
 			m.finishToolActivity(msg.Event.ToolResult, msg.Event.Type)
+			if msg.Event.ToolResult != nil {
+				// Persist the tool result so ProviderMessages can replay it.
+				content := msg.Event.ToolResult.Content
+				// Truncation for provider replay is handled by runtime; store
+				// the content as presented to the model (already truncated
+				// when produced by scheduler).
+				m.session.AddToolResult(msg.Event.ToolResult.ToolCallID, msg.Event.ToolResult.Name, content)
+				_ = m.session.Save()
+			}
 		}
 
 		m.refreshTranscript()
@@ -1035,9 +1104,38 @@ func (m *model) footerHeight() int {
 	return h
 }
 
+// toolArgsKey returns a stable fingerprint of a tool's argument map.
+// It is used as part of the per-entry render cache key so expanded tool
+// detail changes invalidate the cached block without needing reflection.
+func toolArgsKey(args map[string]any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	keys := sortedArgKeys(args)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteString("=")
+		if s, ok := args[k].(string); ok {
+			b.WriteString(s)
+		} else {
+			// Fallback for non-string args: fmt is infrequent (only on
+			// expanded detail renders) and keeps the cache correct.
+			b.WriteString(fmt.Sprint(args[k]))
+		}
+		b.WriteString(";")
+	}
+	return b.String()
+}
+
 // layout recomputes the viewport and input widths/heights after a resize
 // or after an edit that changed the input's line count or the suggestion
 // list, both of which change how tall the footer is.
+//
+// M5: footer geometry changes (input height, suggestions) do not require a
+// full transcript re-parse. Only a width change (which affects wrapping)
+// needs to invalidate the markdown cache. When the transcript itself has
+// changed, the caller will call refreshTranscript explicitly.
 func (m *model) layout() {
 	// Account for the input box's rounded border + horizontal padding.
 	inputWidth := m.width - 4
@@ -1052,10 +1150,26 @@ func (m *model) layout() {
 		transcriptHeight = minTranscriptHeight
 	}
 
+	oldWidth := m.viewport.Width
 	m.viewport.Width = m.width
 	m.viewport.Height = transcriptHeight
 
-	m.refreshTranscript()
+	if oldWidth != m.viewport.Width {
+		// Width affects wrapping/markdown, so the transcript must be
+		// re-rendered (per-entry cache will still reuse stable entries,
+		// but wrapping has changed).
+		m.refreshTranscript()
+		return
+	}
+	// Height-only change: no transcript re-parse. Keep following semantics
+	// without rebuilding markdown.
+	if m.following && len(m.entries) > 0 {
+		m.viewport.GotoBottom()
+	} else if len(m.entries) == 0 {
+		// Banner stays centered horizontally; height growth does not
+		// require a re-render, but keep viewport at top if empty.
+		m.viewport.GotoTop()
+	}
 }
 
 // refreshTranscript re-renders all entries into the viewport and rebuilds
@@ -1065,12 +1179,158 @@ func (m *model) layout() {
 // the scroll position is preserved instead of being yanked back down on
 // every stream chunk. While empty (showing the FORCEFIELD splash), it
 // stays at the top so the whole banner is visible.
+//
+// M1: incremental rendering – only dirty entries (content, streaming,
+// hover, expanded, thinking/tool state, or width) re-parse markdown via
+// glamour. Stable entries reuse their cached block, preserving ASCII
+// diagram handling and hover emphasis. Width change invalidates all.
 func (m *model) refreshTranscript() {
 	if m.viewport.Width == 0 {
 		return // not sized yet; layout() will call this again once it is
 	}
-	content, spans := renderTranscriptWithLayout(m.entries, m.viewport.Width, m.hoverID)
-	m.spans = spans
+	width := m.viewport.Width
+	hoverID := m.hoverID
+
+	if len(m.entries) == 0 {
+		content := renderBanner(width)
+		m.tcacheWidth = width
+		m.tcacheHoverID = hoverID
+		m.tcacheBlocks = nil
+		m.tcacheSpans = nil
+		m.tcacheContent = content
+		m.spans = nil
+		m.viewport.SetContent(content)
+		m.viewport.GotoTop()
+		return
+	}
+
+	widthChanged := width != m.tcacheWidth
+
+	// Fast early-exit: if nothing has changed at all (same entries
+	// fingerprint, same width/hover), avoid rebuilding strings.
+	// We still need per-entry checks to know this, but we can avoid
+	// SetContent/Goto when everything reuses.
+	oldBlocks := m.tcacheBlocks
+	newBlocks := make([]cachedBlock, len(m.entries))
+	renderedBlocks := make([]string, len(m.entries))
+	newSpans := make([]contentSpan, 0, len(m.entries))
+	anyDirty := widthChanged || len(oldBlocks) != len(m.entries)
+	line := 0
+	for i, e := range m.entries {
+		hovered := false
+		var action mouseAction
+		switch {
+		case e.Tool != nil:
+			hovered = hoverID == regionID("tool", i)
+			action = actionToggleTool
+		case e.Thinking != nil:
+			hovered = hoverID == regionID("think", i)
+			action = actionToggleThinking
+		default:
+			action = actionNone
+		}
+
+		canReuse := false
+		if !widthChanged && i < len(oldBlocks) {
+			cb := oldBlocks[i]
+			if cb.role == e.Role && cb.content == e.Content && cb.streaming == e.Streaming && cb.hovered == hovered {
+				if e.Thinking != nil {
+					if cb.thinkingText == e.Thinking.text && cb.thinkingExpanded == e.Thinking.expanded && cb.thinkingStreaming == e.Thinking.streaming() {
+						if e.Thinking.streaming() {
+							// Live reasoning header shows elapsed duration;
+							// re-render each chunk so the header stays fresh.
+							canReuse = false
+						} else {
+							canReuse = true
+						}
+					}
+				} else if e.Tool != nil {
+					if cb.toolPresent && cb.toolExpanded == e.Tool.expanded && cb.toolFinished == e.Tool.finished && cb.toolEventType == e.Tool.eventType && cb.toolErr == e.Tool.err && cb.toolContent == e.Tool.content && cb.toolStdout == e.Tool.stdout && cb.toolStderr == e.Tool.stderr && cb.toolHasExit == e.Tool.hasExit && cb.toolExitCode == e.Tool.exitCode && cb.toolDuration == e.Tool.duration && cb.toolArgsKey == toolArgsKey(e.Tool.args) {
+						canReuse = true
+					}
+				} else {
+					// Check cached entry wasn't a tool/thinking block.
+					if cb.thinkingText == "" && !cb.toolPresent {
+						canReuse = true
+					}
+				}
+			}
+		}
+		if canReuse {
+			renderedBlocks[i] = oldBlocks[i].rendered
+			newBlocks[i] = oldBlocks[i]
+			// lines already cached in newBlocks[i].lines
+		} else {
+			anyDirty = true
+			block := e.render(width, hovered)
+			lines := strings.Count(block, "\n") + 1
+			cb := cachedBlock{
+				rendered:  block,
+				lines:     lines,
+				role:      e.Role,
+				content:   e.Content,
+				streaming: e.Streaming,
+				hovered:   hovered,
+			}
+			if e.Thinking != nil {
+				cb.thinkingText = e.Thinking.text
+				cb.thinkingExpanded = e.Thinking.expanded
+				cb.thinkingStreaming = e.Thinking.streaming()
+			}
+			if e.Tool != nil {
+				cb.toolPresent = true
+				cb.toolExpanded = e.Tool.expanded
+				cb.toolFinished = e.Tool.finished
+				cb.toolEventType = e.Tool.eventType
+				cb.toolErr = e.Tool.err
+				cb.toolContent = e.Tool.content
+				cb.toolStdout = e.Tool.stdout
+				cb.toolStderr = e.Tool.stderr
+				cb.toolHasExit = e.Tool.hasExit
+				cb.toolExitCode = e.Tool.exitCode
+				cb.toolDuration = e.Tool.duration
+				cb.toolArgsKey = toolArgsKey(e.Tool.args)
+			}
+			newBlocks[i] = cb
+			renderedBlocks[i] = block
+		}
+		lines := newBlocks[i].lines
+		if action != actionNone {
+			newSpans = append(newSpans, contentSpan{
+				id:        regionID(spanKind(action), i),
+				entry:     i,
+				startLine: line,
+				lines:     lines,
+				action:    action,
+			})
+		}
+		line += lines + rowsBetweenEntries
+	}
+
+	// If nothing dirty and width/hover stable, viewport already shows the
+	// correct content and spans are identical – avoid SetContent which
+	// would reset scroll.
+	if !anyDirty && !widthChanged && m.tcacheContent != "" {
+		// Cache hit: keep existing viewport content, but update in-memory
+		// cache slices to the newly built (identical) ones so hover
+		// tracking stays correct without re-render.
+		// Spans are equivalent to cached ones when not dirty, but we
+		// already rebuilt them; reuse cached to avoid churn if equal length.
+		// Keep the freshly computed newBlocks/newSpans as cache for next
+		// call, but don't touch the viewport.
+		m.tcacheBlocks = newBlocks
+		m.tcacheSpans = newSpans
+		m.spans = newSpans
+		return
+	}
+
+	content := strings.Join(renderedBlocks, "\n\n")
+	m.tcacheWidth = width
+	m.tcacheHoverID = hoverID
+	m.tcacheBlocks = newBlocks
+	m.tcacheContent = content
+	m.tcacheSpans = newSpans
+	m.spans = newSpans
 	m.viewport.SetContent(content)
 	if len(m.entries) == 0 {
 		m.viewport.GotoTop()
@@ -1147,8 +1407,46 @@ func (m model) renderHeader() string {
 	icon, style, label := m.headerState()
 	state := style.Render(fmt.Sprintf("%s %s", icon, label))
 
+	reasoningTag := ""
+	if m.runtime != nil {
+		caps := m.runtime.CurrentReasoningCapabilities()
+		if caps.SupportsEffort() {
+			if lvl := m.runtime.CurrentEffort(); lvl != "" {
+				reasoningTag += fmt.Sprintf(" · effort:%s", lvl)
+			}
+		}
+		if caps.SupportsThinking() {
+			if tc := m.runtime.CurrentThinking(); tc != nil {
+				switch caps.Thinking.Kind {
+				case providers.ThinkingKindBool:
+					if tc.Enabled != nil {
+						if *tc.Enabled {
+							reasoningTag += " · thinking:on"
+						} else {
+							reasoningTag += " · thinking:off"
+						}
+					}
+				case providers.ThinkingKindBudget:
+					if tc.Budget != nil {
+						reasoningTag += fmt.Sprintf(" · thinking:%d", *tc.Budget)
+					} else if tc.Enabled != nil {
+						if *tc.Enabled {
+							reasoningTag += " · thinking:on"
+						} else {
+							reasoningTag += " · thinking:off"
+						}
+					}
+				case providers.ThinkingKindEnum:
+					if tc.Level != "" {
+						reasoningTag += fmt.Sprintf(" · thinking:%s", tc.Level)
+					}
+				}
+			}
+		}
+	}
+
 	meta := headerMetaStyle.Render(
-		fmt.Sprintf("%s %s %s  %s %s", m.providerName, IconModel, m.modelName, IconSession, m.agentName),
+		fmt.Sprintf("%s %s %s  %s %s%s", m.providerName, IconModel, m.modelName, IconSession, m.agentName, reasoningTag),
 	)
 	return lipgloss.JoinHorizontal(lipgloss.Top, title, " ", state, headerSepStyle.Render(" · "), meta)
 }

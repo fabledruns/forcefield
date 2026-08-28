@@ -9,8 +9,9 @@ import (
 // speak that wire protocol; only defaults and error wording differ.
 
 // defaultNvidiaTimeout bounds how long a single request to NVIDIA NIM may
-// take before it's aborted.
-const defaultNvidiaTimeout = 0
+// take before it's aborted. It mirrors defaultStreamTimeout so the
+// historical constructor shares the same bound.
+const defaultNvidiaTimeout = defaultStreamTimeout
 
 // NvidiaProvider is the OpenAI-compatible transport configured for
 // NVIDIA NIM. It exists so existing callers and tests keep compiling;
@@ -35,18 +36,18 @@ func NewNvidiaProvider(endpoint, model, apiKey string, client *http.Client) *Nvi
 		p.client = &http.Client{Timeout: defaultNvidiaTimeout}
 	}
 	p.authHintEnv = "NVIDIA_API_KEY"
-	// Ask NIM to actually stream reasoning. Models that stream it
-	// unconditionally (or don't support reasoning at all) are unaffected;
-	// models that gate it behind this field (GLM-5.x and others) only emit
-	// reasoning_content deltas when it's set. clear_thinking:false
-	// preserves reasoning across turns for agentic/tool workflows,
-	// matching NVIDIA's own documented usage. Models that don't recognize
-	// the field ignore it.
-	p.extraBody = map[string]any{
-		"chat_template_kwargs": map[string]any{
-			"enable_thinking": true,
-			"clear_thinking":  false,
-		},
+	// Ask NIM to actually stream reasoning for models that support thinking.
+	// For models where thinking is not a separate capability (e.g., DeepSeek
+	// V4 Flash where none is an effort level), do not send enable_thinking
+	// by default. Models that don't recognize the field ignore it, but we
+	// remain conservative and only send when capability indicates support.
+	if caps := ModelReasoningCapabilities("nvidia", model); caps.SupportsThinking() {
+		p.extraBody = map[string]any{
+			"chat_template_kwargs": map[string]any{
+				"enable_thinking": true,
+				"clear_thinking":  false,
+			},
+		}
 	}
 	return p
 }
