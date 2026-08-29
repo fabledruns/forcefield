@@ -3,6 +3,7 @@ CMD_PATH=.
 
 VERSION?=dev
 BUILD_DIR=./bin
+LDFLAGS=-s -w -X forcefield/cmd.Version=$(VERSION) -X main.Version=$(VERSION)
 
 GO=go
 
@@ -18,7 +19,7 @@ all: build
 
 build:
 	@echo "Building $(BINARY_NAME)$(BINARY_EXT)..."
-	$(GO) build -ldflags "-X main.Version=$(VERSION)" -o $(BUILD_DIR)/$(BINARY_NAME)$(BINARY_EXT) $(CMD_PATH)
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)$(BINARY_EXT) $(CMD_PATH)
 
 run:
 	$(GO) run $(CMD_PATH)
@@ -62,11 +63,31 @@ tidy:
 install:
 	$(GO) install $(CMD_PATH)
 
+ifeq ($(OS),Windows_NT)
 release:
-	GOOS=linux GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 $(CMD_PATH)
-	GOOS=windows GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(CMD_PATH)
-	GOOS=darwin GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 $(CMD_PATH)
-	GOOS=darwin GOARCH=arm64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 $(CMD_PATH)
+	@if not exist "$(BUILD_DIR)" mkdir "$(BUILD_DIR)"
+	@set GOOS=linux&& set GOARCH=amd64&& $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 $(CMD_PATH)
+	@set GOOS=linux&& set GOARCH=arm64&& $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 $(CMD_PATH)
+	@set GOOS=windows&& set GOARCH=amd64&& $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(CMD_PATH)
+	@set GOOS=windows&& set GOARCH=arm64&& $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-windows-arm64.exe $(CMD_PATH)
+	@set GOOS=darwin&& set GOARCH=amd64&& $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 $(CMD_PATH)
+	@set GOOS=darwin&& set GOARCH=arm64&& $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 $(CMD_PATH)
+	@python -c "import hashlib,glob,os; d=r'$(BUILD_DIR)'; files=sorted(glob.glob(os.path.join(d,'$(BINARY_NAME)-*'))); open(os.path.join(d,'checksums.txt'),'w').write(''.join(f'{hashlib.sha256(open(f,\"rb\").read()).hexdigest()}  {os.path.basename(f)}\n' for f in files))" 2>nul || python3 -c "import hashlib,glob,os; d=r'$(BUILD_DIR)'; files=sorted(glob.glob(os.path.join(d,'$(BINARY_NAME)-*'))); open(os.path.join(d,'checksums.txt'),'w').write(''.join(f'{hashlib.sha256(open(f,\"rb\").read()).hexdigest()}  {os.path.basename(f)}\n' for f in files))"
+	@echo Release artifacts in $(BUILD_DIR):
+	@type $(BUILD_DIR)\checksums.txt 2>nul || cat $(BUILD_DIR)/checksums.txt 2>nul || echo "checksums generated"
+else
+release:
+	@mkdir -p $(BUILD_DIR)
+	GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 $(CMD_PATH)
+	GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 $(CMD_PATH)
+	GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(CMD_PATH)
+	GOOS=windows GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-windows-arm64.exe $(CMD_PATH)
+	GOOS=darwin GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 $(CMD_PATH)
+	GOOS=darwin GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 $(CMD_PATH)
+	@python3 -c "import hashlib,glob,os; d='$(BUILD_DIR)'; files=sorted(glob.glob(os.path.join(d,'$(BINARY_NAME)-*'))); open(os.path.join(d,'checksums.txt'),'w').write(''.join(f'{hashlib.sha256(open(f,\"rb\").read()).hexdigest()}  {os.path.basename(f)}\n' for f in files))" 2>/dev/null || python -c "import hashlib,glob,os; d='$(BUILD_DIR)'; files=sorted(glob.glob(os.path.join(d,'$(BINARY_NAME)-*'))); open(os.path.join(d,'checksums.txt'),'w').write(''.join(f'{hashlib.sha256(open(f,\"rb\").read()).hexdigest()}  {os.path.basename(f)}\n' for f in files))" || (cd $(BUILD_DIR) && sha256sum $(BINARY_NAME)-* > checksums.txt 2>/dev/null || shasum -a 256 $(BINARY_NAME)-* > checksums.txt)
+	@echo "Release artifacts in $(BUILD_DIR):"
+	@cat $(BUILD_DIR)/checksums.txt
+endif
 
 help:
 	@echo "Forcefield Make Commands:"

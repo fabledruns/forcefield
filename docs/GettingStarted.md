@@ -19,8 +19,35 @@ ollama serve
 
 ## Install
 
-> **Note:**
-> A one-line installer (`curl` / PowerShell) is planned but is not available yet.
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.sh | sh
+```
+
+Supports `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`. The installer auto-detects OS/arch, downloads from [GitHub Releases](https://github.com/fabledruns/forcefield/releases), verifies `checksums.txt`, installs to `~/.local/bin`, and adds that directory to `PATH` if needed (no `sudo`).
+
+Pin to a version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.sh | sh -s -- --version v1.0.0
+# or
+FORCEFIELD_VERSION=v1.0.0 sh scripts/install.sh
+```
+
+### Windows
+
+```powershell
+irm https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.ps1 | iex
+```
+
+Installs to `$HOME\.local\bin` and adds it to your **user** `PATH` (no admin). Pin a version:
+
+```powershell
+$env:FORCEFIELD_VERSION="v1.0.0"; irm https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.ps1 | iex
+```
+
+Run the installer again to upgrade in place. Both installers are safe to run multiple times and never touch `~/.forcefield`.
 
 ### Build from source
 
@@ -50,12 +77,13 @@ go build -o ff.exe .
 .\ff.exe
 ```
 
-### Use a release binary
+### Manual download
 
-1. Open the GitHub Releases page for Forcefield.
-2. Download the binary for your operating system.
-3. Place the binary on your `PATH` if you want the `ff` command available globally.
-4. Run `ff`.
+1. Open the [GitHub Releases](https://github.com/fabledruns/forcefield/releases) page.
+2. Download the binary for your OS/arch (`ff-linux-amd64`, `ff-darwin-arm64`, `ff-windows-amd64.exe`, etc. plus `checksums.txt`).
+3. Verify the checksum (`sha256sum -c checksums.txt` or `Get-FileHash` on Windows).
+4. Place the binary on your `PATH` as `ff` (`ff.exe` on Windows) and `chmod +x` on Linux/macOS.
+5. Run `ff --version` and `ff doctor`.
 
 ## First Run
 

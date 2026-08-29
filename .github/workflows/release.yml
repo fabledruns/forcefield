@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag to release (e.g. v1.2.0). Leave empty to use current ref."
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          # workflow_dispatch on main with no input should not produce a release
+          if [ -z "$VERSION" ] || [ "$VERSION" = "main" ] || [ "$VERSION" = "master" ]; then
+            echo "No version tag found. Set inputs.version or push a tag v*."
+            exit 1
+          fi
+          # Normalize: ensure v prefix
+          case "$VERSION" in
+            v*) ;;
+            *) VERSION="v$VERSION" ;;
+          esac
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+
+      - name: Build release binaries
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          LDFLAGS="-s -w -X forcefield/cmd.Version=${VERSION} -X main.Version=${VERSION}"
+          echo "Building ${VERSION}..."
+
+          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o dist/ff-linux-amd64 .
+          CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o dist/ff-linux-arm64 .
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o dist/ff-darwin-amd64 .
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o dist/ff-darwin-arm64 .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o dist/ff-windows-amd64.exe .
+          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o dist/ff-windows-arm64.exe .
+
+          ls -lh dist/
+
+          # Quick smoke test: version flag on the linux binary
+          ./dist/ff-linux-amd64 --version || true
+          # Verify all expected artifacts exist and are non-empty (prevent silent incomplete releases)
+          for f in ff-linux-amd64 ff-linux-arm64 ff-darwin-amd64 ff-darwin-arm64 ff-windows-amd64.exe ff-windows-arm64.exe; do
+            if [ ! -s "dist/$f" ]; then echo "missing or empty artifact: dist/$f"; exit 1; fi
+          done
+          # Also ensure no extra unexpected failures
+          count=$(ls -1 dist/ff-* 2>/dev/null | wc -l)
+          if [ "$count" -ne 6 ]; then echo "expected 6 artifacts, found $count"; ls -l dist/; exit 1; fi
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum ff-* > checksums.txt
+          else
+            shasum -a 256 ff-* > checksums.txt
+          fi
+          cat checksums.txt
+          # Verify each checksum parses correctly
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c checksums.txt
+          else
+            shasum -a 256 -c checksums.txt
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          files: |
+            dist/ff-linux-amd64
+            dist/ff-linux-arm64
+            dist/ff-darwin-amd64
+            dist/ff-darwin-arm64
+            dist/ff-windows-amd64.exe
+            dist/ff-windows-arm64.exe
+            dist/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

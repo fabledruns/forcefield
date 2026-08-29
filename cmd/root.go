@@ -11,6 +11,10 @@ import (
 
 var resumeID string
 
+// Version is the binary version, set at build time via ldflags:
+// go build -ldflags "-X forcefield/cmd.Version=v1.2.3"
+var Version = "dev"
+
 // rootTuiStarter is a package var so tests can inject a fake.
 var rootTuiStarter = tui.Start
 var loadSession = session.Load
@@ -23,6 +27,7 @@ var rootCmd = &cobra.Command{
 
 It lets you chat with local models, execute tools, and build
 AI-powered workflows without requiring cloud services.`,
+	Version: Version,
 
 	// Running `ff` with no subcommand drops straight into the interactive
 	// chat session, the same one `ff chat` starts explicitly.
@@ -44,6 +49,9 @@ AI-powered workflows without requiring cloud services.`,
 }
 
 func Execute() {
+	// Ensure the version displayed by --version reflects any ldflags
+	// injection via main.Version -> cmd.Version.
+	rootCmd.Version = Version
 	err := rootCmd.Execute()
 	if err != nil {
 		os.Exit(1)
@@ -51,6 +59,8 @@ func Execute() {
 }
 
 func init() {
+	// Sync Version field in case ldflags sets it after var initialization.
+	rootCmd.Version = Version
 	rootCmd.Flags().StringVar(
 		&resumeID,
 		"resume",

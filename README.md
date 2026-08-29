@@ -35,8 +35,7 @@ Forcefield provides:
 
 Before you use Forcefield, make sure that you have:
 
-- Go version 1.22 or later
-- Ollama installed
+- Ollama installed (or another supported provider)
 - A local model installed
 
 Example:
@@ -45,17 +44,115 @@ Example:
 ollama pull ornith:9b
 ```
 
+Go 1.22+ is only needed if you build from source.
+
 ---
 
-# Build
+# Installation
+
+### Linux / macOS (shell)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.sh | sh
+```
+
+macOS supports both Apple Silicon (`arm64`) and Intel (`amd64`) — the installer detects the correct binary.
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.ps1 | iex
+```
+
+Installs to `~/.local/bin` (`$HOME\.local\bin` on Windows) and adds it to your user `PATH` if needed. No Administrator privileges required. Safe to run multiple times (upgrades in place).
+
+> **Trust:** `curl | sh` / `irm | iex` downloads the installer from `main` over HTTPS and immediately executes it — convenient, but you are trusting `main` at that moment. For reproducibility or air-gapped review, pin to a tag (`https://raw.githubusercontent.com/fabledruns/forcefield/v1.0.0/scripts/install.sh`) or use the manual download below; either way the binary itself is still verified against `checksums.txt` from the GitHub Release (integrity, not independent authenticity beyond GitHub TLS).
+
+### Manual installation
+
+1. Download the binary for your OS/arch from [GitHub Releases](https://github.com/fabledruns/forcefield/releases).
+2. Place it on your `PATH` as `ff` (`ff.exe` on Windows).
+3. Ensure it is executable (`chmod +x ff` on Linux/macOS).
+
+Artifacts are named `ff-<os>-<arch>` (`.exe` on Windows), e.g. `ff-linux-amd64`, `ff-darwin-arm64`, `ff-windows-amd64.exe`. Each release includes `checksums.txt`; the installers verify it automatically.
+
+### Version pinning
+
+Install a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.sh | sh -s -- --version v1.0.0
+FORCEFIELD_VERSION=v1.0.0 sh scripts/install.sh
+```
+
+Windows:
+
+```powershell
+$env:FORCEFIELD_VERSION="v1.0.0"; irm https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.ps1 | iex
+# or when saved locally:
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -Version v1.0.0
+```
+
+### Upgrading
+
+Run the same install command again. The installer detects an existing `ff` in the install directory, replaces it in place, and never touches `~/.forcefield` or project sessions.
+
+### Uninstall
+
+```bash
+sh scripts/uninstall.sh
+# or: curl -fsSL https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/uninstall.sh | sh
+```
+
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/uninstall.ps1
+# or: irm https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/uninstall.ps1 | iex
+```
+
+Removes only the binary (`~/.local/bin/ff`). Never removes `~/.forcefield`, sessions, memory, or config — those remain until you delete them manually.
+
+### Supported platforms
+
+| OS      | Arch  | Artifact               |
+|---------|-------|------------------------|
+| Linux   | amd64 | `ff-linux-amd64`       |
+| Linux   | arm64 | `ff-linux-arm64`       |
+| macOS   | amd64 | `ff-darwin-amd64`      |
+| macOS   | arm64 | `ff-darwin-arm64`      |
+| Windows | amd64 | `ff-windows-amd64.exe` |
+| Windows | arm64 | `ff-windows-arm64.exe` |
+
+All artifacts are statically linked (`CGO_ENABLED=0`) and built with `go build -trimpath -ldflags "-s -w"`.
+
+### Troubleshooting PATH
+
+If `ff` is not found after install, the installer likely added `~/.local/bin` to `~/.bashrc`, `~/.zshrc`, or `~/.profile` (Windows: user `PATH`). Restart your terminal or run:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+ff --version
+ff doctor
+```
+
+Check what the installer changed — it never duplicates entries and never overwrites existing config.
+
+---
+
+# Build from source
 
 To build Forcefield, run:
 
 ```bash
-go build -o ff ./cmd/ff
+go build -o ff .
 ```
 
-The command creates the `ff` executable.
+The command creates the `ff` executable. On Windows:
+
+```powershell
+go build -o ff.exe .
+```
 
 ---
 

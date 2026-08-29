@@ -27,21 +27,29 @@ You can find the index of the contents in this file.
 
 ## Installation
 
-> **Note:**
-> A one-line installer (`curl`/PowerShell) is planned but is not available yet.
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.sh | sh
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.ps1 | iex
+```
 
-To install Forcefield on your machine, you can either clone the repository and build your own binary, or go to the Releases section and grab a binary from there.
-Forcefield will be automatically be installed, and you can use the `ff` command to run Forcefield.
+- Installs to `~/.local/bin` (user-local, no `sudo`/admin).
+- Verifies `checksums.txt` from GitHub Releases.
+- Safe to run again to upgrade in place; never touches `~/.forcefield`.
 
-For a full first-run walkthrough, see [Getting Started](GettingStarted.md).
+For pinning, manual download, building from source, and supported platforms, see [Getting Started](GettingStarted.md). Quick examples:
 
-### Make Your Own Binary
+```bash
+# Pin to a version
+curl -fsSL https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.sh | sh -s -- --version v1.0.0
+# Manual: download ff-<os>-<arch> (+ checksums.txt) from Releases, chmod +x, place on PATH
+```
 
-Clone the repository using `git clone https://github.com/fabledruns/forcefield` in a new folder, and run `go build -o ff .`, then run using `./ff`.
-
-### Releases Binary
-
-Download the latest binary from the GitHub Releases page for your operating system.
+```powershell
+# PowerShell pin
+$env:FORCEFIELD_VERSION="v1.0.0"; irm https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.ps1 | iex
+```
 
 ## Architecture
 
