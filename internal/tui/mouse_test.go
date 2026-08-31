@@ -358,21 +358,21 @@ func TestPermissionOptionGeometryMatchesRenderedLabels(t *testing.T) {
 		t.Fatalf("got %d option rects", len(rects))
 	}
 
-	// Independent expectations: options live on row height-3; the first
-	// label starts after the box's one-cell left padding (the box has
-	// top/bottom borders only — no side border column).
-	wantY := m.height - permOptionsRowFromBottom
+	// Vertical layout: options are stacked, first at height-7, same X=1, width = "  " + label
+	wantY := m.height - 7
 	if rects[0].Rect.Y != wantY || rects[0].Rect.X != 1 {
 		t.Errorf("first rect = %+v, want X=1 Y=%d", rects[0], wantY)
 	}
-	if rects[0].Rect.W != len("(y) yes") {
-		t.Errorf("first rect width = %d, want %d", rects[0].Rect.W, len("(y) yes"))
+	if rects[0].Rect.W != len("  Allow once") {
+		t.Errorf("first rect width = %d, want %d", rects[0].Rect.W, len("  Allow once"))
 	}
-	// Contiguity: each next label starts exactly one gap after the previous.
+	// Vertical: same X, Y increments by 1
 	for i := 1; i < len(rects); i++ {
-		prevEnd := rects[i-1].Rect.X + rects[i-1].Rect.W + len(permOptionGap)
-		if rects[i].Rect.X != prevEnd {
-			t.Errorf("rect %d X = %d, want %d (contiguous labels)", i, rects[i].Rect.X, prevEnd)
+		if rects[i].Rect.X != 1 {
+			t.Errorf("rect %d X = %d, want 1 (vertical stack)", i, rects[i].Rect.X)
+		}
+		if rects[i].Rect.Y != rects[i-1].Rect.Y+1 {
+			t.Errorf("rect %d Y = %d, want %d (vertical stack)", i, rects[i].Rect.Y, rects[i-1].Rect.Y+1)
 		}
 	}
 }

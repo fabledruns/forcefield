@@ -8,6 +8,7 @@ import (
 
 	"forcefield/internal/providers"
 	"forcefield/internal/session"
+	"forcefield/internal/skills"
 )
 
 // fakeContext is an in-memory Context used across tests in this package.
@@ -83,6 +84,12 @@ func (f *fakeContext) ToggleThinking() (bool, error) {
 		return false, fmt.Errorf("Current model does not support thinking toggle.")
 	}
 	return true, nil
+}
+
+func (f *fakeContext) Skills() []skills.Skill { return nil }
+
+func (f *fakeContext) LoadSkill(id string) (string, error) {
+	return "", fmt.Errorf("skill %q: %w", id, skills.ErrSkillNotFound)
 }
 
 // echoCommand records the args it was called with and can be told to fail.

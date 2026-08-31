@@ -4,6 +4,7 @@ package command
 import (
 	"forcefield/internal/providers"
 	"forcefield/internal/session"
+	"forcefield/internal/skills"
 )
 
 // SessionStats summarizes the active conversation without exposing a
@@ -47,6 +48,11 @@ type Context interface {
 	SetThinking(cfg providers.ThinkingConfig) error
 	// ToggleThinking flips boolean thinking for the active model.
 	ToggleThinking() (bool, error)
+	// Skills returns the current skill catalog in display order.
+	Skills() []skills.Skill
+	// LoadSkill returns the Markdown body for a skill id. It reports
+	// ErrSkillNotFound when the id is unknown.
+	LoadSkill(id string) (string, error)
 }
 
 // Command is a slash command.

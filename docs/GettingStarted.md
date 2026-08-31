@@ -134,6 +134,8 @@ Forcefield sends the prompt to the local model, runs any requested tools, and sh
 | `/provider`          | Show the active provider.                   |
 | `/provider <name>`   | Switch provider for the next request.       |
 | `/sessions`          | Open the saved session picker.              |
+| `/skills`            | List available skills.                      |
+| `/skills show <id>`  | Display one skill's full instructions.      |
 | `/clear`             | Clear the visible transcript.               |
 | `/exit`              | End the session.                            |
 
@@ -173,12 +175,20 @@ This path does not open the interactive TUI. It prints the final model response 
 
 ## Add a Skill
 
-1. Create a Markdown file in `~/.forcefield/skills/`.
-2. Optionally add YAML frontmatter with `id`, `name`, and `description`.
-3. Restart Forcefield so the skill store reloads.
-4. Ask the agent a task that needs the skill. The model can load it with `load_skill`.
+Skills are global-only (`~/.forcefield/skills/`). Two layouts are supported:
 
-Example skill:
+- File skill: `~/.forcefield/skills/clean-code.md`
+- Directory skill: `~/.forcefield/skills/git-review/SKILL.md` (supporting files may sit alongside)
+
+Steps:
+
+1. Create a Markdown file (or `SKILL.md` directory) under `~/.forcefield/skills/`.
+2. Optionally add YAML frontmatter with `id`, `name`, and `description`.
+3. Restart Forcefield so the global skill store reloads.
+4. Verify with `/skills list` and `/skills show <id>`.
+5. Ask the agent a task that needs the skill. The model can load it with `load_skill`.
+
+Example skill (`~/.forcefield/skills/clean-code.md`):
 
 ```md
 ---

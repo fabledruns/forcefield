@@ -47,6 +47,8 @@ Commands act on the session through a small interface. The TUI is the production
 | `OpenModelPicker`    | Open the model selection UI.                     |
 | `SessionStats`       | Report session id, message count, and size.      |
 | `Tools`              | List one line per available tool.                |
+| `Skills`             | List global skills in catalog order.             |
+| `LoadSkill`          | Load one global skill's Markdown body by id.     |
 
 ## Main Parts
 
@@ -69,16 +71,17 @@ Commands act on the session through a small interface. The TUI is the production
 
 ## Built-in Commands
 
-| Command      | Aliases | Usage              | Action                                      |
-| ------------ | ------- | ------------------ | ------------------------------------------- |
-| `help`       | `?`     | `/help`            | List registered commands.                   |
-| `clear`      | —       | `/clear`           | Clear the chat transcript.                  |
-| `exit`       | `quit`  | `/exit`            | End the chat session.                       |
-| `model`      | —       | `/model [name]`    | Show or switch the active model.            |
-| `provider`   | —       | `/provider [name]` | Show or switch the active provider.         |
-| `sessions`   | `s`     | `/sessions`        | Open the saved session picker.              |
-| `status`     | —       | `/status`          | Show provider, model, session size, tools.  |
-| `tools`      | —       | `/tools`           | List the tools available to the agent.      |
+| Command      | Aliases | Usage                    | Action                                      |
+| ------------ | ------- | ------------------------ | ------------------------------------------- |
+| `help`       | `?`     | `/help`                  | List registered commands.                   |
+| `clear`      | —       | `/clear`                 | Clear the chat transcript.                  |
+| `exit`       | `quit`  | `/exit`                  | End the chat session.                       |
+| `model`      | —       | `/model [name]`          | Show or switch the active model.            |
+| `provider`   | —       | `/provider [name]`       | Show or switch the active provider.         |
+| `sessions`   | `s`     | `/sessions`              | Open the saved session picker.              |
+| `status`     | —       | `/status`                | Show provider, model, session size, tools.  |
+| `tools`      | —       | `/tools`                 | List the tools available to the agent.      |
+| `skills`     | `skill` | `/skills [list|show <id>]` | List and inspect global skills.           |
 
 ## How to Add a Command
 

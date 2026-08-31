@@ -132,30 +132,42 @@ func TestPermissionOptionsMatchRenderedFooter(t *testing.T) {
 	}
 
 	rects := m.permissionOptionRects()
-	lines := strings.Split(stripANSI(m.renderFooter()), "\n")
-	optionsRow := len(lines) - 1 - 2 // above: help line + box bottom border
-	if optionsRow < 0 {
-		t.Fatalf("footer too short to hold an options line:\n%s", m.renderFooter())
-	}
+	footer := stripANSI(m.renderFooter())
+	lines := strings.Split(footer, "\n")
 
-	keys := []string{"(y)", "(n)", "(a)", "(d)"}
-	labels := []string{"(y) yes", "(n) no", "(a) always allow", "(d) always deny"}
+	labels := []string{"Allow once", "Always allow", "Deny", "Always deny"}
+	keys := []string{"y", "a", "n", "d"}
+	if len(rects) != len(labels) {
+		t.Fatalf("rects len %d want %d", len(rects), len(labels))
+	}
+	// Vertical: each label on its own row, same X, consecutive Y
 	for i, r := range rects {
-		col := strings.Index(lines[optionsRow], labels[i])
-		if col < 0 {
-			t.Fatalf("label %q missing from rendered options row %q", labels[i], lines[optionsRow])
+		if !strings.Contains(footer, labels[i]) {
+			t.Fatalf("label %q missing from footer %q", labels[i], footer)
 		}
-		// Footer rows map one-to-one onto screen columns starting at x=0,
-		// so the rendered index IS the expected rect X.
-		if r.Rect.X != col || r.Rect.W != len(labels[i]) {
-			t.Errorf("%s rect X/W = %d/%d, want %d/%d (rendered)", keys[i], r.Rect.X, r.Rect.W, col, len(labels[i]))
+		if r.Rect.X != 1 {
+			t.Errorf("rect %d X = %d want 1", i, r.Rect.X)
+		}
+		if i > 0 && r.Rect.Y != rects[i-1].Rect.Y+1 {
+			t.Errorf("rect %d Y = %d want %d (vertical stack)", i, r.Rect.Y, rects[i-1].Rect.Y+1)
+		}
+		// Find the line that contains the label
+		found := false
+		for _, l := range lines {
+			if strings.Contains(l, labels[i]) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("label %q not found in any footer line", labels[i])
 		}
 	}
 
 	// And clicking where the text actually renders answers the prompt.
 	clicked := false
 	for i, r := range rects {
-		if keys[i] != "(n)" {
+		if keys[i] != "n" {
 			continue
 		}
 		next, _ := m.routeMouse(leftClick(r.Rect.X+r.Rect.W/2, r.Rect.Y))

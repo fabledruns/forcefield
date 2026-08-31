@@ -231,6 +231,11 @@ Lists the tools available to the agent.
 ```
 
 ```text
+/skills
+Lists and inspects the global skill catalog (/skills list, /skills show <id>).
+```
+
+```text
 /memory
 Manages agent memory (via the ff memory CLI subcommand).
 ```
@@ -303,14 +308,21 @@ exactly what is and is not isolated.
 
 # Skills
 
-Skills are Markdown files.
+Skills are global, filesystem-first Markdown files.
 
 Skills provide additional instructions for the agent.
 
-Location:
+Location (global only):
 
 ```text
 ~/.forcefield/skills/
+```
+
+Supported layouts:
+
+```text
+~/.forcefield/skills/review.md              # file skill
+~/.forcefield/skills/git-review/SKILL.md    # directory skill (supporting files alongside)
 ```
 
 Example:
@@ -325,7 +337,15 @@ Prefer simple designs.
 Use clear error handling.
 ```
 
-Forcefield loads all Markdown skill files during agent startup.
+At startup Forcefield indexes skill metadata into a short catalog — the model sees only `id`, `name`, and `description`. The full skill body is loaded on demand via the `load_skill` tool or inspected with `/skills show <id>`. Supporting files are never executed automatically.
+
+Slash commands:
+
+```text
+/skills              list available skills
+/skills list         list available skills
+/skills show <id>    display one skill's full instructions
+```
 
 ---
 

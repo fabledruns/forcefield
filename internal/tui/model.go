@@ -404,7 +404,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the prompt unreachable behind them.
 		m.picker = nil
 		m.selectPicker = nil
-		m.permissionPrompt = &permissionPrompt{request: msg.request, respond: msg.respond}
+		m.permissionPrompt = &permissionPrompt{request: msg.request, respond: msg.respond, selected: 0}
 		m.appendActivity(m.permissionPrompt.summary())
 		m.refreshTranscript()
 		return m, nil

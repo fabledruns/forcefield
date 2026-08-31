@@ -125,3 +125,7 @@ var nonIDChars = regexp.MustCompile(`[^a-z0-9]+`)
 func normalizeID(s string) string {
 	return strings.Trim(nonIDChars.ReplaceAllString(strings.ToLower(s), "-"), "-")
 }
+
+// NormalizeID is the exported form of normalizeID for use by callers
+// that need to resolve user-supplied identifiers (e.g. /skills show).
+func NormalizeID(s string) string { return normalizeID(s) }

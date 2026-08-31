@@ -19,11 +19,12 @@ import (
 // Unlike picker/selectPicker, a pending prompt does NOT take over the
 // screen: the transcript and header stay visible, the prompt appears as
 // a normal activity line in the transcript, and the footer's input box
-// is temporarily replaced by the y/n/a/d question. See renderFooter and
-// View in model.go.
+// is temporarily replaced by a selectable permission UI. See renderFooter
+// and View in model.go.
 type permissionPrompt struct {
-	request permissions.Request
-	respond chan<- permissions.Prompt
+	request  permissions.Request
+	respond  chan<- permissions.Prompt
+	selected int // index into permissionChoices, navigated with ↑/↓
 }
 
 // permissionRequestMsg is sent into the bubbletea program by the runtime's
@@ -43,17 +44,51 @@ func (m model) handlePermissionKey(key string) (model, bool) {
 		return m, false
 	}
 
+	// Navigation
+	switch key {
+	case "up", "k":
+		if m.permissionPrompt.selected > 0 {
+			m.permissionPrompt.selected--
+		} else {
+			m.permissionPrompt.selected = len(permissionChoices) - 1
+		}
+		return m, true
+	case "down", "j":
+		if m.permissionPrompt.selected < len(permissionChoices)-1 {
+			m.permissionPrompt.selected++
+		} else {
+			m.permissionPrompt.selected = 0
+		}
+		return m, true
+	case "enter":
+		choice := permissionChoices[m.permissionPrompt.selected]
+		answer := choice.prompt
+		m.permissionPrompt.respond <- answer
+		m.appendActivity(formatPermissionAnswer(m.permissionPrompt.request, answer))
+		m.permissionPrompt = nil
+		m.hoverID = ""
+		return m, true
+	}
+
 	var answer permissions.Prompt
+	var matched bool
 	switch key {
 	case "y":
 		answer = permissions.PromptAllowOnce
+		matched = true
 	case "n", "esc":
 		answer = permissions.PromptDenyOnce
+		matched = true
 	case "a":
 		answer = permissions.PromptAlwaysAllow
+		matched = true
 	case "d":
 		answer = permissions.PromptAlwaysDeny
+		matched = true
 	default:
+		return m, false
+	}
+	if !matched {
 		return m, false
 	}
 
@@ -70,62 +105,146 @@ func (p *permissionPrompt) summary() string {
 	return "permission requested: " + p.actionDescription()
 }
 
-// permOption is one clickable/pressable answer on the permission footer.
-// The same definitions drive both rendering and hit-testing, so the click
-// targets are always exactly the labels the user sees.
+// permOption is one selectable answer in the permission UI.
 type permOption struct {
-	key   string // the keyboard equivalent; clicking performs this key's action
-	label string
+	key    string // legacy key for hover/click mapping
+	label  string
+	prompt permissions.Prompt
 }
 
-// permissionOptions lists the answers in display order.
+// permissionChoices is the ordered list of permission actions presented as
+// a vertical selectable list. The order matches the spec example.
+var permissionChoices = []permOption{
+	{"y", "Allow once", permissions.PromptAllowOnce},
+	{"a", "Always allow", permissions.PromptAlwaysAllow},
+	{"n", "Deny", permissions.PromptDenyOnce},
+	{"d", "Always deny", permissions.PromptAlwaysDeny},
+}
+
+// permissionOptions retains the legacy name for tests that import it.
 func permissionOptions() []permOption {
-	return []permOption{
-		{"y", "yes"},
-		{"n", "no"},
-		{"a", "always allow"},
-		{"d", "always deny"},
-	}
+	return permissionChoices
 }
 
-// permOptionGap separates answer labels on the options line.
+// permOptionGap was used for the old horizontal layout; kept for
+// compatibility but no longer used in the vertical UI.
 const permOptionGap = "   "
 
-// footerPrompt renders the question shown in place of the input box while
-// this prompt is open. The execution block comes from the executor's own
-// Enforcement report, so what it says about isolation is exactly what the
-// runtime enforces - never hardcoded claims. The answer labels sit on a
-// dedicated final line where each one is an explicit click target
-// performing precisely its keyboard equivalent; there is deliberately no
-// big default button, keeping confirmation as deliberate as the keys.
+// footerPrompt renders the permission UI shown in place of the input box
+// while this prompt is open. It shows the tool name and a clean,
+// readable block for its arguments (never raw JSON as primary), plus
+// execution details from the executor's Enforcement report and a
+// vertical selectable list. The list is navigated with ↑/↓ and confirmed
+// with Enter, with mouse click support and Esc as quick deny.
 func (p *permissionPrompt) footerPrompt(hoveredKey string) string {
-	text := permissionQuestionStyle.Render(p.actionDescription())
-
+	var b strings.Builder
+	b.WriteString(permissionQuestionStyle.Render("Permission required"))
+	b.WriteString("\n")
+	b.WriteString(p.formatToolBlock())
 	if p.request.Execution != nil {
-		text += "\n" + permissionHelpStyle.Render(
-			strings.Join(p.request.Execution.SummaryLines(), "\n"))
+		b.WriteString("\n")
+		b.WriteString(permissionHelpStyle.Render(strings.Join(p.request.Execution.SummaryLines(), "\n")))
 	} else if risk := riskNote(p.request.Tool); risk != "" {
-		text += "\n" + permissionHelpStyle.Render(risk)
+		b.WriteString("\n")
+		b.WriteString(permissionHelpStyle.Render(risk))
 	}
-
-	return text + "\n" + renderPermissionOptions(hoveredKey) +
-		permissionHelpStyle.Render("   (esc) no")
+	b.WriteString("\n\n")
+	b.WriteString(p.renderOptions(hoveredKey))
+	b.WriteString("\n")
+	b.WriteString(permissionHelpStyle.Render("↑/↓ navigate · enter confirm · esc deny"))
+	return b.String()
 }
 
-// renderPermissionOptions draws the answer labels, emphasizing the one
-// under the pointer when mouse support is active.
-func renderPermissionOptions(hoveredKey string) string {
-	parts := make([]string, 0, len(permissionOptions()))
-	for _, o := range permissionOptions() {
-		label := "(" + o.key + ") " + o.label
-		if o.key == hoveredKey {
-			label = permOptionHoverStyle.Render(label)
-		} else {
-			label = permissionHelpStyle.Render(label)
+// renderOptions draws the vertical selectable list, highlighting the
+// currently selected option and the hovered option.
+func (p *permissionPrompt) renderOptions(hoveredKey string) string {
+	var b strings.Builder
+	for i, o := range permissionChoices {
+		prefix := "  "
+		style := permissionHelpStyle
+		if i == p.selected {
+			prefix = "› "
+			style = pickerSelectedStyle
 		}
-		parts = append(parts, label)
+		if o.key == hoveredKey {
+			style = permOptionHoverStyle
+		}
+		// Underline hovered even when selected for extra feedback.
+		label := prefix + o.label
+		b.WriteString(style.Render(label))
+		if i < len(permissionChoices)-1 {
+			b.WriteString("\n")
+		}
 	}
-	return strings.Join(parts, permOptionGap)
+	return b.String()
+}
+
+// renderPermissionOptions retains compatibility for older callers.
+func renderPermissionOptions(hoveredKey string) string {
+	// Old horizontal rendering is replaced by vertical; delegate to the
+	// prompt's method with a temporary prompt for tests that call it
+	// directly.
+	tmp := &permissionPrompt{selected: 0}
+	return tmp.renderOptions(hoveredKey)
+}
+
+// formatToolBlock renders the tool name and its arguments as a clean,
+// multi-line block. It avoids dumping raw JSON as the primary view; each
+// argument is shown as `key: value` on its own line, sorted for
+// determinism. Long string values are truncated.
+func (p *permissionPrompt) formatToolBlock() string {
+	var b strings.Builder
+	b.WriteString(permissionHelpStyle.Render("Tool: " + p.request.Tool))
+	args := p.request.Arguments
+	if len(args) == 0 {
+		return b.String()
+	}
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	// Deterministic order
+	for i := 0; i < len(keys); i++ {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[j] < keys[i] {
+				keys[i], keys[j] = keys[j], keys[i]
+			}
+		}
+	}
+	for _, k := range keys {
+		v := args[k]
+		var val string
+		switch s := v.(type) {
+		case string:
+			// Truncate very long strings (e.g. write_file content)
+			if len(s) > 300 {
+				s = s[:300] + "…"
+			}
+			// Quote the string for clarity, but keep it readable
+			if strings.Contains(s, "\n") {
+				// Multi-line: show first line only in the block, full is in details on expand
+				first := strings.SplitN(s, "\n", 2)[0]
+				if len(first) > 80 {
+					first = first[:80] + "…"
+				}
+				val = fmt.Sprintf("%q…", first)
+			} else {
+				val = fmt.Sprintf("%q", s)
+			}
+		default:
+			raw, err := json.Marshal(v)
+			if err != nil || string(raw) == "null" {
+				raw = []byte("{}")
+			}
+			val = string(raw)
+			if len(val) > 200 {
+				val = val[:200] + "…"
+			}
+		}
+		b.WriteString("\n")
+		b.WriteString(permissionHelpStyle.Render(fmt.Sprintf("  %s: %s", k, val)))
+	}
+	return b.String()
 }
 
 // actionDescription describes what the tool wants to do in words a human
@@ -216,29 +335,28 @@ func (m model) permHoverKey() string {
 	return ""
 }
 
-// permissionOptionRects returns the hit rectangles of the answer labels.
-// Geometry lives here rather than in View so hit-testing and rendering
-// share one source of truth: the labels are drawn on the last content row
-// of the prompt box. The box has top/bottom borders only (no side
-// columns) plus one cell of left padding, so a label's screen column is
-// exactly its index within that row.
+// permissionOptionRects returns the hit rectangles for the vertical
+// permission options. Geometry is shared with rendering so clicks land
+// exactly where labels are drawn. The options are the 4 rows directly
+// above the hint line inside the prompt box, which itself sits above
+// the outer help line and border.
 func (m model) permissionOptionRects() []indexedRect {
-	opts := permissionOptions()
-	y := m.height - permOptionsRowFromBottom
-
+	// Vertical list: 4 options + hint line + border + outer help line.
+	// First option is 7 rows from bottom, last is 4 from bottom.
+	const firstRowFromBottom = 7
+	rects := make([]indexedRect, 0, len(permissionChoices))
+	baseY := m.height - firstRowFromBottom
 	x := inputBorderStyle.GetPaddingLeft()
-	rects := make([]indexedRect, 0, len(opts))
-	for i, o := range opts {
-		w := lipgloss.Width("(" + o.key + ") " + o.label)
-		rects = append(rects, indexedRect{index: i, key: o.key, Rect: Rect{X: x, Y: y, W: w, H: 1}})
-		x += w + lipgloss.Width(permOptionGap)
+	for i, o := range permissionChoices {
+		w := lipgloss.Width("  " + o.label)
+		// Selected prefix "› " is same width as "  "
+		rects = append(rects, indexedRect{index: i, key: o.key, Rect: Rect{X: x, Y: baseY + i, W: w, H: 1}})
 	}
 	return rects
 }
 
-// permOptionsRowFromBottom locates the options row relative to the screen
-// bottom: one row for the help line below the box, one for the box's
-// bottom border, then the last content row of the box.
+// permOptionsRowFromBottom is kept for compatibility; new layout uses
+// firstRowFromBottom = 7.
 const permOptionsRowFromBottom = 3
 
 // indexedRect pairs a hit rectangle with its payload for ordered lookups.

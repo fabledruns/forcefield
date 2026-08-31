@@ -308,6 +308,22 @@ func (r *Runtime) ToolSummaries() []string {
 	return out
 }
 
+// Skills returns a copy of the global skill catalog, sorted deterministically.
+func (r *Runtime) Skills() []skills.Skill {
+	if r == nil || r.skills == nil {
+		return nil
+	}
+	return r.skills.Catalog()
+}
+
+// LoadSkill returns the Markdown body for a skill id.
+func (r *Runtime) LoadSkill(id string) (string, error) {
+	if r == nil || r.skills == nil {
+		return "", fmt.Errorf("skill %q: %w", id, skills.ErrSkillNotFound)
+	}
+	return r.skills.Load(id)
+}
+
 // SetModel switches the active model, keeping the current provider and
 // endpoint, and takes effect starting with the next request. The change is
 // in-memory only; it does not write config.yaml. This matches AGENTS.md's

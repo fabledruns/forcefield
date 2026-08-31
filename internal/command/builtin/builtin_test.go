@@ -8,6 +8,7 @@ import (
 	"forcefield/internal/command"
 	"forcefield/internal/providers"
 	"forcefield/internal/session"
+	"forcefield/internal/skills"
 )
 
 // fakeContext is a minimal in-memory command.Context, used to test
@@ -32,6 +33,9 @@ type fakeContext struct {
 
 	effort   string
 	thinking *providers.ThinkingConfig
+
+	skillCatalog []skills.Skill
+	skillBodies  map[string]string
 }
 
 func (f *fakeContext) Println(format string, args ...any) {
@@ -140,6 +144,29 @@ func (f *fakeContext) ToggleThinking() (bool, error) {
 		return false, err
 	}
 	return enabled, nil
+}
+
+func (f *fakeContext) Skills() []skills.Skill {
+	if f.skillCatalog != nil {
+		return f.skillCatalog
+	}
+	return nil
+}
+
+func (f *fakeContext) LoadSkill(id string) (string, error) {
+	if f.skillBodies != nil {
+		if body, ok := f.skillBodies[id]; ok {
+			return body, nil
+		}
+		if body, ok := f.skillBodies[strings.ToLower(id)]; ok {
+			return body, nil
+		}
+		// Try normalized form as well.
+		if body, ok := f.skillBodies[skills.NormalizeID(id)]; ok {
+			return body, nil
+		}
+	}
+	return "", fmt.Errorf("skill %q: %w", id, skills.ErrSkillNotFound)
 }
 
 func TestExit(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"forcefield/internal/providers"
 	"forcefield/internal/runtime"
 	"forcefield/internal/session"
+	"forcefield/internal/skills"
 )
 
 // newRegistry builds the set of slash commands available in the interactive chat.
@@ -25,6 +26,7 @@ func newRegistry() *command.Registry {
 	reg.Register(builtin.NewTools())
 	reg.Register(builtin.NewEffort())
 	reg.Register(builtin.NewThinking())
+	reg.Register(builtin.NewSkills())
 	return reg
 }
 
@@ -34,10 +36,27 @@ func newRegistry() *command.Registry {
 // commands themselves never import Bubble Tea or forcefield/internal/runtime.
 
 // Println appends a formatted system-style line to the transcript.
+// Consecutive System messages that are part of the same logical event
+// (e.g. initialization or a slash command that prints several lines)
+// are coalesced into a single rendered System block so the transcript
+// shows one "System" header per event instead of one per line. All
+// content is preserved, joined with newlines.
 func (m *model) Println(format string, args ...any) {
+	content := fmt.Sprintf(format, args...)
+	if len(m.entries) > 0 && m.entries[len(m.entries)-1].Role == roleSystem {
+		prev := &m.entries[len(m.entries)-1]
+		if prev.Content == "" {
+			prev.Content = content
+		} else if content == "" {
+			prev.Content += "\n"
+		} else {
+			prev.Content += "\n" + content
+		}
+		return
+	}
 	m.entries = append(m.entries, chatEntry{
 		Role:    roleSystem,
-		Content: fmt.Sprintf(format, args...),
+		Content: content,
 	})
 }
 
@@ -151,6 +170,22 @@ func (m *model) Tools() []string {
 		return nil
 	}
 	return m.runtime.ToolSummaries()
+}
+
+// Skills returns the global skill catalog for /skills.
+func (m *model) Skills() []skills.Skill {
+	if m.runtime == nil {
+		return nil
+	}
+	return m.runtime.Skills()
+}
+
+// LoadSkill returns the Markdown body for a skill id.
+func (m *model) LoadSkill(id string) (string, error) {
+	if m.runtime == nil {
+		return "", fmt.Errorf("runtime not available")
+	}
+	return m.runtime.LoadSkill(id)
 }
 
 // ReasoningCapabilities reports the active model's reasoning capabilities.
