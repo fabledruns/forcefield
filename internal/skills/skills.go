@@ -114,8 +114,14 @@ func New(forcefieldHome string) (*Store, error) {
 		}
 	}
 
+	// Store canonical dir for confinement checks (eval symlinks to handle
+	// /var -> /private/var on macOS and short-name vs long-name on Windows).
+	canonicalDir := dir
+	if eval, err := filepath.EvalSymlinks(dir); err == nil {
+		canonicalDir = eval
+	}
 	return &Store{
-		dir:     dir,
+		dir:     canonicalDir,
 		catalog: catalog,
 		byID:    byID,
 	}, nil
@@ -374,10 +380,31 @@ func findSkillFileInDir(skillDir, rootDir string) string {
 }
 
 // isWithin reports whether target is inside or equal to dir.
-// Both are cleaned and evaluated with filepath semantics.
+// Both are cleaned and evaluated with filepath semantics. It handles
+// symlink variations like /var -> /private/var on macOS and
+// case-insensitive paths on Windows.
 func isWithin(dir, target string) bool {
+	// Canonicalize both via EvalSymlinks when possible to handle
+	// macOS /var vs /private/var and Windows short-name vs long-name.
+	if evalDir, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = evalDir
+	}
+	// For target, only eval if it exists; otherwise keep original for prefix check.
+	if evalTarget, err := filepath.EvalSymlinks(target); err == nil {
+		target = evalTarget
+	} else {
+		// If target is a file that may not exist yet, eval its directory
+		if evalParent, err := filepath.EvalSymlinks(filepath.Dir(target)); err == nil {
+			target = filepath.Join(evalParent, filepath.Base(target))
+		}
+	}
 	cleanDir := filepath.Clean(dir)
 	cleanTarget := filepath.Clean(target)
+	// Windows is case-insensitive
+	if os.PathSeparator == '\\' {
+		cleanDir = strings.ToLower(cleanDir)
+		cleanTarget = strings.ToLower(cleanTarget)
+	}
 	if cleanTarget == cleanDir {
 		return true
 	}
@@ -386,5 +413,22 @@ func isWithin(dir, target string) bool {
 	if !strings.HasSuffix(cleanDir, sep) {
 		cleanDir += sep
 	}
-	return strings.HasPrefix(cleanTarget, cleanDir)
+	// Handle alternative spelling for macOS /var vs /private/var
+	if strings.HasPrefix(cleanTarget, cleanDir) {
+		return true
+	}
+	// Check alternative dir spelling for macOS
+	if cleanDir == "/private/var/" || strings.HasPrefix(cleanDir, "/private/var/") {
+		altDir := strings.Replace(cleanDir, "/private/var/", "/var/", 1)
+		if strings.HasPrefix(cleanTarget, altDir) || cleanTarget == strings.TrimSuffix(altDir, "/") {
+			return true
+		}
+	}
+	if cleanDir == "/var/" || strings.HasPrefix(cleanDir, "/var/") {
+		altDir := strings.Replace(cleanDir, "/var/", "/private/var/", 1)
+		if strings.HasPrefix(cleanTarget, altDir) || cleanTarget == strings.TrimSuffix(altDir, "/") {
+			return true
+		}
+	}
+	return false
 }
