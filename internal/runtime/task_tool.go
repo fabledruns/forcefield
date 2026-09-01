@@ -85,6 +85,33 @@ func (updateTaskStateTool) Execute(ctx context.Context, args map[string]any) (to
 		return tools.Result{IsError: true, Content: "no task state available for this run"}, nil
 	}
 
+	// Unknown-field check: fail fast if the model sends a field not in the
+	// schema, rather than silently ignoring it.
+	allowed := map[string]bool{
+		"phase": true, "plan": true, "current_step": true, "discovery": true,
+		"blocker": true, "clear_blockers": true, "verification": true,
+		"verification_note": true, "status": true,
+	}
+	for k := range args {
+		if !allowed[k] {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("unknown field %q", k)}, nil
+		}
+	}
+
+	// Strict type checks for the scalar fields (prevents {"verification":123} silent "" )
+	for _, key := range []string{"phase", "current_step", "discovery", "blocker", "verification", "verification_note", "status"} {
+		if v, ok := args[key]; ok && v != nil {
+			if _, ok := v.(string); !ok {
+				return tools.Result{IsError: true, Content: fmt.Sprintf("field %q must be a string", key)}, nil
+			}
+		}
+	}
+	if v, ok := args["clear_blockers"]; ok && v != nil {
+		if _, ok := v.(bool); !ok {
+			return tools.Result{IsError: true, Content: "field \"clear_blockers\" must be a boolean"}, nil
+		}
+	}
+
 	patch := task.Patch{
 		Phase:            stringField(args, "phase"),
 		CurrentStep:      stringField(args, "current_step"),
@@ -94,6 +121,23 @@ func (updateTaskStateTool) Execute(ctx context.Context, args map[string]any) (to
 		Verification:     task.Verification(stringField(args, "verification")),
 		VerificationNote: stringField(args, "verification_note"),
 		Status:           task.Status(stringField(args, "status")),
+	}
+
+	// Evidence validation: verification:"passed" requires a note with evidence.
+	// Without this, the model can claim verified without ever running a check.
+	if patch.Verification == task.VerificationPassed && patch.VerificationNote == "" {
+		// Also check existing state's note if patch doesn't provide one but state already has one?
+		// We require the patch itself to carry evidence for the transition to passed.
+		return tools.Result{IsError: true, Content: "verification \"passed\" requires verification_note with evidence (e.g. \"go test ./... passed\")"}, nil
+	}
+	// Status trust: explicit "verified" requires verification passed.
+	if patch.Status == task.StatusVerified {
+		// If the patch sets verified, it must also set verification passed in the same call,
+		// or the existing state must already be passed.
+		hasPassed := patch.Verification == task.VerificationPassed || st.Snapshot().Verification == task.VerificationPassed
+		if !hasPassed {
+			return tools.Result{IsError: true, Content: "status \"verified\" requires verification \"passed\""}, nil
+		}
 	}
 
 	if raw, ok := args["plan"]; ok && raw != nil {

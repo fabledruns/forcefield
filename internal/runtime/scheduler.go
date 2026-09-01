@@ -10,7 +10,9 @@ import (
 	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
 	"forcefield/internal/sandbox"
+	"forcefield/internal/session"
 	"forcefield/internal/tools"
+	"forcefield/internal/tools/filesystem"
 )
 
 // SchedulerConfig controls how the scheduler runs a batch of tool calls.
@@ -42,6 +44,19 @@ type scheduler struct {
 	permissions *permissions.Manager
 	asker       permissions.Asker
 	cfg         SchedulerConfig
+
+	// askMu serializes concurrent Ask prompts so the single TUI modal is
+	// never overwritten. Without it, 4 concurrent tool calls each needing
+	// approval would race on the single permissionPrompt channel.
+	askMu sync.Mutex
+
+	// sessionAllow holds session-scoped Always allow/deny decisions.
+	// It is not persisted to config.yaml; it lives only for the lifetime
+	// of this scheduler (one ff run / one Runtime). This prevents a single
+	// benign "Always allow shell" from permanently widening the tool's
+	// scope globally.
+	sessionMu    sync.Mutex
+	sessionAllow map[string]permissions.Decision
 }
 
 func newScheduler(manager *tools.Manager, perms *permissions.Manager, asker permissions.Asker, cfg SchedulerConfig) *scheduler {
@@ -54,7 +69,13 @@ func newScheduler(manager *tools.Manager, perms *permissions.Manager, asker perm
 	if cfg.BaseBackoff <= 0 {
 		cfg.BaseBackoff = 200 * time.Millisecond
 	}
-	return &scheduler{manager: manager, permissions: perms, asker: asker, cfg: cfg}
+	return &scheduler{
+		manager:      manager,
+		permissions:  perms,
+		asker:        asker,
+		cfg:          cfg,
+		sessionAllow: make(map[string]permissions.Decision),
+	}
 }
 
 // Run executes calls concurrently and returns results in call order.
@@ -129,6 +150,24 @@ func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit fu
 		return result
 	}
 
+	// Strict validation before permission so the prompt cannot hide intent
+	// behind a lenient default (e.g. {"path":12345} silently becoming ".").
+	if err := tools.ValidateArgs(tools.Definition{Name: tool.Name(), InputSchema: tool.InputSchema()}, call.Arguments); err != nil {
+		result := ToolResult{
+			ToolCallID: call.ID,
+			Name:       call.Name,
+			Arguments:  call.Arguments,
+			Success:    false,
+			IsError:    true,
+			Content:    err.Error(),
+			Duration:   time.Since(started),
+			Attempt:    1,
+			Err:        err,
+		}
+		emit(Event{Type: EventToolFailed, ToolResult: &result})
+		return result
+	}
+
 	if denied, result := s.checkPermission(ctx, call, emit); denied {
 		return *result
 	}
@@ -186,18 +225,22 @@ func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit fu
 		if err == nil {
 			// Tool ran to completion; res.IsError (a tool-reported,
 			// deterministic failure, e.g. "file not found") is never
-			// retried even if the tool is marked retryable.
+			// retried even if the tool is marked retryable. Scrub secrets
+			// before emitting so the TUI and session never display raw keys.
+			content := session.ScrubContent(res.Content)
+			stdout := session.ScrubContent(res.Stdout)
+			stderr := session.ScrubContent(res.Stderr)
 			result := ToolResult{
 				ToolCallID:  call.ID,
 				Name:        call.Name,
 				Arguments:   call.Arguments,
-				Content:     res.Content,
+				Content:     content,
 				IsError:     res.IsError,
 				Success:     !res.IsError,
 				Duration:    time.Since(started),
 				Attempt:     attempt,
-				Stdout:      res.Stdout,
-				Stderr:      res.Stderr,
+				Stdout:      stdout,
+				Stderr:      stderr,
 				ExitCode:    res.ExitCode,
 				HasExitCode: res.ExitCode != 0 || res.Tool == "shell",
 			}
@@ -240,6 +283,7 @@ func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit fu
 	if content == "" && lastErr != nil {
 		content = lastErr.Error()
 	}
+	content = session.ScrubContent(content)
 	result := ToolResult{
 		ToolCallID: call.ID,
 		Name:       call.Name,
@@ -255,13 +299,67 @@ func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit fu
 	return result
 }
 
+// isSensitiveCall reports whether a tool call targets a sensitive file
+// that should require explicit permission even if the tool is otherwise
+// allowed. This is a defense-in-depth check that does not rely on the
+// model to recognize secrets.
+func isSensitiveCall(call providers.ToolCall) bool {
+	switch call.Name {
+	case "read_file", "write_file", "list_files":
+		if v, ok := call.Arguments["path"]; ok {
+			if s, ok := v.(string); ok {
+				return filesystem.IsSensitivePath(s)
+			}
+		}
+	}
+	return false
+}
+
+func (s *scheduler) getSessionDecision(tool string) (permissions.Decision, bool) {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	d, ok := s.sessionAllow[tool]
+	return d, ok
+}
+
+func (s *scheduler) setSessionDecision(tool string, d permissions.Decision) {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if s.sessionAllow == nil {
+		s.sessionAllow = make(map[string]permissions.Decision)
+	}
+	s.sessionAllow[tool] = d
+}
+
 // checkPermission resolves a tool call's permission before execution.
 func (s *scheduler) checkPermission(ctx context.Context, call providers.ToolCall, emit func(Event) bool) (denied bool, result *ToolResult) {
 	if s.permissions == nil {
 		return false, nil // no permission manager configured: fail open
 	}
 
+	// Session-scoped Always allow/deny takes precedence over persisted rules.
+	if d, ok := s.getSessionDecision(call.Name); ok {
+		if d == permissions.Allow {
+			// Even session-allowed tools still require explicit approval for
+			// sensitive files; otherwise a single Always allow would bypass
+			// the sensitive-file guard.
+			if isSensitiveCall(call) {
+				// Fall through to Ask path
+			} else {
+				return false, nil
+			}
+		} else if d == permissions.Deny {
+			result = s.deniedResult(call, fmt.Sprintf("permission denied for tool %q", call.Name))
+			emit(Event{Type: EventToolDenied, ToolResult: result})
+			return true, result
+		}
+	}
+
 	decision := s.permissions.Check(call.Name)
+	// Sensitive files always require Ask, even if globally allowed.
+	if decision == permissions.Allow && isSensitiveCall(call) {
+		decision = permissions.Ask
+	}
 
 	if decision == permissions.Allow {
 		return false, nil
@@ -293,13 +391,17 @@ type executionEnforcementSource interface {
 	ExecutionEnforcement(ctx context.Context) (sandbox.Enforcement, bool)
 }
 
-// resolveAsk prompts for a decision and persists "always" responses.
+// resolveAsk prompts for a decision and handles "always" as session-scoped.
+// It serializes concurrent asks so the single TUI modal is never overwritten.
 func (s *scheduler) resolveAsk(ctx context.Context, call providers.ToolCall) (permissions.Decision, error) {
 	if s.asker == nil {
 		// No interactive surface available (e.g. non-interactive
 		// automation): fail closed rather than silently executing.
 		return permissions.Deny, fmt.Errorf("tool %q requires approval but no permission prompt is configured", call.Name)
 	}
+
+	s.askMu.Lock()
+	defer s.askMu.Unlock()
 
 	req := permissions.Request{Tool: call.Name, Arguments: call.Arguments}
 	if src, ok := s.lookupEnforcementSource(call.Name); ok {
@@ -314,14 +416,10 @@ func (s *scheduler) resolveAsk(ctx context.Context, call providers.ToolCall) (pe
 	}
 
 	if prompt.Persist() {
-		if err := s.permissions.Update(call.Name, prompt.Decision()); err != nil {
-			// The in-memory decision below still applies to this call;
-			// only persistence failed. Surface it via the returned error
-			// is tempting but would incorrectly deny this call, so it's
-			// swallowed here - a future "/permissions" view is the right
-			// place to report it.
-			_ = err
-		}
+		// Session-scoped: do not persist globally to config.yaml. This
+		// prevents a single "Always allow shell" from permanently widening
+		// the tool's scope for all future sessions.
+		s.setSessionDecision(call.Name, prompt.Decision())
 	}
 
 	return prompt.Decision(), nil

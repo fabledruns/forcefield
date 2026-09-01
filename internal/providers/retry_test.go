@@ -381,3 +381,189 @@ func TestQuotaExhaustedClassification(t *testing.T) {
 		}
 	}
 }
+
+func TestRetriesTransient503ThenSucceeds(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := requests.Add(1)
+		if n <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"error":{"message":"service unavailable"}}`)
+			return
+		}
+		writeSSE(w, `{"choices":[{"delta":{"content":"recovered"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	p := NewNvidiaProvider(server.URL, "test-model", "", nil)
+	p.retry = fastRetry
+
+	events, err := p.StreamChat(context.Background(), []Message{{Role: UserRole, Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
+	}
+	text, done := drainProviderStream(t, events)
+	if !done || text != "recovered" {
+		t.Fatalf("text = %q, done = %v; want recovered/true", text, done)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("requests = %d, want 3 (two 503s then success)", got)
+	}
+}
+
+func TestPermanent503FailsAfterRetries(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, `{"error":{"message":"service unavailable"}}`)
+	}))
+	defer server.Close()
+
+	p := NewNvidiaProvider(server.URL, "test-model", "", nil)
+	p.retry = fastRetry
+
+	_, err := p.StreamChat(context.Background(), []Message{{Role: UserRole, Content: "hi"}}, nil)
+	if err == nil {
+		t.Fatal("StreamChat() succeeded, want error after retries")
+	}
+	var se *statusError
+	if !errors.As(err, &se) {
+		t.Fatalf("error type = %T, want *statusError", err)
+	}
+	if se.Status != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", se.Status)
+	}
+	if got := Classify(err); got != ErrKindServer {
+		t.Errorf("Classify = %v, want ErrKindServer", got)
+	}
+	if got := requests.Load(); got != 4 {
+		t.Fatalf("requests = %d, want 4 (first attempt + 3 retries)", got)
+	}
+}
+
+func TestAuthErrorIsNotRetried(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":{"message":"invalid api key"}}`)
+	}))
+	defer server.Close()
+
+	p := NewNvidiaProvider(server.URL, "test-model", "", nil)
+	p.retry = fastRetry
+
+	_, err := p.StreamChat(context.Background(), []Message{{Role: UserRole, Content: "hi"}}, nil)
+	if err == nil {
+		t.Fatal("StreamChat() succeeded, want auth error")
+	}
+	if got := Classify(err); got != ErrKindAuth {
+		t.Errorf("Classify = %v, want ErrKindAuth", got)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1 (auth must not be retried)", got)
+	}
+}
+
+func Test500IsRetried(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"error":{"message":"internal"}}`)
+			return
+		}
+		writeSSE(w, `{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+	p := NewNvidiaProvider(server.URL, "test-model", "", nil)
+	p.retry = fastRetry
+	events, err := p.StreamChat(context.Background(), []Message{{Role: UserRole, Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
+	}
+	text, _ := drainProviderStream(t, events)
+	if text != "ok" {
+		t.Fatalf("text = %q, want ok", text)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests = %d, want 2", got)
+	}
+}
+
+func TestNotImplemented501IsNotRetried(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNotImplemented)
+		fmt.Fprint(w, `{"error":{"message":"not implemented"}}`)
+	}))
+	defer server.Close()
+	p := NewNvidiaProvider(server.URL, "test-model", "", nil)
+	p.retry = fastRetry
+	_, err := p.StreamChat(context.Background(), []Message{{Role: UserRole, Content: "hi"}}, nil)
+	if err == nil {
+		t.Fatal("StreamChat() succeeded, want error")
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1 (501 must not be retried)", got)
+	}
+}
+
+func TestTransportTimeoutIsRetried(t *testing.T) {
+	var attempts atomic.Int64
+	// Use a custom transport that fails first then succeeds
+	base := http.DefaultTransport
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeSSE(w, `{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	// Wrap client with failing transport for first attempt
+	origClient := &http.Client{Timeout: 5 * time.Second, Transport: base}
+	p := NewNvidiaProvider(server.URL, "test-model", "", origClient)
+	p.retry = fastRetry
+	// Replace client's transport with flaky one
+	flaky := &flakyTransport{
+		base:      base,
+		failFirst: true,
+		attempts:  &attempts,
+	}
+	p.client.Transport = flaky
+
+	events, err := p.StreamChat(context.Background(), []Message{{Role: UserRole, Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
+	}
+	text, _ := drainProviderStream(t, events)
+	if text != "ok" {
+		t.Fatalf("text = %q, want ok", text)
+	}
+	// First transport failure counted, second succeeded via server
+	if got := attempts.Load(); got < 1 {
+		t.Fatalf("attempts = %d, want at least 1 failure before success", got)
+	}
+}
+
+type flakyTransport struct {
+	base      http.RoundTripper
+	failFirst bool
+	attempts  *atomic.Int64
+	done      atomic.Bool
+}
+
+func (f *flakyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if f.failFirst && !f.done.Load() {
+		f.done.Store(true)
+		f.attempts.Add(1)
+		return nil, &fakeTimeoutError{msg: "timeout"}
+	}
+	return f.base.RoundTrip(req)
+}
+
+type fakeTimeoutError struct{ msg string }
+
+func (e *fakeTimeoutError) Error() string   { return e.msg }
+func (e *fakeTimeoutError) Timeout() bool   { return true }
+func (e *fakeTimeoutError) Temporary() bool { return true }

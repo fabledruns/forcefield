@@ -29,6 +29,78 @@ const defaultTimeout = 30 * time.Second
 // even though the command itself is long dead.
 const waitDelay = time.Second
 
+// maxShellOutputBytes is the hard cap for combined stdout+stderr capture.
+// Once exceeded the pipes are still drained but further bytes are discarded
+// and a truncation marker is added. This prevents OOM from runaway commands
+// while still allowing the process to be reaped.
+const maxShellOutputBytes = 2 << 20 // 2 MiB
+
+// shellOutput holds capped stdout/stderr buffers with a shared byte budget.
+type shellOutput struct {
+	mu        sync.Mutex
+	stdout    strings.Builder
+	stderr    strings.Builder
+	total     int
+	truncated bool
+}
+
+func (o *shellOutput) append(stream, line string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.truncated {
+		return
+	}
+	// line is already sanitized, we store it plus a newline
+	n := len(line) + 1
+	if o.total+n > maxShellOutputBytes {
+		// Cap reached: store as much of this line as fits, then mark truncated.
+		remaining := maxShellOutputBytes - o.total
+		if remaining > 1 {
+			// Reserve 1 byte for newline, store prefix of line.
+			prefix := line
+			if len(prefix) > remaining-1 {
+				prefix = prefix[:remaining-1]
+			}
+			if stream == "stdout" {
+				o.stdout.WriteString(prefix)
+				o.stdout.WriteByte('\n')
+			} else {
+				o.stderr.WriteString(prefix)
+				o.stderr.WriteByte('\n')
+			}
+			o.total = maxShellOutputBytes
+		}
+		o.truncated = true
+		return
+	}
+	o.total += n
+	if stream == "stdout" {
+		o.stdout.WriteString(line)
+		o.stdout.WriteByte('\n')
+	} else {
+		o.stderr.WriteString(line)
+		o.stderr.WriteByte('\n')
+	}
+}
+
+func (o *shellOutput) stdoutString() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.stdout.String()
+}
+
+func (o *shellOutput) stderrString() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.stderr.String()
+}
+
+func (o *shellOutput) isTruncated() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.truncated
+}
+
 // Shell executes shell commands inside the current project directory (or
 // a caller-specified working directory), capturing stdout and stderr
 // separately and streaming output live as the command runs.
@@ -73,12 +145,12 @@ func NewShell() *Shell { return &Shell{} }
 func NewShellWithExecutor(e sandbox.Executor) *Shell { return &Shell{executor: e} }
 
 // executorFor lazily supplies the default executor so zero-value Shells
-// keep working for tests and simple callers.
+// keep working for tests and simple callers. It is safe for concurrent use.
 func (s *Shell) executorFor() sandbox.Executor {
-	if s.executor != nil {
-		return s.executor
-	}
 	s.executorOnce.Do(func() {
+		if s.executor != nil {
+			return
+		}
 		e, err := sandbox.NewExecutor(sandbox.DefaultPolicy())
 		if err != nil {
 			panic("shell: default policy must always construct: " + err.Error())
@@ -210,7 +282,27 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		}, nil
 	}
 
-	cwd := tools.OptionalStringArg(args, "cwd", "")
+	// Conservative WSL mitigation: when in WSL mode, block obvious host
+	// filesystem escapes like /mnt/c/... and C:\... This is a mitigation,
+	// not a security boundary — it does not make WSL a filesystem sandbox.
+	// See internal/sandbox/wsl_windows.go for what WSL does and does not
+	// confine. The check is lexical and intentionally conservative.
+	if s.isWSLMode(ctx) && isWSLForbiddenPattern(command) {
+		return tools.Result{
+			IsError: true,
+			Content: fmt.Sprintf(
+				"refusing to run %q: WSL shell access to host filesystem (%s) is blocked as a conservative mitigation (not a sandbox); use workspace-relative paths instead",
+				command, wslForbiddenSnippet(command),
+			),
+			Tool:    "shell",
+			Command: command,
+		}, nil
+	}
+
+	cwd, err := tools.OptionalStringArg(args, "cwd", "")
+	if err != nil {
+		return tools.Result{}, err
+	}
 	// Directory existence and workspace-scope validation happen inside the
 	// executor (Prepare), which is the only place policy lives. Failures
 	// come back as typed errors mapped to Results below, so the model sees
@@ -224,6 +316,9 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		secs, ok := toFloat(raw)
 		if !ok || secs <= 0 {
 			return tools.Result{}, &tools.ArgumentError{Field: "timeout_seconds", Reason: "must be a positive number of seconds"}
+		}
+		if secs > 300 {
+			return tools.Result{}, &tools.ArgumentError{Field: "timeout_seconds", Reason: "must be at most 300 seconds"}
 		}
 		timeout = time.Duration(secs * float64(time.Second))
 	}
@@ -345,7 +440,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
 
-	var stdout, stderr strings.Builder
+	output := &shellOutput{}
 	pipeDone := make(chan struct{}, 2)
 	pipesFinished := make(chan struct{})
 	go func() {
@@ -354,8 +449,8 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		close(pipesFinished)
 	}()
 
-	go streamPipe(stdoutReader, "stdout", &stdout, onChunk, pipeDone)
-	go streamPipe(stderrReader, "stderr", &stderr, onChunk, pipeDone)
+	go streamPipe(stdoutReader, "stdout", output, onChunk, pipeDone)
+	go streamPipe(stderrReader, "stderr", output, onChunk, pipeDone)
 
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
@@ -392,25 +487,41 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		}
 	}
 
+	stdoutStr := output.stdoutString()
+	stderrStr := output.stderrString()
+	truncated := output.isTruncated()
+	truncNote := ""
+	if truncated {
+		truncNote = fmt.Sprintf("\n[...output truncated at %d bytes (2 MiB), further output discarded]", maxShellOutputBytes)
+	}
+
 	if runCtx.Err() == context.DeadlineExceeded {
+		content := fmt.Sprintf("command timed out after %s", timeout)
+		if truncated {
+			content += truncNote
+		}
 		return tools.Result{
 			IsError:    true,
-			Content:    fmt.Sprintf("command timed out after %s", timeout),
+			Content:    content,
 			ExitCode:   -1,
-			Stdout:     stdout.String(),
-			Stderr:     stderr.String(),
+			Stdout:     stdoutStr,
+			Stderr:     stderrStr,
 			DurationMs: duration.Milliseconds(),
 			Tool:       "shell",
 			Command:    command,
 		}, nil
 	}
 	if runCtx.Err() == context.Canceled {
+		content := "command was cancelled"
+		if truncated {
+			content += truncNote
+		}
 		return tools.Result{
 			IsError:    true,
-			Content:    "command was cancelled",
+			Content:    content,
 			ExitCode:   -1,
-			Stdout:     stdout.String(),
-			Stderr:     stderr.String(),
+			Stdout:     stdoutStr,
+			Stderr:     stderrStr,
 			DurationMs: duration.Milliseconds(),
 			Tool:       "shell",
 			Command:    command,
@@ -422,13 +533,13 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	// so the model learns its command never properly ran instead of seeing
 	// an unexplained non-zero exit from Bash.
 	if !success {
-		if detail, hint := sandbox.BackendFailure(stderr.String(), stdout.String()); hint != "" {
+		if detail, hint := sandbox.BackendFailure(stderrStr, stdoutStr); hint != "" {
 			return tools.Result{
 				IsError:    true,
 				Content:    fmt.Sprintf("shell backend error: WSL could not run the command: %s\n%s", detail, hint),
 				ExitCode:   exitCode,
-				Stdout:     stdout.String(),
-				Stderr:     stderr.String(),
+				Stdout:     stdoutStr,
+				Stderr:     stderrStr,
 				DurationMs: duration.Milliseconds(),
 				Tool:       "shell",
 				Command:    command,
@@ -436,26 +547,30 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		}
 	}
 
-	content := stdout.String()
-	if stderr.Len() > 0 {
+	content := stdoutStr
+	hasStderr := len(stderrStr) > 0
+	if hasStderr {
 		// Keep stderr visible even on success: callers reading only Content
 		// would otherwise lose diagnostics the command wrote to stderr.
 		if content == "" {
-			content = fmt.Sprintf("stderr:\n%s", stderr.String())
+			content = fmt.Sprintf("stderr:\n%s", stderrStr)
 		} else {
-			content = fmt.Sprintf("%s\nstderr:\n%s", content, stderr.String())
+			content = fmt.Sprintf("%s\nstderr:\n%s", content, stderrStr)
 		}
 	}
 	if !success {
-		content = fmt.Sprintf("command exited with code %d\nstdout:\n%s\nstderr:\n%s", exitCode, stdout.String(), stderr.String())
+		content = fmt.Sprintf("command exited with code %d\nstdout:\n%s\nstderr:\n%s", exitCode, stdoutStr, stderrStr)
+	}
+	if truncated {
+		content += truncNote
 	}
 
 	return tools.Result{
 		Content:    content,
 		IsError:    !success,
 		ExitCode:   exitCode,
-		Stdout:     stdout.String(),
-		Stderr:     stderr.String(),
+		Stdout:     stdoutStr,
+		Stderr:     stderrStr,
 		DurationMs: duration.Milliseconds(),
 		Tool:       "shell",
 		Command:    command,
@@ -473,7 +588,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 // It uses bufio.Reader rather than bufio.Scanner so lines of any length
 // are captured whole: a Scanner's max token size would silently drop the
 // remainder of any line past the cap, losing output.
-func streamPipe(r io.Reader, stream string, dst *strings.Builder, onChunk func(tools.StreamChunk), done chan<- struct{}) {
+func streamPipe(r io.Reader, stream string, dst *shellOutput, onChunk func(tools.StreamChunk), done chan<- struct{}) {
 	defer func() { done <- struct{}{} }()
 
 	reader := bufio.NewReader(r)
@@ -481,8 +596,7 @@ func streamPipe(r io.Reader, stream string, dst *strings.Builder, onChunk func(t
 		raw, err := reader.ReadString('\n')
 		if raw != "" {
 			line := sanitizeOutput(strings.TrimSuffix(raw, "\n"))
-			dst.WriteString(line)
-			dst.WriteByte('\n')
+			dst.append(stream, line)
 			if onChunk != nil {
 				onChunk(tools.StreamChunk{Stream: stream, Data: line})
 			}
@@ -490,8 +604,7 @@ func streamPipe(r io.Reader, stream string, dst *strings.Builder, onChunk func(t
 		if err != nil {
 			if err != io.EOF {
 				line := sanitizeOutput(fmt.Sprintf("read error: %v", err))
-				dst.WriteString(line)
-				dst.WriteByte('\n')
+				dst.append(stream, line)
 				if onChunk != nil {
 					onChunk(tools.StreamChunk{Stream: stream, Data: line})
 				}
@@ -550,6 +663,87 @@ func sanitizeOutput(line string) string {
 	return b.String()
 }
 
+// isWSLMode reports whether the shell's executor is in WSL mode.
+func (s *Shell) isWSLMode(ctx context.Context) bool {
+	enc := s.executorFor().Describe(ctx)
+	return enc.Mode == sandbox.ModeWSL
+}
+
+// isWSLForbiddenPattern reports whether command contains obvious host
+// filesystem escapes that are blocked in WSL mode. This is a conservative
+// lexical mitigation, not a filesystem sandbox. It blocks /mnt/*, Windows
+// drive patterns like C:\ or C:/, /proc and /sys, traversal via ../, and
+// WSL interop paths.
+func isWSLForbiddenPattern(command string) bool {
+	if strings.Contains(command, "/mnt/") {
+		return true
+	}
+	lower := strings.ToLower(command)
+	for i := 0; i < len(lower)-2; i++ {
+		c := lower[i]
+		if c >= 'a' && c <= 'z' && lower[i+1] == ':' && (lower[i+2] == '/' || lower[i+2] == '\\') {
+			return true
+		}
+	}
+	if strings.Contains(command, `\\wsl`) || strings.Contains(lower, "wsl.localhost") || strings.Contains(lower, `\\wsl$`) {
+		return true
+	}
+	// Indirect WSL/host escapes via proc, sys, or interop helpers
+	if strings.Contains(lower, "/proc/") || strings.Contains(lower, "/sys/") {
+		return true
+	}
+	if strings.Contains(lower, "/run/wsl") || strings.Contains(lower, "/usr/lib/wsl") {
+		return true
+	}
+	if strings.Contains(lower, "wslpath") || strings.Contains(lower, "powershell") || strings.Contains(lower, "cmd.exe") || strings.Contains(lower, "wsl.exe") {
+		return true
+	}
+	// Traversal outside workspace via ../
+	if strings.Contains(command, "../") || strings.Contains(command, `..\\`) {
+		return true
+	}
+	// Bare .. as a path component (e.g. "cat ../secret")
+	if command == ".." || strings.HasPrefix(command, "../") || strings.HasSuffix(command, "/..") || strings.Contains(command, "/../") {
+		return true
+	}
+	return false
+}
+
+func wslForbiddenSnippet(command string) string {
+	if strings.Contains(command, "/mnt/") {
+		return "/mnt/"
+	}
+	lower := strings.ToLower(command)
+	for i := 0; i < len(lower)-2; i++ {
+		c := lower[i]
+		if c >= 'a' && c <= 'z' && lower[i+1] == ':' && (lower[i+2] == '/' || lower[i+2] == '\\') {
+			return string(command[i : i+3])
+		}
+	}
+	if strings.Contains(command, `\\wsl`) {
+		return `\\wsl`
+	}
+	if strings.Contains(lower, "wsl.localhost") {
+		return "wsl.localhost"
+	}
+	if strings.Contains(lower, "/proc/") {
+		return "/proc/"
+	}
+	if strings.Contains(lower, "/sys/") {
+		return "/sys/"
+	}
+	if strings.Contains(command, "../") {
+		return "../"
+	}
+	if strings.Contains(lower, "wslpath") {
+		return "wslpath"
+	}
+	if strings.Contains(lower, "powershell") {
+		return "powershell"
+	}
+	return "host filesystem"
+}
+
 // interactiveCommands are programs that always need a real controlling
 // terminal to be useful, regardless of what arguments they're given.
 var interactiveCommands = map[string]bool{
@@ -584,6 +778,16 @@ var wrapperCommands = map[string]bool{
 	"xargs": true, "nice": true, "stdbuf": true, "time": true,
 }
 
+// shellCommands are shells whose -c flag takes a command string. When the
+// first real token is a shell and it is invoked with -c, the string after
+// -c is shell code that must be inspected for interactive programs. This
+// closes the ` + "`bash -c \"vim\"`" + ` bypass where the heuristic previously
+// saw only "bash" and missed the interactive program inside.
+var shellCommands = map[string]bool{
+	"bash": true, "sh": true, "zsh": true, "dash": true,
+	"ksh": true, "ash": true, "fish": true,
+}
+
 // detectInteractiveCommand reports whether command invokes a program that
 // requires a TTY. It's a deliberately simple heuristic - split on shell
 // control operators, skip leading VAR=value assignments and wrapper
@@ -608,6 +812,23 @@ func detectInteractiveCommand(command string) (string, bool) {
 			}
 			if bareReplCommands[name] && i == len(fields)-1 {
 				return name, true
+			}
+			// If the first real token is a shell invoked with -c, inspect
+			// the command string after -c. This closes the `bash -c "vim"`
+			// and `sh -c 'ssh ...'` bypasses.
+			if shellCommands[name] {
+				for j := i + 1; j < len(fields); j++ {
+					f := fields[j]
+					if strings.HasPrefix(f, "-") && strings.Contains(f, "c") {
+						if j+1 < len(fields) {
+							cmdStr := unquote(fields[j+1])
+							if prog, ok := detectInteractiveCommand(cmdStr); ok {
+								return prog, true
+							}
+						}
+						break
+					}
+				}
 			}
 			break // first real (non-assignment, non-wrapper) token
 		}

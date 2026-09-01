@@ -100,6 +100,7 @@ func TestShell_CapturesVeryLongLine(t *testing.T) {
 	// generated inside Bash (rather than passed through the environment)
 	// so the test also works under WSL, where wsl.exe's command line
 	// cannot carry multi-megabyte values.
+	// Note: shell caps at 2 MiB, so a 3 MiB line should be truncated with marker.
 	size := 3 << 20
 	command := "head -c " + strconv.Itoa(size) + " /dev/zero | tr '\\0' x"
 	result, err := s.Execute(context.Background(), map[string]any{
@@ -112,8 +113,16 @@ func TestShell_CapturesVeryLongLine(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("result.IsError = true, content: %.100s", result.Content)
 	}
-	if got := len(strings.TrimRight(result.Stdout, "\n")); got < size {
-		t.Errorf("captured stdout length = %d, want >= %d", got, size)
+	// With 2 MiB cap, 3 MiB should be truncated
+	if got := len(strings.TrimRight(result.Stdout, "\n")); got > maxShellOutputBytes {
+		t.Errorf("captured stdout length = %d, exceeds cap %d", got, maxShellOutputBytes)
+	}
+	if got := len(strings.TrimRight(result.Stdout, "\n")); got < maxShellOutputBytes-1024 {
+		t.Logf("result stdout len %d, content len %d, stderr len %d, content snippet %.500q", len(result.Stdout), len(result.Content), len(result.Stderr), result.Content)
+		t.Errorf("captured stdout length = %d, want near cap %d (truncated)", got, maxShellOutputBytes)
+	}
+	if !strings.Contains(result.Content, "truncated") {
+		t.Errorf("expected truncation marker, got content snippet %.500q", result.Content)
 	}
 }
 

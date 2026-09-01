@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"forcefield/internal/sandbox"
@@ -42,7 +43,10 @@ func (ListFiles) InputSchema() map[string]any {
 }
 
 func (l ListFiles) Execute(_ context.Context, args map[string]any) (tools.Result, error) {
-	path := tools.OptionalStringArg(args, "path", ".")
+	path, err := tools.OptionalStringArg(args, "path", ".")
+	if err != nil {
+		return tools.Result{}, err
+	}
 
 	resolved := path
 	if l.policy.Mode == sandbox.ModeWSL {
@@ -56,6 +60,17 @@ func (l ListFiles) Execute(_ context.Context, args map[string]any) (tools.Result
 	entries, err := os.ReadDir(resolved)
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot list %s: %v", path, err)}, nil
+	}
+
+	// TOCTOU mitigation: re-validate after ReadDir. A concurrent writer
+	// could have swapped the directory for a symlink to outside between
+	// the initial ResolveWithinWorkspace and the ReadDir.
+	if l.policy.Mode == sandbox.ModeWSL {
+		if real, err := filepath.EvalSymlinks(resolved); err == nil {
+			if _, err := sandbox.EnsureWithinWorkspace(l.policy.Workspace, real); err != nil {
+				return tools.Result{IsError: true, Content: fmt.Sprintf("cannot list %s: %v", path, err)}, nil
+			}
+		}
 	}
 
 	if len(entries) == 0 {

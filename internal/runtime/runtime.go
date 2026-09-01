@@ -15,6 +15,7 @@ import (
 	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
 	"forcefield/internal/sandbox"
+	"forcefield/internal/session"
 	"forcefield/internal/skills"
 	"forcefield/internal/task"
 	"forcefield/internal/tools"
@@ -41,6 +42,12 @@ var DefaultLimits = Limits{
 	MaxToolCalls:           300,
 	MaxConsecutiveFailures: 5,
 }
+
+// maxContextMessages is the bounded sliding window for history sent to the
+// provider. It keeps the system prompt, the first user message (goal), and
+// the most recent history. This prevents unbounded growth over long-horizon
+// runs while preserving the task's intent and recent context.
+const maxContextMessages = 100
 
 // Runtime is the main execution point for Forcefield.
 type Runtime struct {
@@ -638,16 +645,42 @@ func projectWorkspace() string {
 }
 
 func (r *Runtime) buildMessages(history []providers.Message) []providers.Message {
-	messages := []providers.Message{
-		{
-			Role:    providers.SystemRole,
-			Content: r.agent.BuildSystemPrompt(),
-		},
+	system := providers.Message{
+		Role:    providers.SystemRole,
+		Content: r.agent.BuildSystemPrompt(),
 	}
-
-	messages = append(messages, history...)
-
-	return messages
+	if len(history) <= maxContextMessages {
+		messages := make([]providers.Message, 0, len(history)+1)
+		messages = append(messages, system)
+		messages = append(messages, history...)
+		return messages
+	}
+	// History exceeds window: preserve the first user message (task goal)
+	// plus the most recent tail. This is a conservative mitigation, not a
+	// full summarization, but it bounds growth.
+	goalIdx := -1
+	for i, m := range history {
+		if m.Role == providers.UserRole && strings.TrimSpace(m.Content) != "" {
+			goalIdx = i
+			break
+		}
+	}
+	keepGoal := goalIdx >= 0 && goalIdx < len(history)-maxContextMessages
+	tailSize := maxContextMessages
+	if keepGoal {
+		tailSize = maxContextMessages - 1
+	}
+	start := len(history) - tailSize
+	if start < 0 {
+		start = 0
+	}
+	out := make([]providers.Message, 0, 1+maxContextMessages+1)
+	out = append(out, system)
+	if keepGoal {
+		out = append(out, history[goalIdx])
+	}
+	out = append(out, history[start:]...)
+	return out
 }
 
 // StreamChat runs the agent loop and emits structured events.
@@ -735,6 +768,13 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 		}
 
 		if len(response.ToolCalls) == 0 {
+			// Length exhaustion is incomplete, not success. If the model
+			// stopped because it hit its max tokens, the answer is truncated
+			// and the task should be marked blocked rather than done.
+			if response.StopReason == providers.FinishLength {
+				r.emitBlocked(emit, state, "model output truncated due to length limit (finish_reason=length) - response incomplete")
+				return
+			}
 			status := state.FinalStatus()
 			state.SetStatus(status)
 			emit(Event{Type: EventDone, Response: &response, Status: status, TaskState: snapshotPtr(state)})
@@ -762,10 +802,13 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 		for i, tc := range response.ToolCalls {
 			result := results[i]
 			state.RecordTool(tc.Name, result.Success)
+			content := truncateToolResult(result.Content)
+			content = session.ScrubContent(content)
+			content = session.FenceToolResult(tc.Name, content)
 			messages = append(messages, providers.Message{
 				Role:       providers.ToolRole,
 				Name:       tc.Name,
-				Content:    truncateToolResult(result.Content),
+				Content:    content,
 				ToolCallID: tc.ID,
 			})
 		}

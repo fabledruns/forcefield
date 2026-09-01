@@ -216,9 +216,12 @@ func (p *permissionPrompt) formatToolBlock() string {
 		var val string
 		switch s := v.(type) {
 		case string:
-			// Truncate very long strings (e.g. write_file content)
+			origLen := len(s)
+			truncated := false
+			// Truncate very long strings (e.g. write_file content) but make the truncation explicit
 			if len(s) > 300 {
-				s = s[:300] + "…"
+				s = s[:300] + fmt.Sprintf("… (%d bytes total, truncated)", origLen)
+				truncated = true
 			}
 			// Quote the string for clarity, but keep it readable
 			if strings.Contains(s, "\n") {
@@ -227,9 +230,16 @@ func (p *permissionPrompt) formatToolBlock() string {
 				if len(first) > 80 {
 					first = first[:80] + "…"
 				}
-				val = fmt.Sprintf("%q…", first)
+				if truncated {
+					val = fmt.Sprintf("%q… (%d bytes total, truncated)", first, origLen)
+				} else {
+					val = fmt.Sprintf("%q… (%d more lines hidden)", first, strings.Count(s, "\n"))
+				}
 			} else {
 				val = fmt.Sprintf("%q", s)
+				if truncated {
+					// already includes truncation note
+				}
 			}
 		default:
 			raw, err := json.Marshal(v)

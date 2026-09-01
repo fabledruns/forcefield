@@ -147,13 +147,27 @@ func backoffDelay(p retryPolicy, retry int) time.Duration {
 // memory and error messages; API error payloads are tiny.
 const maxErrorBodyBytes = 8 * 1024
 
+// isRetryableServerError reports whether a 5xx status is transient and
+// safe to retry. 501 Not Implemented is not retryable (the server will
+// never implement it). All other 5xx are treated as transient.
+func isRetryableServerError(status int) bool {
+	if status < 500 || status >= 600 {
+		return false
+	}
+	if status == http.StatusNotImplemented {
+		return false
+	}
+	return true
+}
+
 // doWithRetry performs one provider HTTP request, retrying transient 429
-// responses according to policy. buildRequest runs once per attempt
-// because request bodies are single-use. Only the connection/status phase
-// is covered: once a 200 body is handed back, mid-stream errors stay with
-// the caller, since replaying a partially consumed stream would duplicate
-// output. Transport-level errors are fatal, wrapped by wrapTransport when
-// provided, matching the pre-retry behavior of both providers.
+// and 5xx responses plus transport timeouts/connections according to
+// policy. buildRequest runs once per attempt because request bodies are
+// single-use. Only the connection/status phase is covered: once a 200 body
+// is handed back, mid-stream errors stay with the caller, since replaying a
+// partially consumed stream would duplicate output.
+// Auth errors (401/403), invalid requests (4xx except 429), quota
+// exhaustion, and cancelled contexts are never retried.
 func doWithRetry(
 	ctx context.Context,
 	client *http.Client,
@@ -163,6 +177,9 @@ func doWithRetry(
 	wrapTransport func(error) error,
 ) (*http.Response, error) {
 	for retry := 0; ; retry++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		req, err := buildRequest()
 		if err != nil {
 			return nil, err
@@ -173,7 +190,27 @@ func doWithRetry(
 			if wrapTransport != nil {
 				err = wrapTransport(err)
 			}
-			return nil, err
+			// Never retry cancelled contexts.
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			kind := Classify(err)
+			if kind != ErrKindTimeout && kind != ErrKindConnection {
+				return nil, err
+			}
+			if retry >= p.MaxRetries {
+				return nil, err
+			}
+			delay := backoffDelay(p, retry)
+			select {
+			case <-time.After(delay):
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
 
 		if resp.StatusCode == http.StatusOK {
@@ -195,36 +232,57 @@ func doWithRetry(
 			Retries:    retry,
 		}
 
-		if resp.StatusCode != http.StatusTooManyRequests {
-			return nil, statusErr
-		}
-		statusErr.RateLimited = true
-
-		// Quota/billing exhaustion looks like a 429 but waiting can't fix
-		// it; fail immediately instead of burning the attempt budget.
-		if quotaExhausted(string(body)) {
-			statusErr.NonRetryable = true
-			statusErr.Kind = ErrKindQuota
-			return nil, statusErr
-		}
-
-		if retry >= p.MaxRetries {
-			return nil, statusErr
-		}
-
-		delay := backoffDelay(p, retry)
-		if hasHint {
-			delay = hint
-			if delay > p.MaxRetryAfter {
-				delay = p.MaxRetryAfter
+		// 429 handling (preserve existing bounded jitter + Retry-After + quota check).
+		if resp.StatusCode == http.StatusTooManyRequests {
+			statusErr.RateLimited = true
+			// Quota/billing exhaustion looks like a 429 but waiting can't fix
+			// it; fail immediately instead of burning the attempt budget.
+			if quotaExhausted(string(body)) {
+				statusErr.NonRetryable = true
+				statusErr.Kind = ErrKindQuota
+				return nil, statusErr
+			}
+			if retry >= p.MaxRetries {
+				return nil, statusErr
+			}
+			delay := backoffDelay(p, retry)
+			if hasHint {
+				delay = hint
+				if delay > p.MaxRetryAfter {
+					delay = p.MaxRetryAfter
+				}
+			}
+			select {
+			case <-time.After(delay):
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
 			}
 		}
 
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		// Transient 5xx: retry with same bounded backoff.
+		if isRetryableServerError(resp.StatusCode) {
+			if retry >= p.MaxRetries {
+				return nil, statusErr
+			}
+			delay := backoffDelay(p, retry)
+			if hasHint {
+				delay = hint
+				if delay > p.MaxRetryAfter {
+					delay = p.MaxRetryAfter
+				}
+			}
+			select {
+			case <-time.After(delay):
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
+
+		// Non-retryable status (401/403 auth, 400 invalid, 404 not found,
+		// 501 not implemented, quota already handled).
+		return nil, statusErr
 	}
 }
 

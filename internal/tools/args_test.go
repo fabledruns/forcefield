@@ -27,22 +27,31 @@ func TestStringArg_WrongType(t *testing.T) {
 }
 
 func TestOptionalStringArg_Present(t *testing.T) {
-	got := OptionalStringArg(map[string]any{"path": "here"}, "path", "default")
+	got, err := OptionalStringArg(map[string]any{"path": "here"}, "path", "default")
+	if err != nil {
+		t.Fatalf("OptionalStringArg() unexpected error: %v", err)
+	}
 	if got != "here" {
 		t.Fatalf("OptionalStringArg() = %q, want %q", got, "here")
 	}
 }
 
 func TestOptionalStringArg_Missing(t *testing.T) {
-	got := OptionalStringArg(map[string]any{}, "path", "default")
+	got, err := OptionalStringArg(map[string]any{}, "path", "default")
+	if err != nil {
+		t.Fatalf("OptionalStringArg() unexpected error: %v", err)
+	}
 	if got != "default" {
 		t.Fatalf("OptionalStringArg() = %q, want %q", got, "default")
 	}
 }
 
-func TestOptionalStringArg_WrongTypeFallsBackToDefault(t *testing.T) {
-	got := OptionalStringArg(map[string]any{"path": 42}, "path", "default")
-	if got != "default" {
-		t.Fatalf("OptionalStringArg() = %q, want %q", got, "default")
+func TestOptionalStringArg_WrongTypeReturnsError(t *testing.T) {
+	_, err := OptionalStringArg(map[string]any{"path": 42}, "path", "default")
+	if err == nil {
+		t.Fatal("OptionalStringArg() with wrong type = nil error, want ArgumentError")
+	}
+	if _, ok := err.(*ArgumentError); !ok {
+		t.Fatalf("error type = %T, want *ArgumentError", err)
 	}
 }

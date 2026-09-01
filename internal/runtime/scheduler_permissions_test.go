@@ -107,8 +107,22 @@ func TestScheduler_AskAlwaysAllowPersists(t *testing.T) {
 	if results[0].IsError {
 		t.Fatalf("expected always-allow to execute, got %#v", results[0])
 	}
-	if got := perms.Check("shell"); got != permissions.Allow {
-		t.Errorf("Check(shell) after always-allow = %v, want Allow (persisted)", got)
+	// Always allow is now session-scoped, not persisted globally.
+	if got := perms.Check("shell"); got != permissions.Ask {
+		t.Errorf("Check(shell) after always-allow = %v, want Ask (session-scoped, not persisted)", got)
+	}
+	// Second call should be allowed via session without asking again
+	called := false
+	s.asker = permissions.AskerFunc(func(ctx context.Context, req permissions.Request) (permissions.Prompt, error) {
+		called = true
+		return permissions.PromptDenyOnce, nil
+	})
+	results = s.Run(context.Background(), []providers.ToolCall{{ID: "2", Name: "shell"}}, func(Event) bool { return true })
+	if results[0].IsError {
+		t.Fatalf("expected session-scoped allow to persist for second call, got %#v", results[0])
+	}
+	if called {
+		t.Error("asker should not be called for session-scoped allow")
 	}
 }
 
@@ -123,19 +137,22 @@ func TestScheduler_AskAlwaysDenyPersistsAndSkipsFutureAsk(t *testing.T) {
 	})
 	s := newScheduler(manager, perms, asker, SchedulerConfig{MaxConcurrency: 1, MaxRetries: 0, BaseBackoff: time.Millisecond})
 
-	// First call: asked, denied, and persisted.
+	// First call: asked, denied, and session-scoped.
 	results := s.Run(context.Background(), []providers.ToolCall{{ID: "1", Name: "shell"}}, func(Event) bool { return true })
 	if !results[0].IsError {
 		t.Fatalf("expected always-deny to deny the call, got %#v", results[0])
 	}
-	// Second call: should be denied straight from the persisted rule,
-	// without prompting again.
+	// Second call: should be denied from session-scoped rule without prompting again.
 	results = s.Run(context.Background(), []providers.ToolCall{{ID: "2", Name: "shell"}}, func(Event) bool { return true })
 	if !results[0].IsError {
-		t.Fatalf("expected persisted deny to apply, got %#v", results[0])
+		t.Fatalf("expected session deny to apply, got %#v", results[0])
 	}
 	if asked != 1 {
-		t.Errorf("asker invoked %d times, want 1 (second call should use persisted rule)", asked)
+		t.Errorf("asker invoked %d times, want 1 (second call should use session rule)", asked)
+	}
+	// Global store should not have been updated (session-scoped)
+	if got := perms.Check("shell"); got != permissions.Ask {
+		t.Errorf("global Check(shell) = %v, want Ask (session-scoped, not persisted)", got)
 	}
 }
 

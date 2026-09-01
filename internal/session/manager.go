@@ -64,6 +64,20 @@ func (s *Session) Save() error {
 		return fmt.Errorf("save session: invalid session id %q", s.ID)
 	}
 
+	// Save original state so a write failure (disk-full, permission) does not
+	// leave the in-memory session diverged from the file on disk. The file
+	// remains the old valid version, and the in-memory session is restored
+	// to that same version on failure.
+	origMessages := s.Messages
+	origUpdatedAt := s.UpdatedAt
+	success := false
+	defer func() {
+		if !success {
+			s.Messages = origMessages
+			s.UpdatedAt = origUpdatedAt
+		}
+	}()
+	s.compactIfNeeded()
 	s.UpdatedAt = time.Now()
 
 	dir := filepath.Join(".", filepath.FromSlash(sessionsDir))
@@ -118,6 +132,7 @@ func (s *Session) Save() error {
 	if err := replaceFile(tmpName, path); err != nil {
 		return fmt.Errorf("replace session file %s: %w", path, err)
 	}
+	success = true
 	return nil
 }
 
@@ -149,6 +164,7 @@ func replaceFile(src, dst string) error {
 
 // AddMessage appends a message and updates UpdatedAt.
 func (s *Session) AddMessage(role, content string) {
+	content = ScrubContent(content)
 	s.Messages = append(s.Messages, Message{
 		Role:    role,
 		Content: content,
@@ -156,6 +172,7 @@ func (s *Session) AddMessage(role, content string) {
 	})
 
 	s.UpdatedAt = time.Now()
+	s.compactIfNeeded()
 }
 
 // Load reads a session by ID.

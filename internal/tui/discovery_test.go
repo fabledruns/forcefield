@@ -151,6 +151,7 @@ var waitMsgResult tea.Msg
 
 func TestModelPickerFailureKeepsModelsAndShowsStatus(t *testing.T) {
 	m, msgs, _ := discoveryChatModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "0")
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprint(w, `{"error":{"message":"exploded"}}`)
 	})

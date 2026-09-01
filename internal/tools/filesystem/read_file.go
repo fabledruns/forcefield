@@ -5,6 +5,7 @@ package filesystem
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	"forcefield/internal/sandbox"
@@ -61,7 +62,26 @@ func (r ReadFile) Execute(_ context.Context, args map[string]any) (tools.Result,
 		resolved = rp
 	}
 
-	info, err := os.Stat(resolved)
+	// TOCTOU mitigation in WSL mode: open with O_NOFOLLOW where available
+	// so a symlink is not followed, then fstat the open descriptor. This
+	// narrows the Stat→Read window. In native mode (unrestricted) we use
+	// plain Open to preserve historical symlink-following behavior.
+	var f *os.File
+	if r.policy.Mode == sandbox.ModeWSL {
+		f, err = openNoFollow(resolved)
+		if err != nil {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
+		}
+		defer f.Close()
+	} else {
+		f, err = os.Open(resolved)
+		if err != nil {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
+		}
+		defer f.Close()
+	}
+
+	info, err := f.Stat()
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
 	}
@@ -74,10 +94,24 @@ func (r ReadFile) Execute(_ context.Context, args map[string]any) (tools.Result,
 		)}, nil
 	}
 
-	data, err := os.ReadFile(resolved)
+	data, err := readLimited(f, maxReadSize)
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
 	}
+	if int64(len(data)) > maxReadSize {
+		return tools.Result{IsError: true, Content: fmt.Sprintf(
+			"cannot read %s: file exceeds %d byte limit during read", path, maxReadSize,
+		)}, nil
+	}
 
 	return tools.Result{Content: string(data)}, nil
+}
+
+func readLimited(f *os.File, limit int64) ([]byte, error) {
+	// Read up to limit+1 to detect overflow
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }

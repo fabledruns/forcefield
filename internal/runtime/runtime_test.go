@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -130,8 +131,11 @@ func TestStreamChatExecutesToolsAndContinuesGeneration(t *testing.T) {
 	if got := continuedMessages[len(continuedMessages)-2]; got.Role != providers.AssistantRole || len(got.ToolCalls) != 1 || got.ToolCalls[0].ID != "call-1" {
 		t.Errorf("assistant tool-call message = %#v, want tool call with its ID", got)
 	}
-	if got := continuedMessages[len(continuedMessages)-1]; got.Role != providers.ToolRole || got.ToolCallID != "call-1" || got.Content != "tool output" {
-		t.Errorf("tool result message = %#v, want matching tool result", got)
+	if got := continuedMessages[len(continuedMessages)-1]; got.Role != providers.ToolRole || got.ToolCallID != "call-1" || !strings.Contains(got.Content, "tool output") {
+		t.Errorf("tool result message = %#v, want fenced tool output containing original", got)
+	}
+	if got := continuedMessages[len(continuedMessages)-1]; !strings.Contains(got.Content, "<tool_result") {
+		t.Errorf("tool result should be fenced, got %q", got.Content)
 	}
 }
 

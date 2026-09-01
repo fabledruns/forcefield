@@ -70,6 +70,27 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 		}
+		// TOCTOU mitigation: re-validate after MkdirAll. A concurrent
+		// writer could have created a symlink between the initial check
+		// and the directory creation.
+		if w.policy.Mode == sandbox.ModeWSL {
+			if _, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, resolved); err != nil {
+				return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+			}
+			if realDir, err := filepath.EvalSymlinks(filepath.Dir(resolved)); err == nil {
+				if _, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, realDir); err != nil {
+					return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+				}
+			}
+		}
+	}
+
+	// If the target already exists and is a symlink, refuse. This is a
+	// mitigation; a full fix would use openat(O_NOFOLLOW) for the write.
+	if info, err := os.Lstat(resolved); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: path is a symlink", path)}, nil
+		}
 	}
 
 	// Preserve existing file mode when overwriting; otherwise default to 0600.
@@ -80,8 +101,17 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
 
-	if err := os.WriteFile(resolved, []byte(content), targetPerm); err != nil {
-		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+	// Use O_NOFOLLOW where available so a symlink swap between the Lstat
+	// and the write is not followed. In native mode preserve historical
+	// behavior (follow symlinks).
+	var writeErr error
+	if w.policy.Mode == sandbox.ModeWSL {
+		writeErr = writeFileNoFollow(resolved, []byte(content), targetPerm)
+	} else {
+		writeErr = os.WriteFile(resolved, []byte(content), targetPerm)
+	}
+	if writeErr != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, writeErr)}, nil
 	}
 	// Ensure restrictive permissions even if umask is permissive.
 	_ = os.Chmod(resolved, targetPerm)

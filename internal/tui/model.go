@@ -331,21 +331,50 @@ func sessionEntries(sess *session.Session) []chatEntry {
 	entries := make([]chatEntry, 0, len(sess.Messages))
 
 	for _, msg := range sess.Messages {
-		var entryRole role
-
 		switch msg.Role {
 		case "user":
-			entryRole = roleUser
+			entries = append(entries, chatEntry{
+				Role:    roleUser,
+				Content: msg.Content,
+			})
 		case "assistant":
-			entryRole = roleAssistant
+			// Assistant messages may carry text, tool calls, or both.
+			// Text is rendered as an assistant bubble; tool calls are
+			// persisted for provider replay and are rendered via their
+			// corresponding tool result entries (role=="tool") below, so we
+			// don't duplicate them here. An assistant message with only
+			// tool calls and no text produces no visible bubble.
+			if msg.Content != "" {
+				entries = append(entries, chatEntry{
+					Role:    roleAssistant,
+					Content: msg.Content,
+				})
+			}
+		case "tool":
+			// Tool history was previously dropped, losing audit trail after
+			// /resume. Render it as a finished, collapsed activity block
+			// so the transcript remains useful for debugging.
+			rec := &toolRecord{
+				name:     msg.Name,
+				content:  msg.Content,
+				finished: true,
+				// Default to finish; the content itself will indicate failure
+				// if the tool errored. This keeps the block collapsed and
+				// readable without needing exit code/duration metadata.
+				eventType: runtime.EventToolFinish,
+			}
+			summary := msg.Name + ": " + shortResult(msg.Content)
+			if summary == ": " {
+				summary = msg.Name
+			}
+			entries = append(entries, chatEntry{
+				Role:    roleActivity,
+				Content: summary,
+				Tool:    rec,
+			})
 		default:
 			continue
 		}
-
-		entries = append(entries, chatEntry{
-			Role:    entryRole,
-			Content: msg.Content,
-		})
 	}
 
 	return entries
