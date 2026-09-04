@@ -301,10 +301,15 @@ var anthropicThinkingModels = map[string]bool{
 	"claude-sonnet-4-5": true,
 	"claude-haiku-4-5":  true,
 	// Newer Claude models served direct and via OpenCode Zen, all on the
-	// Anthropic Messages protocol with budget thinking.
-	"claude-opus-4-5": true,
-	"claude-sonnet-5": true,
-	"claude-opus-5":   true,
+	// Anthropic Messages protocol with budget thinking. Fable and
+	// third-party models on the same protocol stay conservative.
+	"claude-opus-4-5":   true,
+	"claude-opus-4-6":   true,
+	"claude-opus-4-7":   true,
+	"claude-opus-4-8":   true,
+	"claude-sonnet-4-6": true,
+	"claude-sonnet-5":   true,
+	"claude-opus-5":     true,
 }
 
 var geminiThinkingModels = map[string]bool{

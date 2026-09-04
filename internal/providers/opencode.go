@@ -52,31 +52,74 @@ type opencodeModel struct {
 	Protocol    string
 }
 
-// zenModels is the curated OpenCode Zen catalog: non-deprecated,
-// coding-relevant models from the published endpoint table. Gemini models
-// are intentionally absent — Zen serves them on per-model native
-// endpoints (/v1/models/<id>) that no existing Forcefield transport
-// speaks; see docs/Providers.md.
+// zenModels is the OpenCode Zen catalog, covering the published endpoint
+// table (https://opencode.ai/docs/zen) as of implementation time. Every ID
+// below is docs-sourced; nothing is invented. Gemini models are
+// intentionally absent — Zen serves them on per-model native endpoints
+// (/v1/models/<id>) that no existing Forcefield transport speaks; see
+// docs/Providers.md.
 var zenModels = []opencodeModel{
 	// Responses API.
+	{ID: "gpt-5.6-sol", Name: "GPT 5.6 Sol", Description: "OpenAI flagship via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.6-terra", Name: "GPT 5.6 Terra", Description: "OpenAI reasoning model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.6-luna", Name: "GPT 5.6 Luna", Description: "Efficient OpenAI model via Zen.", Protocol: opencodeResponses},
 	{ID: "gpt-5.5", Name: "GPT 5.5", Description: "OpenAI flagship reasoning model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.5-pro", Name: "GPT 5.5 Pro", Description: "Largest OpenAI model via Zen.", Protocol: opencodeResponses},
 	{ID: "gpt-5.4", Name: "GPT 5.4", Description: "OpenAI reasoning model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.4-pro", Name: "GPT 5.4 Pro", Description: "Large OpenAI model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.4-mini", Name: "GPT 5.4 Mini", Description: "Efficient OpenAI model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.4-nano", Name: "GPT 5.4 Nano", Description: "Fast OpenAI model via Zen.", Protocol: opencodeResponses},
 	{ID: "gpt-5.3-codex", Name: "GPT 5.3 Codex", Description: "OpenAI coding model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.3-codex-spark", Name: "GPT 5.3 Codex Spark", Description: "Fast OpenAI coding model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.2", Name: "GPT 5.2", Description: "OpenAI reasoning model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.2-codex", Name: "GPT 5.2 Codex", Description: "OpenAI coding model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.1", Name: "GPT 5.1", Description: "OpenAI reasoning model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.1-codex", Name: "GPT 5.1 Codex", Description: "OpenAI coding model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.1-codex-max", Name: "GPT 5.1 Codex Max", Description: "Large OpenAI coding model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5.1-codex-mini", Name: "GPT 5.1 Codex Mini", Description: "Efficient OpenAI coding model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5", Name: "GPT 5", Description: "OpenAI reasoning model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5-codex", Name: "GPT 5 Codex", Description: "OpenAI coding model via Zen.", Protocol: opencodeResponses},
+	{ID: "gpt-5-nano", Name: "GPT 5 Nano", Description: "Fast OpenAI model via Zen.", Protocol: opencodeResponses},
 	{ID: "grok-4.6", Name: "Grok 4.6", Description: "xAI reasoning model via Zen.", Protocol: opencodeResponses},
+	{ID: "grok-4.5", Name: "Grok 4.5", Description: "xAI reasoning model via Zen.", Protocol: opencodeResponses},
+	{ID: "grok-build-0.1", Name: "Grok Build 0.1", Description: "xAI coding model via Zen.", Protocol: opencodeResponses},
 	{ID: "muse-spark-1.2", Name: "Muse Spark 1.2", Description: "Meta coding model via Zen.", Protocol: opencodeResponses},
+	{ID: "muse-spark-1.3-contributor-free", Name: "Muse Spark 1.3 Contributor Free", Description: "Free Meta model via Zen (limited time; trains on prompts).", Protocol: opencodeResponses},
+	{ID: "muse-spark-1.2-contributor-free", Name: "Muse Spark 1.2 Contributor Free", Description: "Free Meta model via Zen (limited time; trains on prompts).", Protocol: opencodeResponses},
 	// Anthropic Messages API.
-	{ID: "claude-opus-4-5", Name: "Claude Opus 4.5", Description: "Most capable Claude via Zen.", Protocol: opencodeMessages},
+	{ID: "claude-fable-5-1", Name: "Claude Fable 5.1", Description: "Latest Claude via Zen.", Protocol: opencodeMessages},
+	{ID: "claude-fable-5", Name: "Claude Fable 5", Description: "Claude model via Zen.", Protocol: opencodeMessages},
+	{ID: "claude-opus-5", Name: "Claude Opus 5", Description: "Most capable Claude via Zen.", Protocol: opencodeMessages},
+	{ID: "claude-opus-4-8", Name: "Claude Opus 4.8", Description: "Claude reasoning model via Zen.", Protocol: opencodeMessages},
+	{ID: "claude-opus-4-7", Name: "Claude Opus 4.7", Description: "Claude reasoning model via Zen.", Protocol: opencodeMessages},
+	{ID: "claude-opus-4-6", Name: "Claude Opus 4.6", Description: "Claude reasoning model via Zen.", Protocol: opencodeMessages},
+	{ID: "claude-opus-4-5", Name: "Claude Opus 4.5", Description: "Claude reasoning model via Zen.", Protocol: opencodeMessages},
+	{ID: "claude-sonnet-5", Name: "Claude Sonnet 5", Description: "Balanced Claude coding model via Zen.", Protocol: opencodeMessages},
+	{ID: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6", Description: "Claude coding model via Zen.", Protocol: opencodeMessages},
 	{ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5", Description: "Balanced Claude coding model via Zen.", Protocol: opencodeMessages},
 	{ID: "claude-haiku-4-5", Name: "Claude Haiku 4.5", Description: "Fast Claude model via Zen.", Protocol: opencodeMessages},
 	{ID: "qwen3.7-max", Name: "Qwen3.7 Max", Description: "Qwen flagship via Zen (Anthropic protocol).", Protocol: opencodeMessages},
+	{ID: "qwen3.7-plus", Name: "Qwen3.7 Plus", Description: "Efficient Qwen model via Zen (Anthropic protocol).", Protocol: opencodeMessages},
+	{ID: "qwen3.6-plus", Name: "Qwen3.6 Plus", Description: "Qwen model via Zen (Anthropic protocol).", Protocol: opencodeMessages},
+	{ID: "qwen3.5-plus", Name: "Qwen3.5 Plus", Description: "Efficient Qwen model via Zen (Anthropic protocol).", Protocol: opencodeMessages},
 	// Chat Completions API.
 	{ID: "glm-5.2", Name: "GLM 5.2", Description: "Zhipu flagship for agentic coding via Zen.", Protocol: opencodeChatCompletions},
+	{ID: "glm-5.1", Name: "GLM 5.1", Description: "Zhipu reasoning model via Zen.", Protocol: opencodeChatCompletions},
+	{ID: "glm-5", Name: "GLM 5", Description: "Zhipu model via Zen.", Protocol: opencodeChatCompletions},
 	{ID: "kimi-k3", Name: "Kimi K3", Description: "Moonshot reasoning model via Zen.", Protocol: opencodeChatCompletions},
 	{ID: "kimi-k2.7-code", Name: "Kimi K2.7 Code", Description: "Moonshot coding model via Zen.", Protocol: opencodeChatCompletions},
+	{ID: "kimi-k2.6", Name: "Kimi K2.6", Description: "Moonshot model via Zen.", Protocol: opencodeChatCompletions},
+	{ID: "kimi-k2.5", Name: "Kimi K2.5", Description: "Moonshot model via Zen.", Protocol: opencodeChatCompletions},
 	{ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", Description: "DeepSeek flagship via Zen.", Protocol: opencodeChatCompletions},
 	{ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Description: "Fast DeepSeek model via Zen.", Protocol: opencodeChatCompletions},
 	{ID: "minimax-m3", Name: "MiniMax M3", Description: "MiniMax reasoning model via Zen (Chat Completions on Zen).", Protocol: opencodeChatCompletions},
+	{ID: "minimax-m2.7", Name: "MiniMax M2.7", Description: "MiniMax model via Zen.", Protocol: opencodeChatCompletions},
+	{ID: "minimax-m2.5", Name: "MiniMax M2.5", Description: "MiniMax model via Zen.", Protocol: opencodeChatCompletions},
 	{ID: "big-pickle", Name: "Big Pickle", Description: "Free stealth model via Zen (limited time).", Protocol: opencodeChatCompletions},
+	{ID: "mimo-v2.5-free", Name: "MiMo-V2.5 Free", Description: "Free Xiaomi model via Zen (limited time).", Protocol: opencodeChatCompletions},
+	{ID: "ling-3.0-flash-fin-free", Name: "Ling 3.0 Flash Fin Free", Description: "Free finance model via Zen (limited time).", Protocol: opencodeChatCompletions},
+	{ID: "nemotron-3-ultra-free", Name: "Nemotron 3 Ultra Free", Description: "Free NVIDIA model via Zen (trial terms apply).", Protocol: opencodeChatCompletions},
+	{ID: "nemotron-3.5-lightning-free", Name: "Nemotron 3.5 Lightning Free", Description: "Free NVIDIA model via Zen (trial terms apply).", Protocol: opencodeChatCompletions},
 }
 
 // goModels is the curated OpenCode Go catalog from the published endpoint
@@ -93,17 +136,28 @@ var goModels = []opencodeModel{
 	{ID: "minimax-m3", Name: "MiniMax M3", Description: "MiniMax reasoning model via Go (Anthropic protocol on Go).", Protocol: opencodeMessages},
 	{ID: "minimax-m2.7", Name: "MiniMax M2.7", Description: "MiniMax model via Go.", Protocol: opencodeMessages},
 	{ID: "qwen3.8-max", Name: "Qwen3.8 Max", Description: "Qwen flagship via Go.", Protocol: opencodeMessages},
+	{ID: "qwen3.8-flash", Name: "Qwen3.8 Flash", Description: "Efficient Qwen model via Go.", Protocol: opencodeMessages},
 	{ID: "qwen3.7-max", Name: "Qwen3.7 Max", Description: "Qwen flagship via Go.", Protocol: opencodeMessages},
 	{ID: "qwen3.7-plus", Name: "Qwen3.7 Plus", Description: "Efficient Qwen model via Go.", Protocol: opencodeMessages},
-	// Chat Completions API.
+	{ID: "qwen3.6-plus", Name: "Qwen3.6 Plus", Description: "Qwen model via Go.", Protocol: opencodeMessages},
+	// Chat Completions API. The vision-exp DeepSeek variant is excluded:
+	// Forcefield messages carry text only, so image-converted tokens
+	// cannot be verified end to end.
+	{ID: "glm-5.3-flash", Name: "GLM-5.3-Flash", Description: "Fast Zhipu model via Go.", Protocol: opencodeChatCompletions},
 	{ID: "glm-5.3", Name: "GLM-5.3", Description: "Zhipu flagship via Go.", Protocol: opencodeChatCompletions},
 	{ID: "glm-5.2", Name: "GLM-5.2", Description: "Zhipu flagship for agentic coding via Go.", Protocol: opencodeChatCompletions},
+	{ID: "glm-5.1", Name: "GLM-5.1", Description: "Zhipu reasoning model via Go.", Protocol: opencodeChatCompletions},
 	{ID: "kimi-k3", Name: "Kimi K3", Description: "Moonshot reasoning model via Go.", Protocol: opencodeChatCompletions},
 	{ID: "kimi-k2.7-code", Name: "Kimi K2.7 Code", Description: "Moonshot coding model via Go.", Protocol: opencodeChatCompletions},
+	{ID: "kimi-k2.6", Name: "Kimi K2.6", Description: "Moonshot model via Go.", Protocol: opencodeChatCompletions},
+	{ID: "longcat-2.0", Name: "LongCat-2.0", Description: "Meituan coding model via Go.", Protocol: opencodeChatCompletions},
 	{ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", Description: "DeepSeek flagship via Go.", Protocol: opencodeChatCompletions},
 	{ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Description: "Fast DeepSeek model via Go.", Protocol: opencodeChatCompletions},
 	{ID: "mimo-v2.5", Name: "MiMo-V2.5", Description: "Efficient Xiaomi model via Go.", Protocol: opencodeChatCompletions},
-	{ID: "longcat-2.0", Name: "LongCat-2.0", Description: "Meituan coding model via Go.", Protocol: opencodeChatCompletions},
+	{ID: "mimo-v2.5-pro", Name: "MiMo-V2.5-Pro", Description: "Capable Xiaomi model via Go.", Protocol: opencodeChatCompletions},
+	{ID: "hy4-preview", Name: "Hy4 preview", Description: "Xiaomi preview model via Go.", Protocol: opencodeChatCompletions},
+	{ID: "hy3", Name: "Hy3", Description: "Efficient Xiaomi model via Go.", Protocol: opencodeChatCompletions},
+	{ID: "omen-alpha", Name: "Omen Alpha", Description: "Efficient model via Go.", Protocol: opencodeChatCompletions},
 }
 
 // opencodeTableForProvider returns the model table for an OpenCode
