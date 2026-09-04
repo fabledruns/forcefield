@@ -52,8 +52,13 @@ Behavior:
 4. Before each model turn, the runtime calls `BuildSystemPrompt`.
 5. The runtime places the result in a system message at the start of the message list.
 
+## Specialised Agents
+
+Forcefield supports multiple specialised agents (`coding, cyber, legal, docs, research, devops, general`). Each has its own `Definition` (name, description, system prompt, tool set, optional provider/model hints) and is held in an instance-scoped `Registry`. See [Agents](Agents.md) for the full registry, tool matrix, and selection.
+
 ## Design Notes
 
 - The agent does not load skill bodies. It only holds catalog text.
 - The model must call `load_skill` to read the full content of a skill.
 - You can replace the base system prompt (identity) in the configuration file without changing agent code. The operating contract still applies.
+- The operating contract is now shared across all specialised agents; domain identity lives in each `Definition.SystemPrompt`.

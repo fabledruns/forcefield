@@ -33,6 +33,19 @@ package config
 #nonEmpty: string & != ""
 #httpURL: string & =~ "^https?://.+"
 
+// AgentName lists the built-in specialised agents recognised by the registry.
+#AgentName: "coding" | "cyber" | "legal" | "docs" | "research" | "devops" | "general"
+
+// AgentConfig is the per-agent override block under agents:. Every field is
+// optional; only non-empty values replace the built-in definition.
+#AgentConfig: {
+	description?:   string
+	system_prompt?: string
+	tools?: [...string]
+	provider?: string
+	model?:    string
+}
+
 // ProviderEntry is one section under providers:. Every field is optional;
 // omitted fields fall back to the service's catalog defaults. Secrets are
 // never stored here - api_key_env names an environment variable or .env
@@ -70,6 +83,8 @@ package config
 		max_tool_calls?:           int & > 0
 		max_consecutive_failures?: int & > 0
 	}
+
+	agents?: [#AgentName]: #AgentConfig
 
 	permissions?: {
 		default?: #Permission

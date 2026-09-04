@@ -55,8 +55,11 @@ The entry point used by the rest of Forcefield.
 | `List`         | Lists registered tools.                          |
 | `Definitions`  | Returns definitions for the current model turn.  |
 | `Execute`      | Looks up a tool by name and runs it.             |
+| `Filtered`     | Returns a new manager exposing only named tools (same instances). |
 
 `Execute` treats a nil argument map as empty. Tools with no arguments can run without special handling by callers.
+
+`Filtered` rejects unknown or duplicate names. The runtime builds one full manager at startup, then derives a per-agent filtered view so the model only sees the active agent's tools and the scheduler fails closed (`tool not found`) on anything else. See [Agents](Agents.md).
 
 ## Built-in Tools
 

@@ -11,10 +11,11 @@ Slash commands control the chat session. Examples:
 - `/help` — list available commands
 - `/clear` — clear the chat transcript
 - `/exit` — end the session
+- `/agent` — list or switch the active specialised agent
 - `/model` — show or switch the active model
 - `/provider` — show or switch the active provider
 - `/sessions` — open the session picker
-- `/status` — show the active model, session size, and tools
+- `/status` — show the active agent, model, session size, and tools
 - `/tools` — list the tools available to the agent
 
 ## Core Interfaces
@@ -42,6 +43,8 @@ Commands act on the session through a small interface. The TUI is the production
 | `Quit`               | End the interactive session.                     |
 | `Model` / `SetModel` | Read or change the active model.                 |
 | `Provider` / `SetProvider` | Read or change the active provider.        |
+| `Agent` / `SetAgent` | Read or change the active specialised agent.     |
+| `Agents`             | List summaries for all known agents.             |
 | `OpenSessionPicker`  | Open the session selection UI.                   |
 | `OpenProviderPicker` | Open the provider selection UI.                  |
 | `OpenModelPicker`    | Open the model selection UI.                     |
@@ -78,8 +81,9 @@ Commands act on the session through a small interface. The TUI is the production
 | `exit`       | `quit`  | `/exit`                  | End the chat session.                       |
 | `model`      | —       | `/model [name]`          | Show or switch the active model.            |
 | `provider`   | —       | `/provider [name]`       | Show or switch the active provider.         |
+| `agent`      | —       | `/agent [name]`          | List agents or switch the active agent.     |
 | `sessions`   | `s`     | `/sessions`              | Open the saved session picker.              |
-| `status`     | —       | `/status`                | Show provider, model, session size, tools.  |
+| `status`     | —       | `/status`                | Show agent, provider, model, session size, tools. |
 | `tools`      | —       | `/tools`                 | List the tools available to the agent.      |
 | `skills`     | `skill` | `/skills [list|show <id>]` | List and inspect global skills.           |
 

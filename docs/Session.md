@@ -30,7 +30,10 @@ Old session files containing only `role`/`content`/`time` continue to load becau
 | `ID`        | `string`    | Unique session ID.                       |
 | `CreatedAt` | `time.Time` | Session creation time.                   |
 | `UpdatedAt` | `time.Time` | Last update time.                        |
+| `Agent`     | `string`    | Active specialised agent (`omitempty`).  |
 | `Messages`  | `[]Message` | Ordered message history.                 |
+
+Old session files without `agent` continue to load; callers treat `""` as `general`.
 
 ## Storage Location
 
@@ -124,7 +127,11 @@ Helpers that persist tool-call state with fidelity:
 | ------------------------ | --------------------------------------------- |
 | `ff` or `ff chat`        | Starts a new session.                         |
 | `ff --resume <id>`       | Loads an existing session by ID.              |
+| `ff --agent <name>`      | Overrides the session's stored agent.         |
 | `/sessions` in the TUI   | Lists saved sessions and opens a picker.      |
+| `/agent [name]` in TUI   | Lists agents or switches (persisted to session). |
+
+Switching sessions restores the target session's stored agent (fallback to `general` with a notice if unknown).
 
 ## Design Notes
 

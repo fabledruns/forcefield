@@ -94,8 +94,34 @@ A key found this way stays inside Forcefield: it is never written back into the 
 
 | Field           | Required | Description                                      |
 | --------------- | -------- | ------------------------------------------------ |
-| `name`          | No       | Display name of the default agent.               |
+| `name`          | No       | Display name of the default agent (`default` treated as `general`). |
 | `system_prompt` | No       | Agent identity. The operating contract is always appended by the agent package. |
+
+### `agents`
+
+Optional per-agent overrides for built-in specialised agents. Only non-empty fields replace the built-in definition. Unknown agent names are rejected.
+
+```yaml
+agents:
+  coding:
+    description: "Custom coding agent"
+    system_prompt: "You are a custom coding agent..."
+    tools: [read_file, write_file, list_files, pwd, shell]
+    provider: openai
+    model: gpt-4o-mini
+  legal:
+    system_prompt: "You are a careful legal assistant..."
+```
+
+| Field           | Description |
+| --------------- | ----------- |
+| `description`   | One-line summary for listings. |
+| `system_prompt` | Domain-specific identity (shared contract still appended). |
+| `tools`         | Explicit allow-list; unknown tools are rejected. |
+| `provider`      | Optional provider hint; applied via `SetProvider` path, in-memory only. |
+| `model`         | Optional model hint; applied via `SetModel`. |
+
+See [Agents](Agents.md) for the built-in list and tool matrix.
 
 ## Functions
 

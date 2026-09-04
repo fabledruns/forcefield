@@ -34,12 +34,25 @@ Starts the same interactive chat as bare `ff`.
 ff chat
 ```
 
+### `ff --agent <name>` / `ff chat --agent <name>`
+
+Selects a specialised agent (`coding, cyber, legal, docs, research, devops, general`).
+
+```bash
+ff --agent coding
+ff chat --agent cyber
+ff --resume <id> --agent legal
+```
+
+Precedence: `CLI --agent` > resumed session agent > configured default > `general`. When the flag overrides a resumed session's stored agent, the session is updated to the flagged agent.
+
 ### `ff run [task]`
 
 Runs one prompt through the runtime and prints the final response.
 
 ```bash
 ff run explain this repository
+ff run --agent legal "summarise this clause"
 ```
 
 The command joins all task arguments into one prompt string.

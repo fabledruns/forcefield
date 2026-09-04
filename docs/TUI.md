@@ -120,8 +120,10 @@ Through that interface, commands can:
 - print status messages
 - clear the transcript
 - quit the program
-- read or switch model and provider
+- read or switch model, provider, and specialised agent
 - open the session picker
+
+The header shows `provider · model · session(agent)` where the agent label reflects `runtime.CurrentAgent()`. `/agent [name]` switches agents: the active stream is cancelled first so the switch never happens mid-turn, the header updates only on success, and `session.Agent` is persisted. Switching sessions via `/sessions` also restores the target session's stored agent.
 
 Built-in commands are registered when the chat model is created.
 
