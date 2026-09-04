@@ -153,13 +153,13 @@ func (o *OpenAIResponses) wrapTransport(err error) error {
 // items and their results as function_call_output items, linked by the
 // API-issued call_id preserved in the internal ToolCall ID.
 type responseInputItem struct {
-	Type     string `json:"type,omitempty"`
-	Role     string `json:"role,omitempty"`
-	Content  string `json:"content,omitempty"`
-	CallID   string `json:"call_id,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Args     string `json:"arguments,omitempty"`
-	Output   string `json:"output,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+	CallID  string `json:"call_id,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Args    string `json:"arguments,omitempty"`
+	Output  string `json:"output,omitempty"`
 }
 
 type responseFunctionTool struct {
@@ -175,12 +175,12 @@ type responseReasoning struct {
 }
 
 type responseRequest struct {
-	Model     string              `json:"model"`
-	Input     []responseInputItem `json:"input"`
+	Model     string                 `json:"model"`
+	Input     []responseInputItem    `json:"input"`
 	Tools     []responseFunctionTool `json:"tools,omitempty"`
-	Stream    bool                `json:"stream"`
-	Store     bool                `json:"store"`
-	Reasoning *responseReasoning  `json:"reasoning,omitempty"`
+	Stream    bool                   `json:"stream"`
+	Store     bool                   `json:"store"`
+	Reasoning *responseReasoning     `json:"reasoning,omitempty"`
 }
 
 // responseStreamEvent is the relevant subset of a Responses SSE data
@@ -191,16 +191,16 @@ type responseStreamEvent struct {
 	Type string `json:"type"`
 
 	// Delta events carry one of these depending on type.
-	Delta    string `json:"delta"`
-	ItemID   string `json:"item_id"`
-	Item     *responseOutputItem `json:"item,omitempty"`
+	Delta  string              `json:"delta"`
+	ItemID string              `json:"item_id"`
+	Item   *responseOutputItem `json:"item,omitempty"`
 
 	// Terminal response envelope (response.completed/failed/incomplete).
 	Response *responseObject `json:"response,omitempty"`
 
 	// Error payloads (type "error" or embedded error object).
-	Error *responseErrorBody `json:"error,omitempty"`
-	Message string `json:"message,omitempty"`
+	Error   *responseErrorBody `json:"error,omitempty"`
+	Message string             `json:"message,omitempty"`
 }
 
 type responseOutputItem struct {
@@ -212,8 +212,7 @@ type responseOutputItem struct {
 }
 
 type responseObject struct {
-	Status           string `json:"status"`
-	IncompleteReason string `json:"-"`
+	Status            string `json:"status"`
 	IncompleteDetails *struct {
 		Reason string `json:"reason"`
 	} `json:"incomplete_details,omitempty"`
@@ -633,10 +632,10 @@ func toResponseInput(messages []Message) []responseInputItem {
 					args = []byte("{}")
 				}
 				out = append(out, responseInputItem{
-					Type:  "function_call",
+					Type:   "function_call",
 					CallID: tc.ID,
-					Name:  tc.Name,
-					Args:  string(args),
+					Name:   tc.Name,
+					Args:   string(args),
 				})
 			}
 		case ToolRole:
