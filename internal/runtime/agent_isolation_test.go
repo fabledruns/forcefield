@@ -21,7 +21,6 @@ func newAgentTestRuntime(t *testing.T, provider providers.ModelProvider) *Runtim
 	registerTestTools(t, full)
 
 	registry := agent.DefaultRegistry()
-	catalog := ""
 	memory := ""
 	cfg := &config.Config{
 		Model: config.Model{Provider: "ollama", Name: "test-model"},
@@ -33,7 +32,7 @@ func newAgentTestRuntime(t *testing.T, provider providers.ModelProvider) *Runtim
 	if err != nil {
 		t.Fatalf("filter general: %v", err)
 	}
-	a := agent.New(def.Name, def.SystemPrompt, catalog).WithProjectMemory(memory)
+	a := agent.New(def.Name, def.SystemPrompt, "").WithProjectMemory(memory)
 
 	rt := &Runtime{
 		cfg:               cfg,
@@ -43,7 +42,6 @@ func newAgentTestRuntime(t *testing.T, provider providers.ModelProvider) *Runtim
 		fullManager:       full,
 		agents:            registry,
 		activeAgent:       def.Name,
-		skillCatalog:      catalog,
 		projectMemoryText: memory,
 		scheduler:         newScheduler(filtered, nil, nil, DefaultSchedulerConfig),
 		discovery:         providers.NewDiscovery(providers.DefaultFactories()),
@@ -53,7 +51,7 @@ func newAgentTestRuntime(t *testing.T, provider providers.ModelProvider) *Runtim
 
 func registerTestTools(t *testing.T, m *tools.Manager) {
 	t.Helper()
-	names := []string{"read_file", "write_file", "list_files", "pwd", "shell", "load_skill", "update_task_state", "add_project_memory"}
+	names := []string{"read_file", "write_file", "list_files", "pwd", "shell", "search_files", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
 	for _, name := range names {
 		n := name
 		tool := &testAgentTool{name: n}
@@ -78,17 +76,17 @@ func (t *testAgentTool) Execute(_ context.Context, args map[string]any) (tools.R
 
 func TestAgent_ToolIsolationDefinitions(t *testing.T) {
 	rt := newAgentTestRuntime(t, &scriptedProvider{turns: [][]providers.StreamEvent{{{Done: true}}}})
-	// general has all 8
-	if len(rt.manager.Definitions()) != 8 {
-		t.Fatalf("general should have 8 tools, got %d", len(rt.manager.Definitions()))
+	// general has all 10
+	if len(rt.manager.Definitions()) != 10 {
+		t.Fatalf("general should have 10 tools, got %d", len(rt.manager.Definitions()))
 	}
 	if err := rt.SetAgent("legal"); err != nil {
 		t.Fatalf("SetAgent legal: %v", err)
 	}
-	// legal should have 6 (no shell, no write_file)
+	// legal should have 7 (no shell, no write_file, no secret_scan)
 	defs := rt.manager.Definitions()
-	if len(defs) != 6 {
-		t.Fatalf("legal should have 6 tools, got %d: %v", len(defs), defs)
+	if len(defs) != 7 {
+		t.Fatalf("legal should have 7 tools, got %d: %v", len(defs), defs)
 	}
 	for _, d := range defs {
 		if d.Name == "shell" || d.Name == "write_file" {
@@ -118,8 +116,8 @@ func TestAgent_ToolIsolationDefinitions(t *testing.T) {
 	if err := rt.SetAgent("coding"); err != nil {
 		t.Fatalf("SetAgent coding: %v", err)
 	}
-	if len(rt.manager.Definitions()) != 8 {
-		t.Fatalf("coding should have 8, got %d", len(rt.manager.Definitions()))
+	if len(rt.manager.Definitions()) != 10 {
+		t.Fatalf("coding should have 10, got %d", len(rt.manager.Definitions()))
 	}
 }
 
@@ -198,8 +196,8 @@ func TestAgent_ToolSummariesReflectFiltered(t *testing.T) {
 	rt := newAgentTestRuntime(t, &scriptedProvider{turns: [][]providers.StreamEvent{{{Done: true}}}})
 	_ = rt.SetAgent("research")
 	summaries := rt.ToolSummaries()
-	if len(summaries) != 6 {
-		t.Fatalf("research summaries len = %d, want 6", len(summaries))
+	if len(summaries) != 7 {
+		t.Fatalf("research summaries len = %d, want 7", len(summaries))
 	}
 	for _, s := range summaries {
 		if len(s) == 0 {

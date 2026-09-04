@@ -103,13 +103,19 @@ type SandboxWSL struct {
 	Network string `yaml:"network"`
 }
 
-// AgentConfig overrides a single built-in agent. All fields are optional;
-// only non-empty values replace the built-in. Unknown agent names are
-// rejected at validation.
+// AgentConfig overrides a single built-in agent. Scalar fields: only
+// non-empty values replace the built-in. List fields (Tools, Skills,
+// Constraints): nil (field omitted) keeps the built-in; non-nil replaces
+// (verified: yaml.v3 decodes an explicit `skills: []` as non-nil, so it
+// means "no skills"). Unknown agent names are rejected at validation.
+// Unknown skill IDs are NOT rejected here (the skill store is user-local
+// and unavailable to this package); the runtime warns and omits them.
 type AgentConfig struct {
 	Description  string   `yaml:"description,omitempty"`
 	SystemPrompt string   `yaml:"system_prompt,omitempty"`
 	Tools        []string `yaml:"tools,omitempty"`
+	Skills       []string `yaml:"skills,omitempty"`
+	Constraints  []string `yaml:"constraints,omitempty"`
 	Provider     string   `yaml:"provider,omitempty"`
 	Model        string   `yaml:"model,omitempty"`
 }
@@ -487,6 +493,25 @@ func validateAgents(agents map[string]AgentConfig) error {
 					return fmt.Errorf("agents.%s.tools: duplicate tool %q", name, t)
 				}
 				seen[t] = struct{}{}
+			}
+		}
+		if cfg.Skills != nil {
+			seen := make(map[string]struct{}, len(cfg.Skills))
+			for i, s := range cfg.Skills {
+				if strings.TrimSpace(s) == "" {
+					return fmt.Errorf("agents.%s.skills[%d] is empty", name, i)
+				}
+				if _, dup := seen[s]; dup {
+					return fmt.Errorf("agents.%s.skills: duplicate skill %q", name, s)
+				}
+				seen[s] = struct{}{}
+			}
+		}
+		if cfg.Constraints != nil {
+			for i, c := range cfg.Constraints {
+				if strings.TrimSpace(c) == "" {
+					return fmt.Errorf("agents.%s.constraints[%d] is empty", name, i)
+				}
 			}
 		}
 		if cfg.Provider != "" && strings.TrimSpace(cfg.Provider) == "" {
