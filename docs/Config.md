@@ -67,7 +67,7 @@ Each key defines one selectable provider. Every field is optional; omitted value
 
 | Field         | Description                                                                    |
 | ------------- | ------------------------------------------------------------------------------ |
-| `type`        | Wire protocol (`ollama`, `openai-compatible`, `anthropic`, `gemini`) or a known service id (`openai`, `xai`, `nvidia`, `lmstudio`, ...). A custom id can alias a service to inherit its defaults. |
+| `type`        | Wire protocol (`ollama`, `openai-compatible`, `openai-responses`, `anthropic`, `gemini`) or a known service id (`openai`, `xai`, `nvidia`, `lmstudio`, `opencode-zen`, `opencode-go`, ...). A custom id can alias a service to inherit its defaults. |
 | `base_url`    | API root. Overrides the service default. Required when the type has no default (e.g. a self-hosted OpenAI-compatible server). |
 | `api_key_env` | Environment variable (or `.env` file key) holding the API key. Defaults to the service's standard variable. |
 | `model`       | Optional default model recorded for this provider.                             |
@@ -84,7 +84,7 @@ Providers that can enumerate their models do so automatically (lazily, when a pi
 
 API keys never live in config.yaml - there is no field that could store them. Keys resolve per provider from:
 
-1. The process environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY`, `NVIDIA_API_KEY`, ...)
+1. The process environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY`, `NVIDIA_API_KEY`, `OPENCODE_API_KEY`, ...)
 2. `.env` in the current project directory
 3. `~/.forcefield/.env`
 
@@ -175,7 +175,23 @@ Permission values (`permissions.default` and every `permissions.tools.*`) must b
 
 ## API Keys
 
-Each provider names its key source through `api_key_env`; when unset, the service's standard variable applies (`OPENAI_API_KEY` for OpenAI, `ANTHROPIC_API_KEY` for Anthropic, `GEMINI_API_KEY` for Gemini, `NVIDIA_API_KEY` for NVIDIA NIM, and so on).
+Each provider names its key source through `api_key_env`; when unset, the service's standard variable applies (`OPENAI_API_KEY` for OpenAI, `ANTHROPIC_API_KEY` for Anthropic, `GEMINI_API_KEY` for Gemini, `NVIDIA_API_KEY` for NVIDIA NIM, `OPENCODE_API_KEY` for OpenCode Zen and OpenCode Go, and so on).
+
+### OpenCode Zen / Go examples
+
+```yaml
+model:
+  provider: opencode-zen
+  name: gpt-5.5
+```
+
+```yaml
+model:
+  provider: opencode-go
+  name: glm-5.3
+```
+
+Both services authenticate via `OPENCODE_API_KEY` (never stored in config.yaml). Each model is routed to its documented protocol automatically — Responses, Chat Completions, or Anthropic Messages — so `model.name` alone selects the transport. See [Providers](Providers.md) for the per-model routing tables and limitations.
 
 If the variable is unset, resolution also checks two `.env` files, in order:
 
