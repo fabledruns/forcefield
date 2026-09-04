@@ -74,8 +74,11 @@ var (
 	toolRunningStyle = lipgloss.NewStyle().
 				Foreground(colorAccent)
 
+	// Successful tool rows render in neutral gray: the outcome is
+	// carried by the ◈/✳ glyph, not by a bright status color that
+	// fights the Forcefield accent.
 	toolSuccessStyle = lipgloss.NewStyle().
-				Foreground(colorSuccess)
+				Foreground(colorMuted)
 
 	toolFailedStyle = lipgloss.NewStyle().
 			Foreground(colorError)

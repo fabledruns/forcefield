@@ -179,6 +179,44 @@ var Catalog = []Preset{
 			{Name: "Llama 3.3 70B Turbo", ID: "meta-llama/Llama-3.3-70B-Instruct-Turbo"},
 		},
 	},
+	{
+		ID:          "opencode-zen",
+		Name:        "OpenCode Zen",
+		Description: "Curated coding models via the OpenCode Zen gateway (pay as you go).",
+		Type:        "opencode-zen",
+		BaseURL:     "https://opencode.ai/zen/v1",
+		AuthEnvVar:  "OPENCODE_API_KEY",
+		Auth:        AuthRequired,
+		Scope:       ScopeCloud,
+		Models:      opencodeModelInfos(zenModels),
+	},
+	{
+		ID:          "opencode-go",
+		Name:        "OpenCode Go",
+		Description: "Curated open coding models via the OpenCode Go subscription.",
+		Type:        "opencode-go",
+		BaseURL:     "https://opencode.ai/zen/go/v1",
+		AuthEnvVar:  "OPENCODE_API_KEY",
+		Auth:        AuthRequired,
+		Scope:       ScopeCloud,
+		Models:      opencodeModelInfos(goModels),
+	},
+}
+
+// opencodeModelInfos derives catalog ModelInfo entries from an OpenCode
+// model table so the protocol shown for each model always matches the
+// table the router resolves at request time.
+func opencodeModelInfos(table []opencodeModel) []ModelInfo {
+	out := make([]ModelInfo, 0, len(table))
+	for _, m := range table {
+		out = append(out, ModelInfo{
+			Name:        m.Name,
+			ID:          m.ID,
+			Description: m.Description,
+			Protocol:    m.Protocol,
+		})
+	}
+	return out
 }
 
 // PresetByID looks up a catalog entry by provider ID.
@@ -220,13 +258,16 @@ func KnownTypes() []string {
 }
 
 // CapabilitiesFor reports what a given transport type supports by asking
-// its registered adapter. Unknown types report nothing.
+// its registered adapter. Unknown types report nothing. The probe model
+// is deliberately empty: construction must never depend on a real model
+// selection (multi-protocol routers resolve transports per model and
+// accept an empty model for capability reporting).
 func CapabilitiesFor(protocolType string) Capabilities {
 	spec := Spec{
 		ID:      "capability-probe",
 		Type:    protocolType,
 		BaseURL: "http://localhost:9",
-		Model:   "probe",
+		Model:   "",
 	}
 	p, err := DefaultFactories().Create(spec)
 	if err != nil {

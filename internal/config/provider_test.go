@@ -38,6 +38,44 @@ func TestResolveProviderUsesCatalogDefaults(t *testing.T) {
 	}
 }
 
+func TestResolveProviderOpenCodePresets(t *testing.T) {
+	isolateHome(t)
+	writeProvidersConfig(t, "model:\n  provider: opencode-zen\n  name: gpt-5.5\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	resolved, err := cfg.ResolveProvider("opencode-zen", cfg.Model.Name)
+	if err != nil {
+		t.Fatalf("ResolveProvider(opencode-zen) error = %v", err)
+	}
+	if resolved.Type != "opencode-zen" {
+		t.Errorf("type = %q, want the opencode-zen router type", resolved.Type)
+	}
+	if resolved.Label != "OpenCode Zen" || resolved.BaseURL != "https://opencode.ai/zen/v1" {
+		t.Errorf("label/base = %q/%q, want Zen catalog defaults", resolved.Label, resolved.BaseURL)
+	}
+	if !resolved.AuthRequired || resolved.AuthEnvVar != "OPENCODE_API_KEY" {
+		t.Errorf("auth = %v/%q, want required via OPENCODE_API_KEY", resolved.AuthRequired, resolved.AuthEnvVar)
+	}
+	if len(resolved.Models) == 0 {
+		t.Error("want catalog models for zen")
+	}
+	spec := resolved.Spec(cfg.Model.Name)
+	if spec.Model != "gpt-5.5" || spec.Type != "opencode-zen" {
+		t.Errorf("spec = %+v, want active model with router type", spec)
+	}
+
+	goResolved, err := cfg.ResolveProvider("opencode-go", "glm-5.3")
+	if err != nil {
+		t.Fatalf("ResolveProvider(opencode-go) error = %v", err)
+	}
+	if goResolved.Type != "opencode-go" || goResolved.BaseURL != "https://opencode.ai/zen/go/v1" {
+		t.Errorf("go resolved = %+v", goResolved)
+	}
+}
+
 func TestResolveProviderCustomEntryOverrides(t *testing.T) {
 	isolateHome(t)
 	body := `model:

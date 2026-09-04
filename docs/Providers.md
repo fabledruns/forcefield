@@ -122,6 +122,7 @@ The TUI contains no provider-specific logic: it consumes generic `providers.Mode
 | ----------- | --------------------------------- | ------------------------------------------------------------ |
 | Ollama      | `GET /api/tags`                   | Locally installed models; unavailable server is a soft failure. |
 | OpenAI-compatible | `GET {base_url}/models`     | One implementation for OpenAI, NVIDIA NIM, LM Studio, xAI, OpenRouter, Groq, Mistral, Together AI, and custom endpoints - auth and custom headers come from configuration. |
+| OpenAI Responses | `GET {base_url}/models`      | Same OpenAI list shape; used by OpenCode Zen/Go discovery. |
 | Anthropic   | `GET /v1/models`                  | Follows cursor pagination (`has_more` / `after_id`) to the last page. |
 | Gemini      | `GET /v1beta/models`              | Key rides the `x-goog-api-key` header, never the URL; IDs normalized (`models/` prefix stripped). |
 
@@ -146,14 +147,35 @@ Failures surface as a concise status line in the picker (built from the typed er
 
 ## Transports
 
-Forcefield ships four adapters, registered in a `FactoryRegistry` under these type names:
+Forcefield ships five adapters, registered in a `FactoryRegistry` under these type names:
 
 | Type                | Adapter             | Serves                                                              |
 | ------------------- | ------------------- | ------------------------------------------------------------------- |
 | `ollama`            | `OllamaProvider`    | Ollama's native `/api/chat` NDJSON protocol.                         |
 | `openai-compatible` | `OpenAICompatible`  | Any OpenAI Chat Completions server (see below).                      |
+| `openai-responses`  | `OpenAIResponses`   | Any OpenAI Responses API server (`POST {base}/responses`, stateless). |
 | `anthropic`         | `AnthropicProvider` | Anthropic's native Messages API.                                     |
 | `gemini`            | `GeminiProvider`    | Google's Generative Language API.                                    |
+
+Two more types exist as multi-protocol routers rather than transports (see below): `opencode-zen` and `opencode-go`.
+
+### OpenAI Responses
+
+The generic Responses transport powers OpenCode Zen/Go models served over `POST {base_url}/responses`, and any self-hosted Responses endpoint. Requests are stateless (`store: false`, full history every turn); function tools, parallel calls, usage, and reasoning summaries all map onto the shared `StreamEvent` vocabulary. Reasoning effort maps to `reasoning: {effort, summary: auto}`.
+
+### Multi-protocol gateways (OpenCode)
+
+OpenCode Zen (`https://opencode.ai/zen/v1`) and OpenCode Go (`https://opencode.ai/zen/go/v1`) each serve models over three protocols, chosen per model from OpenCode's published endpoint tables — never guessed:
+
+| Protocol | Zen path | Go path | Example models |
+| -------- | -------- | ------- | -------------- |
+| `openai-responses` | `/v1/responses` | `/go/v1/responses` | GPT 5.x, Grok 4.x, Muse Spark |
+| `openai-compatible` | `/v1/chat/completions` | `/go/v1/chat/completions` | GLM, Kimi, DeepSeek, MiniMax (Zen only) |
+| `anthropic` | `/v1/messages` | `/go/v1/messages` | Claude, Qwen, MiniMax (Go only) |
+
+`OpenCodeRouter` resolves the active model against a per-service table at construction and delegates the whole turn to the matching generic adapter, so unknown models fail fast with a list of known IDs instead of sending a request down the wrong protocol. Both services authenticate with `OPENCODE_API_KEY` (Bearer; `x-api-key` on the Messages path, matching Anthropic's convention). Model discovery uses each service's documented `GET /v1/models` in OpenAI list shape.
+
+Known limitations: Zen's per-model Gemini endpoints (`/v1/models/<id>`) need admin-native Gemini protocol support and are excluded from the catalog; wire model IDs are the bare IDs from OpenCode's tables (the `opencode/` prefix in OpenCode's own config is provider namespacing, not part of the API model name) — verify against a live key if requests 404.
 
 ### OpenAI-compatible
 
@@ -185,12 +207,12 @@ Transient 429s retry with exponential backoff capped by policy, honoring `Retry-
 
 `Catalog` describes every known service: display name, transport type, default base URL, authentication environment variable, local/cloud scope, and known models. The display registry used by pickers (`Registry`, `ByID`, `DisplayName`, `ModelDisplayName`) derives from it.
 
-Adding a service whose API speaks a supported protocol means adding one catalog entry — no new code.
+Adding a service whose API speaks a supported protocol means adding one catalog entry — no new code. Multi-protocol gateways instead add one router type plus a per-service model→protocol table (see OpenCode above).
 
 ## Factory Registry
 
 ```go
-registry := providers.DefaultFactories() // ollama, openai-compatible, anthropic, gemini
+registry := providers.DefaultFactories() // ollama, openai-compatible, openai-responses, anthropic, gemini, opencode-zen, opencode-go
 provider, err := registry.Create(providers.Spec{Type: "openai-compatible", BaseURL: ..., Model: ..., APIKey: ...})
 ```
 

@@ -123,10 +123,14 @@ Example output shape:
 ## On-Demand Loading
 
 1. At startup, the runtime builds a global skill store.
-2. The agent system prompt includes only the catalog.
+2. Each specialised agent's system prompt includes only its assigned catalog (`general` sees all; others see their allow-list). See [Agents](Agents.md).
 3. The model may recommend a skill from the catalog without loading it.
 4. When the model needs full instructions, it calls the `load_skill` tool with the skill ID.
-5. The runtime tool reads the body from the store and returns it to the model.
+5. The runtime tool reads the body from the store and returns it to the model — but only for IDs in the active agent's set. Other IDs fail soft (unassigned vs absent are reported distinctly), matched exactly with no normalization fallthrough.
+
+## Per-Agent Assignment
+
+Agents declare skill IDs in their definition (`Skills`, or `AllSkills` for `general`); `agents.<name>.skills` in config replaces the assignment (omitted keeps, `[]` means none). Assigned IDs missing from the store are omitted from the catalog and reported by `ff doctor` as warnings — never fatal, never fabricated.
 
 ## Slash Commands
 

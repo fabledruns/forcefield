@@ -10,6 +10,7 @@ import "strings"
 type Agent struct {
 	Name          string
 	SystemPrompt  string
+	Constraints   []string
 	SkillCatalog  string
 	ProjectMemory string
 }
@@ -22,6 +23,13 @@ func New(name, systemPrompt, skillCatalog string) *Agent {
 		SystemPrompt: strings.TrimSpace(systemPrompt),
 		SkillCatalog: strings.TrimSpace(skillCatalog),
 	}
+}
+
+// WithConstraints sets the behavioral boundaries rendered as a prompt
+// section. These are guidance, never enforcement.
+func (a *Agent) WithConstraints(constraints []string) *Agent {
+	a.Constraints = append([]string(nil), constraints...)
+	return a
 }
 
 // WithProjectMemory sets the formatted project memory (see
@@ -40,6 +48,15 @@ func (a *Agent) BuildSystemPrompt() string {
 	var b strings.Builder
 	b.WriteString(strings.TrimSpace(a.SystemPrompt))
 	b.WriteString(agentContract)
+
+	if len(a.Constraints) > 0 {
+		b.WriteString("\n\n## Boundaries\n\nThe following rules guide (but do not replace) the harness enforcement:\n\n")
+		for _, c := range a.Constraints {
+			b.WriteString("- ")
+			b.WriteString(strings.TrimSpace(c))
+			b.WriteString("\n")
+		}
+	}
 
 	if a.ProjectMemory != "" {
 		b.WriteString(`

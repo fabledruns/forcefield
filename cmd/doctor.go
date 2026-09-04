@@ -12,8 +12,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"forcefield/internal/agent"
 	"forcefield/internal/config"
 	"forcefield/internal/memory"
+	"forcefield/internal/runtime"
 	"forcefield/internal/sandbox"
 	"forcefield/internal/session"
 	"forcefield/internal/skills"
@@ -165,7 +167,7 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 	switch resolved.Type {
 	case "ollama":
 		auth = func(req *http.Request) {}
-	case "openai-compatible":
+	case "openai-compatible", "opencode-zen", "opencode-go":
 		key := resolved.APIKey
 		auth = func(req *http.Request) {
 			if key != "" {
@@ -217,7 +219,10 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 		}
 		report(vOK, "%s: model %q is available (%d installed)", resolved.Label, cfg.Model.Name, len(names))
 
-	case "openai-compatible":
+	case "openai-compatible", "opencode-zen", "opencode-go":
+		// Both OpenCode gateways serve GET /models in the standard
+		// OpenAI list shape under their versioned base URL, so the same
+		// probe covers them.
 		var body struct {
 			Data []struct {
 				ID string `json:"id"`
@@ -333,6 +338,20 @@ func doctorSkills(report func(verdict, string, ...any)) {
 	}
 	catalog := store.Catalog()
 	report(vOK, "skills: %d loaded from %s", len(catalog), filepath.Join(home, "skills"))
+
+	// Per-agent assignment diagnostics: an agent whose assigned skills
+	// are not installed degrades gracefully (catalog omission), but the
+	// user should understand why it shows fewer skills than defined.
+	if cfg, err := config.Load(); err == nil {
+		reg := agent.DefaultRegistry()
+		if err := runtime.ApplyAgentOverrides(reg, cfg.Agents); err == nil {
+			for _, w := range runtime.SkillAssignmentWarnings(reg, store) {
+				report(vWarn, "skills: %s", w)
+			}
+		} else {
+			report(vWarn, "skills: cannot resolve agent assignments: %v", err)
+		}
+	}
 }
 
 // doctorMemory verifies the current project's memory file parses.

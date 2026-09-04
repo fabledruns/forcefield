@@ -9,7 +9,7 @@ import (
 )
 
 func TestPresetByID(t *testing.T) {
-	for _, id := range []string{"ollama", "lmstudio", "nvidia", "openai", "anthropic", "gemini", "xai", "openrouter", "groq", "mistral", "together"} {
+	for _, id := range []string{"ollama", "lmstudio", "nvidia", "openai", "anthropic", "gemini", "xai", "openrouter", "groq", "mistral", "together", "opencode-zen", "opencode-go"} {
 		if _, ok := PresetByID(id); !ok {
 			t.Errorf("PresetByID(%q) missing from catalog", id)
 		}

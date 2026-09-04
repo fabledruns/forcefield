@@ -23,6 +23,7 @@ func (Status) Usage() string       { return "/status" }
 func (Status) Execute(ctx command.Context, _ []string) error {
 	stats := ctx.SessionStats()
 
+	ctx.Println("Agent:     %s", ctx.Agent())
 	ctx.Println("Provider:  %s", ctx.Provider())
 	ctx.Println("Model:     %s", ctx.Model())
 
@@ -37,6 +38,22 @@ func (Status) Execute(ctx command.Context, _ []string) error {
 		ctx.Println("Tools:     %d available (/tools to list)", len(tools))
 	} else {
 		ctx.Println("Tools:     none")
+	}
+
+	// Active agent's skill assignment (capabilities, not just branding).
+	active := ctx.Agent()
+	for _, a := range ctx.Agents() {
+		if a.Name != active {
+			continue
+		}
+		if a.AllSkills {
+			ctx.Println("Skills:    all available (/skills to list)")
+		} else if len(a.Skills) > 0 {
+			ctx.Println("Skills:    %s", strings.Join(a.Skills, ", "))
+		} else {
+			ctx.Println("Skills:    none assigned")
+		}
+		break
 	}
 
 	caps := ctx.ReasoningCapabilities()

@@ -3,6 +3,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -73,6 +74,20 @@ type Runtime struct {
 
 	reasoningMu         sync.RWMutex
 	reasoningSelections map[string]providers.ReasoningConfig
+
+	// agents holds the specialised agent registry (instance-scoped,
+	// immutable after construction).
+	agents *agent.Registry
+	// activeAgent is the lowercased name of the currently selected agent.
+	activeAgent string
+	// fullManager holds every tool (before filtering) so filtered managers
+	// can reuse the same Tool instances.
+	fullManager *tools.Manager
+	// projectMemoryText is cached for rebuilding the agent prompt on
+	// switches without re-reading disk. Skill catalogs are computed per
+	// agent from the shared store via catalogFor (no cache: the catalog
+	// is small and switches are infrequent).
+	projectMemoryText string
 }
 
 func New() (*Runtime, error) {
@@ -114,12 +129,7 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load project memory: %w", err)
 	}
-
-	a := agent.New(
-		cfg.Agent.Name,
-		cfg.Agent.SystemPrompt,
-		skills.FormatCatalog(skillStore.Catalog()),
-	).WithProjectMemory(memory.FormatForPrompt(memoryEntries))
+	memoryText := memory.FormatForPrompt(memoryEntries)
 
 	provider, err := newProvider(cfg)
 	if err != nil {
@@ -135,18 +145,38 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 		return nil, fmt.Errorf("create %s executor (sandbox.mode = %q): %w", policy.Mode, cfg.Sandbox.Mode, err)
 	}
 
-	manager, err := builtin.NewManager(builtin.WithExecutor(executor), builtin.WithPolicy(policy))
+	fullManager, err := builtin.NewManager(builtin.WithExecutor(executor), builtin.WithPolicy(policy))
 	if err != nil {
 		return nil, fmt.Errorf("create tool manager: %w", err)
 	}
-	if err := manager.Register(newLoadSkillTool(skillStore)); err != nil {
+	loadSkill := newLoadSkillTool(skillStore)
+	if err := fullManager.Register(loadSkill); err != nil {
 		return nil, fmt.Errorf("register load_skill tool: %w", err)
 	}
-	if err := manager.Register(newUpdateTaskStateTool()); err != nil {
+	if err := fullManager.Register(newUpdateTaskStateTool()); err != nil {
 		return nil, fmt.Errorf("register update_task_state tool: %w", err)
 	}
-	if err := manager.Register(newAddProjectMemoryTool(projectMemory)); err != nil {
+	if err := fullManager.Register(newAddProjectMemoryTool(projectMemory)); err != nil {
 		return nil, fmt.Errorf("register add_project_memory tool: %w", err)
+	}
+
+	// Build specialised agent registry with config overrides.
+	registry := agent.DefaultRegistry()
+	if err := applyAgentOverrides(registry, cfg.Agents); err != nil {
+		return nil, err
+	}
+
+	activeName := resolveInitialAgent(cfg, registry)
+	def, err := registry.Get(activeName)
+	if err != nil {
+		// Fallback to general if somehow still unknown.
+		def, _ = registry.Get("general")
+		activeName = "general"
+	}
+
+	filtered, err := fullManager.Filtered(def.Tools)
+	if err != nil {
+		return nil, fmt.Errorf("build tool set for agent %q: %w", def.Name, err)
 	}
 
 	permManager, err := permissions.NewManager(permissions.NewConfigStore())
@@ -159,17 +189,219 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 	r := &Runtime{
 		cfg:                 cfg,
 		provider:            provider,
-		agent:               a,
-		manager:             manager,
+		manager:             filtered,
+		fullManager:         fullManager,
 		skills:              skillStore,
-		scheduler:           newScheduler(manager, permManager, asker, DefaultSchedulerConfig),
+		scheduler:           newScheduler(filtered, permManager, asker, DefaultSchedulerConfig),
 		limits:              limitsFromConfig(cfg),
 		discovery:           providers.NewDiscovery(providers.DefaultFactories()),
 		reasoningSelections: make(map[string]providers.ReasoningConfig),
+		agents:              registry,
+		activeAgent:         def.Name,
+		projectMemoryText:   memoryText,
 	}
+	r.agent = r.buildAgent(def)
+	// Scope load_skill to the active agent's skill set. The closures read
+	// live runtime state, so agent switches need no re-registration and
+	// the same tool instance stays shared across filtered managers.
+	loadSkill.allowed = r.agentSkillSet
+	loadSkill.agentName = r.CurrentAgent
 	r.refreshAuthState()
 	r.applyReasoning()
+
+	// Apply per-agent model/provider hints in-memory (best effort). If they
+	// fail, construction still succeeds; the error will surface on SetAgent.
+	if def.Provider != "" && def.Provider != cfg.Model.Provider {
+		_ = r.SetProvider(def.Provider)
+	}
+	if def.Model != "" && def.Model != r.cfg.Model.Name {
+		_ = r.SetModel(def.Model)
+	}
 	return r, nil
+}
+
+// buildAgent constructs the prompt-building agent for def: per-agent
+// skill catalog, domain constraints, legacy display name/prompt handling,
+// and shared project memory.
+func (r *Runtime) buildAgent(def agent.Definition) *agent.Agent {
+	return agent.New(
+		legacyDisplayName(r.cfg, r.agents, def.Name),
+		effectivePromptFor(r.cfg, def),
+		r.catalogFor(def),
+	).WithConstraints(def.Constraints).WithProjectMemory(r.projectMemoryText)
+}
+
+// catalogFor renders the skill catalog text for def: the full store
+// catalog when def wants all skills, otherwise the store catalog
+// intersected with the assigned IDs in store order. IDs absent from the
+// store are omitted (see SkillWarnings); never fabricated.
+func (r *Runtime) catalogFor(def agent.Definition) string {
+	if r == nil || r.skills == nil {
+		return ""
+	}
+	if def.AllSkills {
+		return skills.FormatCatalog(r.skills.Catalog())
+	}
+	if len(def.Skills) == 0 {
+		return ""
+	}
+	keep := make(map[string]struct{}, len(def.Skills))
+	for _, id := range def.Skills {
+		keep[id] = struct{}{}
+	}
+	var filtered []skills.Skill
+	for _, s := range r.skills.Catalog() {
+		if _, ok := keep[s.ID]; ok {
+			filtered = append(filtered, s)
+		}
+	}
+	return skills.FormatCatalog(filtered)
+}
+
+// agentSkillSet returns the exact skill IDs the active agent may load via
+// load_skill. Exact-match only (no normalization fallthrough), and only
+// IDs present in the store — a missing assigned skill grants nothing.
+// A skill body can never grant a tool: tools resolve exclusively through
+// the filtered tool manager.
+func (r *Runtime) agentSkillSet() map[string]bool {
+	set := make(map[string]bool)
+	if r == nil || r.skills == nil || r.agents == nil {
+		return set
+	}
+	def, err := r.agents.Get(r.activeAgent)
+	if err != nil {
+		return set
+	}
+	if def.AllSkills {
+		for _, s := range r.skills.Catalog() {
+			set[s.ID] = true
+		}
+		return set
+	}
+	for _, id := range def.Skills {
+		if _, ok := r.skills.Get(id); ok {
+			set[id] = true
+		}
+	}
+	return set
+}
+
+// SkillWarnings reports assigned-but-missing skill IDs per agent, so users
+// can understand why an agent shows fewer skills than its definition
+// lists (e.g. an example skill never installed into ~/.forcefield/skills).
+// Missing skills degrade gracefully everywhere else; this is diagnostics.
+func (r *Runtime) SkillWarnings() []string {
+	if r == nil || r.skills == nil || r.agents == nil {
+		return nil
+	}
+	return SkillAssignmentWarnings(r.agents, r.skills)
+}
+
+// SkillAssignmentWarnings reports assigned-but-missing skill IDs for a
+// registry/store pair without needing a full Runtime. Used by ff doctor.
+func SkillAssignmentWarnings(registry *agent.Registry, store *skills.Store) []string {
+	if registry == nil || store == nil {
+		return nil
+	}
+	var out []string
+	for _, def := range registry.List() {
+		if def.AllSkills {
+			continue
+		}
+		for _, id := range def.Skills {
+			if _, ok := store.Get(id); !ok {
+				out = append(out, fmt.Sprintf("agent %q references missing skill %q (not installed in the skill store)", def.Name, id))
+			}
+		}
+	}
+	return out
+}
+
+// applyAgentOverrides merges cfg.Agents into registry. Unknown agent names
+// have already been rejected by config validation; this is defence-in-depth.
+func applyAgentOverrides(registry *agent.Registry, overrides map[string]config.AgentConfig) error {
+	return ApplyAgentOverrides(registry, overrides)
+}
+
+// ApplyAgentOverrides merges cfg.Agents into registry. Exported for
+// diagnostics (ff doctor) that need effective assignments without a full
+// Runtime. The registry must still be under construction (not yet shared).
+func ApplyAgentOverrides(registry *agent.Registry, overrides map[string]config.AgentConfig) error {
+	for name, o := range overrides {
+		def, err := registry.Get(name)
+		if err != nil {
+			return fmt.Errorf("agents.%s: %w", name, err)
+		}
+		ao := agent.AgentOverride{
+			Description:  o.Description,
+			SystemPrompt: o.SystemPrompt,
+			Tools:        o.Tools,
+			Skills:       o.Skills,
+			Constraints:  o.Constraints,
+			Provider:     o.Provider,
+			Model:        o.Model,
+		}
+		newDef := def.ApplyOverride(ao)
+		if err := newDef.Validate(); err != nil {
+			return fmt.Errorf("agents.%s: %w", name, err)
+		}
+		// Replace via Update (registry is still mutable during construction).
+		if err := registry.Update(newDef); err != nil {
+			return err
+		}
+		// Validate tool set against full tool universe when possible is done
+		// later when building the filtered manager (unknown tool error).
+	}
+	return nil
+}
+
+// resolveInitialAgent picks the starting agent per precedence: cfg.Agent.Name
+// (legacy) -> general. CLI flag handling is done outside newRuntime via
+// SetAgent. "default" is treated as "general" for backwards compat. Unknown
+// legacy names also resolve to "general" (their display name is preserved
+// separately by legacyDisplayName).
+func resolveInitialAgent(cfg *config.Config, registry *agent.Registry) string {
+	raw := strings.ToLower(strings.TrimSpace(cfg.Agent.Name))
+	if raw == "" || raw == "default" {
+		return "general"
+	}
+	if _, err := registry.Get(raw); err == nil {
+		return raw
+	}
+	return "general"
+}
+
+// effectivePromptFor resolves which system prompt an agent runs with.
+// Precedence: agents.<name>.system_prompt (already merged into def via
+// overrides) > legacy agent.system_prompt > built-in prompt. This keeps
+// pre-feature configs that customized agent.system_prompt behaving as
+// before, regardless of which agent is active.
+func effectivePromptFor(cfg *config.Config, def agent.Definition) string {
+	if o, ok := cfg.Agents[def.Name]; ok && strings.TrimSpace(o.SystemPrompt) != "" {
+		return strings.TrimSpace(def.SystemPrompt)
+	}
+	if strings.TrimSpace(cfg.Agent.SystemPrompt) != "" {
+		return strings.TrimSpace(cfg.Agent.SystemPrompt)
+	}
+	return def.SystemPrompt
+}
+
+// legacyDisplayName preserves a pre-feature custom agent.name as the
+// display label. Known agent keys and "default"/"" use the definition
+// name; anything else is a legacy custom label shown in the header while
+// the "general" definition provides behaviour.
+func legacyDisplayName(cfg *config.Config, registry *agent.Registry, active string) string {
+	raw := strings.TrimSpace(cfg.Agent.Name)
+	if raw == "" {
+		return active
+	}
+	if strings.EqualFold(raw, "default") {
+		return active
+	}
+	if _, err := registry.Get(raw); err == nil {
+		return active
+	}
+	return raw
 }
 
 // refreshAuthState re-reads the active provider's authentication
@@ -235,6 +467,152 @@ func (r *Runtime) CurrentModel() string { return r.cfg.Model.Name }
 
 // CurrentProvider returns the active provider name.
 func (r *Runtime) CurrentProvider() string { return r.cfg.Model.Provider }
+
+// CurrentAgent returns the active agent definition key (e.g. "coding").
+// Use AgentDisplayName for the header label, which may preserve a legacy
+// custom agent.name from config.
+func (r *Runtime) CurrentAgent() string {
+	if r == nil {
+		return "general"
+	}
+	if r.activeAgent != "" {
+		return r.activeAgent
+	}
+	return "general"
+}
+
+// AgentDisplayName returns the label shown in the UI header. It is the
+// definition name, except when a pre-feature config set a custom
+// agent.name, which is preserved verbatim.
+func (r *Runtime) AgentDisplayName() string {
+	if r == nil || r.agent == nil {
+		return r.CurrentAgent()
+	}
+	if strings.TrimSpace(r.agent.Name) != "" {
+		return r.agent.Name
+	}
+	return r.CurrentAgent()
+}
+
+// AgentSummary describes one available agent for pickers and listings.
+type AgentSummary struct {
+	Name        string
+	Description string
+	Tools       []string
+	// Skills lists assigned skill IDs; AllSkills reports full-catalog access.
+	Skills      []string
+	AllSkills   bool
+	Constraints []string
+	Provider    string
+	Model       string
+}
+
+// AgentSummaries returns every known agent for listings and pickers.
+func (r *Runtime) AgentSummaries() []AgentSummary {
+	if r == nil || r.agents == nil {
+		return nil
+	}
+	out := make([]AgentSummary, 0)
+	for _, d := range r.agents.List() {
+		out = append(out, AgentSummary{
+			Name:        d.Name,
+			Description: d.Description,
+			Tools:       append([]string(nil), d.Tools...),
+			Skills:      append([]string(nil), d.Skills...),
+			AllSkills:   d.AllSkills,
+			Constraints: append([]string(nil), d.Constraints...),
+			Provider:    d.Provider,
+			Model:       d.Model,
+		})
+	}
+	return out
+}
+
+// ListAgents is an alias for AgentSummaries for convenience.
+func (r *Runtime) ListAgents() []AgentSummary { return r.AgentSummaries() }
+
+// CurrentAgentDefinition returns the active agent definition.
+func (r *Runtime) CurrentAgentDefinition() (agent.Definition, error) {
+	if r == nil || r.agents == nil {
+		return agent.Definition{}, fmt.Errorf("agent registry not available")
+	}
+	return r.agents.Get(r.CurrentAgent())
+}
+
+// SetAgent switches the active agent to name. It rebuilds the system
+// prompt, filtered tool set, and applies any provider/model hints. The
+// switch is atomic: on any failure the previous agent, tools, and
+// provider/model remain unchanged.
+func (r *Runtime) SetAgent(name string) error {
+	if r == nil {
+		return fmt.Errorf("runtime not available")
+	}
+	if r.agents == nil || r.fullManager == nil {
+		return fmt.Errorf("agent system not initialized")
+	}
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		return fmt.Errorf("agent name cannot be empty")
+	}
+	def, err := r.agents.Get(key)
+	if err != nil {
+		return err
+	}
+	if key == r.activeAgent {
+		return nil
+	}
+
+	// Build new filtered manager and agent before mutating to ensure
+	// tool set is valid.
+	filtered, err := r.fullManager.Filtered(def.Tools)
+	if err != nil {
+		return fmt.Errorf("agent %q has invalid tool set: %w", def.Name, err)
+	}
+
+	// NOTE: buildAgent must run before provider/model hints because
+	// legacyDisplayName/effectivePromptFor read r.cfg (unmutated here).
+	// The agent/tools commit below happens only after hints succeed.
+	newAgent := r.buildAgent(def)
+
+	// Snapshot provider/model state for rollback. The agent/tools swap
+	// below only happens after hints succeed, so it needs no rollback.
+	oldCfg := *r.cfg
+	oldProvider := r.provider
+	oldAuthReq := r.authRequired
+	oldAuthEnv := r.authEnvVar
+
+	// Apply provider hint first, if any.
+	if def.Provider != "" && def.Provider != r.cfg.Model.Provider {
+		if err := r.SetProvider(def.Provider); err != nil {
+			return fmt.Errorf("agent %q provider %q: %w", def.Name, def.Provider, err)
+		}
+	}
+	// Apply model hint.
+	if def.Model != "" && def.Model != r.cfg.Model.Name {
+		if err := r.SetModel(def.Model); err != nil {
+			// Roll back provider switch if model fails after provider succeeded.
+			r.cfg = &oldCfg
+			r.provider = oldProvider
+			r.authRequired = oldAuthReq
+			r.authEnvVar = oldAuthEnv
+			r.applyReasoning()
+			return fmt.Errorf("agent %q model %q: %w", def.Name, def.Model, err)
+		}
+	}
+
+	// Commit agent/tools switch.
+	r.agent = newAgent
+	r.manager = filtered
+	r.scheduler.manager = filtered
+	r.activeAgent = def.Name
+	return nil
+}
+
+// Agent returns the current agent name, satisfying command.Context.
+func (r *Runtime) Agent() string { return r.CurrentAgent() }
+
+// Agents returns summaries, satisfying command.Context.
+func (r *Runtime) Agents() []AgentSummary { return r.AgentSummaries() }
 
 // ProviderSummary describes one selectable provider for pickers and
 // status output: who it is, what it supports, and whether it is usable
@@ -379,7 +757,21 @@ func (r *Runtime) SetProvider(name string) error {
 	cfg.Model.Endpoint = resolved.BaseURL
 	provider, err := providers.DefaultFactories().Create(resolved.Spec(cfg.Model.Name))
 	if err != nil {
-		return fmt.Errorf("create provider %q: %w", name, err)
+		// Multi-protocol routers reject models outside their catalog, but
+		// the current model name still belongs to the previous provider
+		// at this point. Fall back to an unconfigured router so the
+		// switch succeeds and the model picker can open; any turn before
+		// a model is picked fails locally with guidance instead of
+		// sending a request down the wrong protocol.
+		if !errors.Is(err, providers.ErrUnknownModel) {
+			return fmt.Errorf("create provider %q: %w", name, err)
+		}
+		emptySpec := resolved.Spec("")
+		emptySpec.Model = ""
+		provider, err = providers.DefaultFactories().Create(emptySpec)
+		if err != nil {
+			return fmt.Errorf("create provider %q: %w", name, err)
+		}
 	}
 	r.cfg = &cfg
 	r.provider = provider
@@ -965,7 +1357,19 @@ func ProviderFor(cfg *config.Config, id string) (providers.ModelProvider, error)
 	}
 	provider, err := providers.DefaultFactories().Create(resolved.Spec(cfg.Model.Name))
 	if err != nil {
-		return nil, fmt.Errorf("create provider %q: %w", id, err)
+		// Same stale-model case as SetProvider: a configured model from
+		// another provider must not prevent startup. Fall back to an
+		// unconfigured router; the model picker offers valid models and
+		// any turn before that fails locally with guidance.
+		if !errors.Is(err, providers.ErrUnknownModel) {
+			return nil, fmt.Errorf("create provider %q: %w", id, err)
+		}
+		emptySpec := resolved.Spec("")
+		emptySpec.Model = ""
+		provider, err = providers.DefaultFactories().Create(emptySpec)
+		if err != nil {
+			return nil, fmt.Errorf("create provider %q: %w", id, err)
+		}
 	}
 	return provider, nil
 }

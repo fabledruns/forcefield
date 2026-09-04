@@ -19,10 +19,11 @@ func New() (*Runtime, error)
 1. Load configuration.
 2. Resolve the Forcefield home directory.
 3. Build the skill store.
-4. Create the agent with the base prompt and skill catalog.
-5. Create the model provider.
-6. Create the tool manager with built-in tools.
-7. Register the `load_skill` tool.
+4. Build the specialised agent registry (`agent.DefaultRegistry` + `agents:` overrides).
+5. Create the agent with the active definition's prompt and skill catalog.
+6. Create the model provider.
+7. Create the full tool manager with built-in tools, then filter it to the active agent's tool set.
+8. Register the `load_skill`, `update_task_state`, and `add_project_memory` tools (subject to the same filter).
 
 ## Public Methods
 
@@ -30,13 +31,20 @@ func New() (*Runtime, error)
 | ------------------- | ---------------------------------------------------------------- |
 | `CurrentModel`      | Returns the active model name.                                   |
 | `CurrentProvider`   | Returns the active provider name.                                |
+| `CurrentAgent`      | Returns the active specialised agent name.                       |
 | `SetModel`          | Switches the model for the next request.                         |
 | `SetProvider`       | Switches the provider for the next request.                      |
+| `SetAgent`          | Switches the specialised agent (prompt + tool filter + hints).   |
+| `AgentSummaries` / `ListAgents` | Lists every known agent with tools and hints.        |
 | `ProviderSummaries` | Describes every selectable provider with capabilities and availability. |
 | `StreamChat`        | Runs the agent loop and emits structured events as they happen.  |
 | `Stream`            | Compatibility alias for `StreamChat`.                            |
 | `Run`               | Runs the agent loop and returns the final response.              |
 | `RunContext`        | Same as `Run`, with caller-controlled cancellation.              |
+
+## Specialised Agents
+
+The runtime owns one shared agent loop. Specialised agents are data (`agent.Definition`) held in an instance-scoped `Registry`. `SetAgent` rebuilds the system prompt and swaps in a filtered tool manager (same `Tool` instances, subset registered) plus the scheduler reference. Provider/model hints declared by a definition are applied through the existing `SetProvider`/`SetModel` path; on any hint failure the previous agent, tools, provider, and model remain unchanged. See [Agents](Agents.md).
 
 ## Provider Selection
 
@@ -101,9 +109,9 @@ Detailed steps:
 The runtime registers a special tool named `load_skill` for the **global** skill store (`~/.forcefield/skills/`).
 
 - At startup the runtime scans the global skills directory once (file skills `*.md` and directory skills `*/SKILL.md`) into an in-memory store. Supporting files are ignored and never scanned as skills.
-- The agent system prompt includes only the compact catalog (`id`, `name`, `description`), not full bodies.
+- Each agent's system prompt includes only its assigned compact catalog (`id`, `name`, `description`), not full bodies.
 - When the model needs full skill instructions, it calls `load_skill` with a skill ID.
-- The tool reads the body from the in-memory store and returns it. No disk scan happens during tool execution.
+- The tool reads the body from the in-memory store and returns it — only for IDs in the active agent's set. No disk scan happens during tool execution.
 - The user inspects the same global catalog via `/skills list` and `/skills show <id>`; those commands never inject content into the model — they only print to the transcript.
 - Skills are untrusted Markdown: tool permissions and the `sandbox` executor in `config.yaml` remain authoritative regardless of skill content.
 

@@ -9,6 +9,7 @@ package config
 	name:        string // friendly display name shown in the UI
 	id:          string // real model ID sent to the provider API
 	description?: string
+	protocol?:   string // wire protocol serving this model on multi-protocol gateways
 }
 
 #ProviderInfo: {
@@ -205,5 +206,37 @@ providers: {
 		scope:       "cloud"
 		requires_api_key: true
 		models: [{name: "Llama 3.3 70B Turbo", id: "meta-llama/Llama-3.3-70B-Instruct-Turbo"}]
+	}
+
+	opencodezen: #ProviderInfo & {
+		name:        "OpenCode Zen"
+		id:          "opencode-zen"
+		type:        "opencode-zen"
+		description: "Curated coding models via the OpenCode Zen gateway (pay as you go)."
+		endpoint:    "https://opencode.ai/zen/v1"
+		auth_env_var: "OPENCODE_API_KEY"
+		scope:       "cloud"
+		requires_api_key: true
+		models: [
+			{name: "GPT 5.5", id: "gpt-5.5", protocol: "openai-responses"},
+			{name: "Claude Sonnet 4.5", id: "claude-sonnet-4-5", protocol: "anthropic"},
+			{name: "GLM 5.2", id: "glm-5.2", protocol: "openai-compatible"},
+		]
+	}
+
+	opencodego: #ProviderInfo & {
+		name:        "OpenCode Go"
+		id:          "opencode-go"
+		type:        "opencode-go"
+		description: "Curated open coding models via the OpenCode Go subscription."
+		endpoint:    "https://opencode.ai/zen/go/v1"
+		auth_env_var: "OPENCODE_API_KEY"
+		scope:       "cloud"
+		requires_api_key: true
+		models: [
+			{name: "GLM-5.3", id: "glm-5.3", protocol: "openai-compatible"},
+			{name: "MiniMax M3", id: "minimax-m3", protocol: "anthropic"},
+			{name: "GPT 5.6 Luna", id: "gpt-5.6-luna", protocol: "openai-responses"},
+		]
 	}
 }

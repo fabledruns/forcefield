@@ -103,11 +103,29 @@ type SandboxWSL struct {
 	Network string `yaml:"network"`
 }
 
+// AgentConfig overrides a single built-in agent. Scalar fields: only
+// non-empty values replace the built-in. List fields (Tools, Skills,
+// Constraints): nil (field omitted) keeps the built-in; non-nil replaces
+// (verified: yaml.v3 decodes an explicit `skills: []` as non-nil, so it
+// means "no skills"). Unknown agent names are rejected at validation.
+// Unknown skill IDs are NOT rejected here (the skill store is user-local
+// and unavailable to this package); the runtime warns and omits them.
+type AgentConfig struct {
+	Description  string   `yaml:"description,omitempty"`
+	SystemPrompt string   `yaml:"system_prompt,omitempty"`
+	Tools        []string `yaml:"tools,omitempty"`
+	Skills       []string `yaml:"skills,omitempty"`
+	Constraints  []string `yaml:"constraints,omitempty"`
+	Provider     string   `yaml:"provider,omitempty"`
+	Model        string   `yaml:"model,omitempty"`
+}
+
 // Config is the top-level shape of config.yaml.
 type Config struct {
 	Model       Model                     `yaml:"model"`
 	Providers   map[string]ProviderConfig `yaml:"providers,omitempty"`
 	Agent       Agent                     `yaml:"agent"`
+	Agents      map[string]AgentConfig    `yaml:"agents,omitempty"`
 	Permissions Permissions               `yaml:"permissions"`
 	Sandbox     Sandbox                   `yaml:"sandbox"`
 }
@@ -129,6 +147,8 @@ permissions:
     read_file: allow
     list_files: allow
     pwd: allow
+    search_files: allow
+    secret_scan: allow
     write_file: ask
     shell: ask
     add_project_memory: ask
@@ -438,6 +458,69 @@ func (c *Config) validate() error {
 			c.Sandbox.WSL.Distribution)
 	}
 
+	if err := validateAgents(c.Agents); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// knownAgents is the set of built-in agent names for config validation.
+// Kept here to avoid importing internal/agent (which would create a cycle
+// in some test setups) and to make the error message deterministic.
+var knownAgents = map[string]struct{}{
+	"coding":   {},
+	"cyber":    {},
+	"legal":    {},
+	"docs":     {},
+	"research": {},
+	"devops":   {},
+	"general":  {},
+}
+
+func validateAgents(agents map[string]AgentConfig) error {
+	for name, cfg := range agents {
+		if _, ok := knownAgents[name]; !ok {
+			return fmt.Errorf("agents.%s: unknown agent %q (available: coding, cyber, docs, devops, general, legal, research)", name, name)
+		}
+		if cfg.Tools != nil {
+			seen := make(map[string]struct{}, len(cfg.Tools))
+			for i, t := range cfg.Tools {
+				if strings.TrimSpace(t) == "" {
+					return fmt.Errorf("agents.%s.tools[%d] is empty", name, i)
+				}
+				if _, dup := seen[t]; dup {
+					return fmt.Errorf("agents.%s.tools: duplicate tool %q", name, t)
+				}
+				seen[t] = struct{}{}
+			}
+		}
+		if cfg.Skills != nil {
+			seen := make(map[string]struct{}, len(cfg.Skills))
+			for i, s := range cfg.Skills {
+				if strings.TrimSpace(s) == "" {
+					return fmt.Errorf("agents.%s.skills[%d] is empty", name, i)
+				}
+				if _, dup := seen[s]; dup {
+					return fmt.Errorf("agents.%s.skills: duplicate skill %q", name, s)
+				}
+				seen[s] = struct{}{}
+			}
+		}
+		if cfg.Constraints != nil {
+			for i, c := range cfg.Constraints {
+				if strings.TrimSpace(c) == "" {
+					return fmt.Errorf("agents.%s.constraints[%d] is empty", name, i)
+				}
+			}
+		}
+		if cfg.Provider != "" && strings.TrimSpace(cfg.Provider) == "" {
+			return fmt.Errorf("agents.%s.provider cannot be whitespace", name)
+		}
+		if cfg.Model != "" && strings.TrimSpace(cfg.Model) == "" {
+			return fmt.Errorf("agents.%s.model cannot be whitespace", name)
+		}
+	}
 	return nil
 }
 

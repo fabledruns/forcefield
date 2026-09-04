@@ -20,6 +20,7 @@ func newRegistry() *command.Registry {
 	reg.Register(builtin.NewClear())
 	reg.Register(builtin.NewModel())
 	reg.Register(builtin.NewProvider())
+	reg.Register(builtin.NewAgent())
 	reg.Register(builtin.NewHelp(reg))
 	reg.Register(builtin.NewSessions())
 	reg.Register(builtin.NewStatus())
@@ -83,24 +84,98 @@ func (m *model) Model() string { return m.modelName }
 // Provider reports the currently active provider name.
 func (m *model) Provider() string { return m.providerName }
 
-// SetModel switches the runtime to a new model and, only once that
-// succeeds, updates the label shown in the header.
+// SetModel switches the runtime to a new model and persists the selection
+// to config.yaml so it survives restarts. The header label updates once the
+// in-memory switch succeeds; a persistence failure is returned instead of
+// being silently ignored, while the new model stays active for this session.
 func (m *model) SetModel(name string) error {
 	if err := m.runtime.SetModel(name); err != nil {
 		return err
 	}
 	m.modelName = name
+	if err := m.runtime.SaveConfig(); err != nil {
+		return fmt.Errorf("save model selection: %w", err)
+	}
 	return nil
 }
 
-// SetProvider switches the runtime to a new provider and, only once that
-// succeeds, updates the label shown in the header.
+// SetProvider switches the runtime to a new provider and persists the
+// selection to config.yaml so it survives restarts. The header label
+// updates once the in-memory switch succeeds; a persistence failure is
+// returned instead of being silently ignored, while the new provider stays
+// active for this session.
 func (m *model) SetProvider(name string) error {
 	if err := m.runtime.SetProvider(name); err != nil {
 		return err
 	}
 	m.providerName = name
+	if err := m.runtime.SaveConfig(); err != nil {
+		return fmt.Errorf("save provider selection: %w", err)
+	}
 	return nil
+}
+
+// Agent reports the currently active agent name.
+func (m *model) Agent() string {
+	if m.runtime == nil {
+		return m.agentName
+	}
+	return m.runtime.CurrentAgent()
+}
+
+// agentLabel returns the header label for the active agent, preserving a
+// legacy custom agent.name when one is configured.
+func (m *model) agentLabel() string {
+	if m.runtime == nil {
+		return m.agentName
+	}
+	return m.runtime.AgentDisplayName()
+}
+
+// SetAgent switches the runtime to a new agent, persisting the session's
+// agent and updating the header. It cancels any active stream first so
+// the switch never mutates state underneath a running turn.
+func (m *model) SetAgent(name string) error {
+	if m.runtime == nil {
+		return fmt.Errorf("runtime not available")
+	}
+	// Cancel active stream before mutating agent state.
+	if m.waiting || m.stream != nil {
+		m.stopStream(false)
+	}
+	if err := m.runtime.SetAgent(name); err != nil {
+		return err
+	}
+	m.agentName = m.agentLabel()
+	// Update provider/model labels if the agent hint changed them.
+	m.providerName = m.runtime.CurrentProvider()
+	m.modelName = m.runtime.CurrentModel()
+	// Persist the agent key (not the display label, which may preserve
+	// a legacy custom agent.name) so reloads resolve deterministically.
+	if m.session != nil {
+		m.session.Agent = m.runtime.CurrentAgent()
+		_ = m.session.Save()
+	}
+	return nil
+}
+
+// Agents returns summaries for all known agents.
+func (m *model) Agents() []command.AgentSummary {
+	if m.runtime == nil {
+		return nil
+	}
+	out := m.runtime.AgentSummaries()
+	res := make([]command.AgentSummary, 0, len(out))
+	for _, a := range out {
+		res = append(res, command.AgentSummary{
+			Name:        a.Name,
+			Description: a.Description,
+			Tools:       append([]string(nil), a.Tools...),
+			Skills:      append([]string(nil), a.Skills...),
+			AllSkills:   a.AllSkills,
+		})
+	}
+	return res
 }
 
 // OpenSessionPicker opens the /sessions modal over sessions, which the

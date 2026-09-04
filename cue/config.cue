@@ -13,7 +13,7 @@ package config
 // Provider lists the values accepted for a providers entry's type:
 // either a wire protocol Forcefield ships adapters for, or a known
 // service whose defaults (endpoint, auth variable) are built in.
-#Provider: "ollama" | "lmstudio" | "nvidia" | "openai" | "anthropic" | "gemini" | "xai" | "openrouter" | "groq" | "mistral" | "together" | "openai-compatible"
+#Provider: "ollama" | "lmstudio" | "nvidia" | "openai" | "anthropic" | "gemini" | "xai" | "openrouter" | "groq" | "mistral" | "together" | "opencode-zen" | "opencode-go" | "openai-compatible" | "openai-responses"
 
 // Permission values for permissions.default and every permissions.tools
 // entry. "" is accepted everywhere and means "unset behaves like ask",
@@ -32,6 +32,22 @@ package config
 // nonEmpty constrains strings the runtime requires to be present.
 #nonEmpty: string & != ""
 #httpURL: string & =~ "^https?://.+"
+
+// AgentName lists the built-in specialised agents recognised by the registry.
+#AgentName: "coding" | "cyber" | "legal" | "docs" | "research" | "devops" | "general"
+
+// AgentConfig is the per-agent override block under agents:. Scalars are
+// optional (non-empty replaces). Lists are optional (omitted keeps the
+// built-in; explicit replaces, and explicit empty means "none").
+#AgentConfig: {
+	description?:   string
+	system_prompt?: string
+	tools?: [...string]
+	skills?: [...string]
+	constraints?: [...string]
+	provider?: string
+	model?:    string
+}
 
 // ProviderEntry is one section under providers:. Every field is optional;
 // omitted fields fall back to the service's catalog defaults. Secrets are
@@ -70,6 +86,8 @@ package config
 		max_tool_calls?:           int & > 0
 		max_consecutive_failures?: int & > 0
 	}
+
+	agents?: [#AgentName]: #AgentConfig
 
 	permissions?: {
 		default?: #Permission

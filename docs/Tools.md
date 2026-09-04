@@ -55,8 +55,11 @@ The entry point used by the rest of Forcefield.
 | `List`         | Lists registered tools.                          |
 | `Definitions`  | Returns definitions for the current model turn.  |
 | `Execute`      | Looks up a tool by name and runs it.             |
+| `Filtered`     | Returns a new manager exposing only named tools (same instances). |
 
 `Execute` treats a nil argument map as empty. Tools with no arguments can run without special handling by callers.
+
+`Filtered` rejects unknown or duplicate names. The runtime builds one full manager at startup, then derives a per-agent filtered view so the model only sees the active agent's tools and the scheduler fails closed (`tool not found`) on anything else. See [Agents](Agents.md).
 
 ## Built-in Tools
 
@@ -68,9 +71,11 @@ Built-in tools are registered through `tools/builtin`.
 | `write_file`  | `tools/filesystem`      | Write content to a file.                         |
 | `list_files`  | `tools/filesystem`      | List files in a directory.                       |
 | `pwd`         | `tools/shell`           | Return the current working directory.            |
-| `load_skill`  | `runtime`               | Load a skill body by ID from the skill store.    |
+| `search_files`| `tools/search`          | Search file contents under a directory. Skips `.git`, sensitive files, symlink escapes; max 100 matches. |
+| `secret_scan` | `tools/security`        | Defensively scan one file/text for hardcoded secrets (local-only, redacted output). |
+| `load_skill`  | `runtime`               | Load a skill body by ID, scoped to the active agent's skill set. |
 
-`load_skill` is registered by the runtime, not by the generic builtin package, because it needs the skill store.
+`load_skill` is registered by the runtime, not by the generic builtin package, because it needs the skill store. It refuses IDs outside the active agent's assignment with a soft error.
 
 ## Execution Flow
 

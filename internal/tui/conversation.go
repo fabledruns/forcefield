@@ -25,6 +25,13 @@ type chatEntry struct {
 	Content   string
 	Streaming bool
 
+	// Turn groups entries created during one user request's run (stamped
+	// from the stream generation at creation). Consecutive entries with
+	// the same non-zero turn render as one compact visual block with a
+	// single assistant header. Zero means ungrouped: resumed history,
+	// errors, and permission prompts, which render exactly as before.
+	Turn uint64
+
 	// Tool, when set on a roleActivity entry, holds the structured details
 	// behind the one-line tool summary so it can be expanded (ctrl+e).
 	Tool *toolRecord
@@ -61,17 +68,45 @@ func regionID(kind string, entry int) string {
 // preceding entry, so clicks land below the visible text.
 const rowsBetweenEntries = 1
 
+// groupStarts reports, per entry, whether it begins a new visual block:
+// index 0, entries with turn 0, and entries whose turn differs from the
+// previous entry's. Consecutive entries sharing a non-zero turn (one user
+// request's run) form one compact block with a single assistant header.
+// Group membership is append-stable — appending entries never reclassifies
+// earlier boundaries — so incremental rendering and mouse spans stay
+// correct while events stream in.
+func groupStarts(entries []chatEntry) []bool {
+	starts := make([]bool, len(entries))
+	for i, e := range entries {
+		if i == 0 || e.Turn == 0 || entries[i-1].Turn != e.Turn {
+			starts[i] = true
+		}
+	}
+	return starts
+}
+
 // render turns a chatEntry into its final styled, word-wrapped form.
 // width is the available content width in the viewport; hovered marks the
 // block under the pointer for subtle emphasis.
 func (e chatEntry) render(width int, hovered bool) string {
+	return e.renderGrouped(width, hovered, true)
+}
+
+// renderGrouped renders like render, except a non-first assistant entry
+// of a turn group (showHeader false) emits only its body, so one model
+// turn stays one coherent visual block instead of repeating the
+// Forcefield header for every text fragment after a tool batch.
+func (e chatEntry) renderGrouped(width int, hovered, showHeader bool) string {
 	var label string
 	switch e.Role {
 	case roleUser:
 		label = userLabelStyle.Render("You")
 	case roleAssistant:
-		label = assistantLabelStyle.Render("Forcefield")
 		body := renderMarkdown(e.Content, width, e.Streaming)
+		if !showHeader {
+			return body
+		}
+		label = assistantLabelStyle.Render("Forcefield")
 		return fmt.Sprintf("%s\n%s", label, body)
 	case roleActivity:
 		if e.Thinking != nil {
@@ -130,6 +165,7 @@ func renderTranscriptWithLayout(entries []chatEntry, width int, hoverID string) 
 
 	rendered := make([]string, 0, len(entries))
 	spans := make([]contentSpan, 0)
+	starts := groupStarts(entries)
 	line := 0
 	for i, e := range entries {
 		hovered := false
@@ -145,7 +181,7 @@ func renderTranscriptWithLayout(entries []chatEntry, width int, hoverID string) 
 			action = actionNone
 		}
 
-		block := e.render(width, hovered)
+		block := e.renderGrouped(width, hovered, starts[i] || e.Role != roleAssistant)
 		lines := strings.Count(block, "\n") + 1
 		rendered = append(rendered, block)
 
@@ -158,9 +194,32 @@ func renderTranscriptWithLayout(entries []chatEntry, width int, hoverID string) 
 				action:    action,
 			})
 		}
-		line += lines + rowsBetweenEntries
+		// Step to the next block: a blank separator row between visual
+		// blocks, none between members of one turn group.
+		step := rowsBetweenEntries
+		if i+1 < len(entries) && !starts[i+1] {
+			step = 0
+		}
+		line += lines + step
 	}
-	return strings.Join(rendered, "\n\n"), spans
+	return joinGrouped(rendered, starts), spans
+}
+
+// joinGrouped joins rendered blocks with a blank row between visual
+// blocks and a single newline between members of one turn group.
+func joinGrouped(rendered []string, starts []bool) string {
+	var b strings.Builder
+	for i, block := range rendered {
+		if i > 0 {
+			if starts[i] {
+				b.WriteString("\n\n")
+			} else {
+				b.WriteString("\n")
+			}
+		}
+		b.WriteString(block)
+	}
+	return b.String()
 }
 
 // spanKind maps an interactive action to its region-id prefix.
