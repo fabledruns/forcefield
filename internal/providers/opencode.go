@@ -2,12 +2,18 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"forcefield/internal/tools"
 )
+
+// ErrUnknownModel reports that a model ID is not in an OpenCode service
+// catalog. Callers match it with errors.Is to distinguish "pick another
+// model" from genuine construction failures.
+var ErrUnknownModel = errors.New("unknown model for this OpenCode service")
 
 // This file implements OpenCode Zen and OpenCode Go support on top of the
 // existing generic transports. Both services are multi-protocol gateways:
@@ -128,7 +134,8 @@ func opencodeProtocolForModel(table []opencodeModel, model string) (string, erro
 		known = append(known, m.ID)
 	}
 	sort.Strings(known)
-	return "", fmt.Errorf("model %q is not in this OpenCode catalog (known: %s) - use a listed model or a direct-protocol custom provider instead", model, strings.Join(known, ", "))
+	return "", fmt.Errorf("%w: model %q is not in this OpenCode catalog (known: %s) - use a listed model or a direct-protocol custom provider instead",
+		ErrUnknownModel, model, strings.Join(known, ", "))
 }
 
 // OpenCodeRouter serves one OpenCode gateway (Zen or Go). It resolves the

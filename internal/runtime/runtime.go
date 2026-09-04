@@ -3,6 +3,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -756,7 +757,21 @@ func (r *Runtime) SetProvider(name string) error {
 	cfg.Model.Endpoint = resolved.BaseURL
 	provider, err := providers.DefaultFactories().Create(resolved.Spec(cfg.Model.Name))
 	if err != nil {
-		return fmt.Errorf("create provider %q: %w", name, err)
+		// Multi-protocol routers reject models outside their catalog, but
+		// the current model name still belongs to the previous provider
+		// at this point. Fall back to an unconfigured router so the
+		// switch succeeds and the model picker can open; any turn before
+		// a model is picked fails locally with guidance instead of
+		// sending a request down the wrong protocol.
+		if !errors.Is(err, providers.ErrUnknownModel) {
+			return fmt.Errorf("create provider %q: %w", name, err)
+		}
+		emptySpec := resolved.Spec("")
+		emptySpec.Model = ""
+		provider, err = providers.DefaultFactories().Create(emptySpec)
+		if err != nil {
+			return fmt.Errorf("create provider %q: %w", name, err)
+		}
 	}
 	r.cfg = &cfg
 	r.provider = provider
@@ -1342,7 +1357,19 @@ func ProviderFor(cfg *config.Config, id string) (providers.ModelProvider, error)
 	}
 	provider, err := providers.DefaultFactories().Create(resolved.Spec(cfg.Model.Name))
 	if err != nil {
-		return nil, fmt.Errorf("create provider %q: %w", id, err)
+		// Same stale-model case as SetProvider: a configured model from
+		// another provider must not prevent startup. Fall back to an
+		// unconfigured router; the model picker offers valid models and
+		// any turn before that fails locally with guidance.
+		if !errors.Is(err, providers.ErrUnknownModel) {
+			return nil, fmt.Errorf("create provider %q: %w", id, err)
+		}
+		emptySpec := resolved.Spec("")
+		emptySpec.Model = ""
+		provider, err = providers.DefaultFactories().Create(emptySpec)
+		if err != nil {
+			return nil, fmt.Errorf("create provider %q: %w", id, err)
+		}
 	}
 	return provider, nil
 }

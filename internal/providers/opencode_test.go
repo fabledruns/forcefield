@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -108,6 +109,13 @@ func TestOpenCodeEmptyModelDefersFailure(t *testing.T) {
 	}
 	if _, err := r.StreamChat(context.Background(), []Message{{Role: UserRole, Content: "hi"}}, nil); err == nil {
 		t.Fatal("empty-model turn must fail locally")
+	}
+}
+
+func TestOpenCodeUnknownModelIsSentinel(t *testing.T) {
+	_, err := NewOpenCodeGo(Spec{ID: "x", BaseURL: "http://localhost:9", Model: "nope"})
+	if !errors.Is(err, ErrUnknownModel) {
+		t.Errorf("error = %v, want errors.Is ErrUnknownModel", err)
 	}
 }
 
