@@ -84,23 +84,34 @@ func (m *model) Model() string { return m.modelName }
 // Provider reports the currently active provider name.
 func (m *model) Provider() string { return m.providerName }
 
-// SetModel switches the runtime to a new model and, only once that
-// succeeds, updates the label shown in the header.
+// SetModel switches the runtime to a new model and persists the selection
+// to config.yaml so it survives restarts. The header label updates once the
+// in-memory switch succeeds; a persistence failure is returned instead of
+// being silently ignored, while the new model stays active for this session.
 func (m *model) SetModel(name string) error {
 	if err := m.runtime.SetModel(name); err != nil {
 		return err
 	}
 	m.modelName = name
+	if err := m.runtime.SaveConfig(); err != nil {
+		return fmt.Errorf("save model selection: %w", err)
+	}
 	return nil
 }
 
-// SetProvider switches the runtime to a new provider and, only once that
-// succeeds, updates the label shown in the header.
+// SetProvider switches the runtime to a new provider and persists the
+// selection to config.yaml so it survives restarts. The header label
+// updates once the in-memory switch succeeds; a persistence failure is
+// returned instead of being silently ignored, while the new provider stays
+// active for this session.
 func (m *model) SetProvider(name string) error {
 	if err := m.runtime.SetProvider(name); err != nil {
 		return err
 	}
 	m.providerName = name
+	if err := m.runtime.SaveConfig(); err != nil {
+		return fmt.Errorf("save provider selection: %w", err)
+	}
 	return nil
 }
 
