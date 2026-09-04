@@ -20,9 +20,11 @@ type fakeContext struct {
 	quit     bool
 	model    string
 	provider string
+	agent    string
 
 	setModelErr    error
 	setProviderErr error
+	setAgentErr    error
 
 	pickedSessions []session.Session
 }
@@ -90,6 +92,18 @@ func (f *fakeContext) Skills() []skills.Skill { return nil }
 
 func (f *fakeContext) LoadSkill(id string) (string, error) {
 	return "", fmt.Errorf("skill %q: %w", id, skills.ErrSkillNotFound)
+}
+
+func (f *fakeContext) Agent() string { return f.agent }
+func (f *fakeContext) SetAgent(name string) error {
+	if f.setAgentErr != nil {
+		return f.setAgentErr
+	}
+	f.agent = name
+	return nil
+}
+func (f *fakeContext) Agents() []AgentSummary {
+	return []AgentSummary{{Name: "general", Description: "general"}, {Name: "coding", Description: "coding"}}
 }
 
 // echoCommand records the args it was called with and can be told to fail.

@@ -19,9 +19,11 @@ type fakeContext struct {
 	quit     bool
 	model    string
 	provider string
+	agent    string
 
 	setModelErr    error
 	setProviderErr error
+	setAgentErr    error
 
 	pickedSessions []session.Session
 
@@ -30,6 +32,7 @@ type fakeContext struct {
 
 	stats     command.SessionStats
 	toolLines []string
+	agentList []command.AgentSummary
 
 	effort   string
 	thinking *providers.ThinkingConfig
@@ -167,6 +170,21 @@ func (f *fakeContext) LoadSkill(id string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("skill %q: %w", id, skills.ErrSkillNotFound)
+}
+
+func (f *fakeContext) Agent() string { return f.agent }
+func (f *fakeContext) SetAgent(name string) error {
+	if f.setAgentErr != nil {
+		return f.setAgentErr
+	}
+	f.agent = name
+	return nil
+}
+func (f *fakeContext) Agents() []command.AgentSummary {
+	if f.agentList != nil {
+		return f.agentList
+	}
+	return []command.AgentSummary{{Name: "general", Description: "general"}, {Name: "coding", Description: "coding"}}
 }
 
 func TestExit(t *testing.T) {
