@@ -71,5 +71,38 @@ func TestToolsListsRegisteredTools(t *testing.T) {
 	}
 }
 
+func TestStatusShowsAgentSkills(t *testing.T) {
+	ctx := &fakeContext{
+		agent: "cyber",
+		agentList: []command.AgentSummary{
+			{Name: "cyber", Description: "c", Skills: []string{"intelligence"}},
+			{Name: "general", Description: "g", AllSkills: true},
+		},
+	}
+	if err := NewStatus().Execute(ctx, nil); err != nil {
+		t.Fatalf("Status.Execute error = %v", err)
+	}
+	out := strings.Join(ctx.lines, "\n")
+	if !strings.Contains(out, "Skills:") || !strings.Contains(out, "intelligence") {
+		t.Errorf("status must show active agent skills, got:\n%s", out)
+	}
+}
+
+func TestStatusShowsAllSkillsForGeneral(t *testing.T) {
+	ctx := &fakeContext{
+		agent: "general",
+		agentList: []command.AgentSummary{
+			{Name: "general", Description: "g", AllSkills: true},
+		},
+	}
+	if err := NewStatus().Execute(ctx, nil); err != nil {
+		t.Fatalf("Status.Execute error = %v", err)
+	}
+	out := strings.Join(ctx.lines, "\n")
+	if !strings.Contains(out, "all available") {
+		t.Errorf("general must show all-skills, got:\n%s", out)
+	}
+}
+
 // compile-time interface check for the new Context methods
 var _ command.Context = (*fakeContext)(nil)

@@ -293,14 +293,23 @@ func (r *Runtime) SkillWarnings() []string {
 	if r == nil || r.skills == nil || r.agents == nil {
 		return nil
 	}
+	return SkillAssignmentWarnings(r.agents, r.skills)
+}
+
+// SkillAssignmentWarnings reports assigned-but-missing skill IDs for a
+// registry/store pair without needing a full Runtime. Used by ff doctor.
+func SkillAssignmentWarnings(registry *agent.Registry, store *skills.Store) []string {
+	if registry == nil || store == nil {
+		return nil
+	}
 	var out []string
-	for _, def := range r.agents.List() {
+	for _, def := range registry.List() {
 		if def.AllSkills {
 			continue
 		}
 		for _, id := range def.Skills {
-			if _, ok := r.skills.Get(id); !ok {
-				out = append(out, fmt.Sprintf("agent %q references missing skill %q (not in %s)", def.Name, id, "the skill store"))
+			if _, ok := store.Get(id); !ok {
+				out = append(out, fmt.Sprintf("agent %q references missing skill %q (not installed in the skill store)", def.Name, id))
 			}
 		}
 	}
@@ -310,6 +319,13 @@ func (r *Runtime) SkillWarnings() []string {
 // applyAgentOverrides merges cfg.Agents into registry. Unknown agent names
 // have already been rejected by config validation; this is defence-in-depth.
 func applyAgentOverrides(registry *agent.Registry, overrides map[string]config.AgentConfig) error {
+	return ApplyAgentOverrides(registry, overrides)
+}
+
+// ApplyAgentOverrides merges cfg.Agents into registry. Exported for
+// diagnostics (ff doctor) that need effective assignments without a full
+// Runtime. The registry must still be under construction (not yet shared).
+func ApplyAgentOverrides(registry *agent.Registry, overrides map[string]config.AgentConfig) error {
 	for name, o := range overrides {
 		def, err := registry.Get(name)
 		if err != nil {

@@ -24,6 +24,9 @@ type AgentSummary struct {
 	Name        string
 	Description string
 	Tools       []string
+	// Skills lists assigned skill IDs; AllSkills reports full-catalog access.
+	Skills    []string
+	AllSkills bool
 }
 
 // Context is the session-facing interface used by commands.

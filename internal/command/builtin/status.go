@@ -40,6 +40,22 @@ func (Status) Execute(ctx command.Context, _ []string) error {
 		ctx.Println("Tools:     none")
 	}
 
+	// Active agent's skill assignment (capabilities, not just branding).
+	active := ctx.Agent()
+	for _, a := range ctx.Agents() {
+		if a.Name != active {
+			continue
+		}
+		if a.AllSkills {
+			ctx.Println("Skills:    all available (/skills to list)")
+		} else if len(a.Skills) > 0 {
+			ctx.Println("Skills:    %s", strings.Join(a.Skills, ", "))
+		} else {
+			ctx.Println("Skills:    none assigned")
+		}
+		break
+	}
+
 	caps := ctx.ReasoningCapabilities()
 	if caps.SupportsEffort() {
 		if lvl := ctx.Effort(); lvl != "" {

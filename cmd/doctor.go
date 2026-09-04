@@ -12,8 +12,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"forcefield/internal/agent"
 	"forcefield/internal/config"
 	"forcefield/internal/memory"
+	"forcefield/internal/runtime"
 	"forcefield/internal/sandbox"
 	"forcefield/internal/session"
 	"forcefield/internal/skills"
@@ -333,6 +335,20 @@ func doctorSkills(report func(verdict, string, ...any)) {
 	}
 	catalog := store.Catalog()
 	report(vOK, "skills: %d loaded from %s", len(catalog), filepath.Join(home, "skills"))
+
+	// Per-agent assignment diagnostics: an agent whose assigned skills
+	// are not installed degrades gracefully (catalog omission), but the
+	// user should understand why it shows fewer skills than defined.
+	if cfg, err := config.Load(); err == nil {
+		reg := agent.DefaultRegistry()
+		if err := runtime.ApplyAgentOverrides(reg, cfg.Agents); err == nil {
+			for _, w := range runtime.SkillAssignmentWarnings(reg, store) {
+				report(vWarn, "skills: %s", w)
+			}
+		} else {
+			report(vWarn, "skills: cannot resolve agent assignments: %v", err)
+		}
+	}
 }
 
 // doctorMemory verifies the current project's memory file parses.

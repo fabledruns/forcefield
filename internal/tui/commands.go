@@ -139,9 +139,10 @@ func (m *model) SetAgent(name string) error {
 	// Update provider/model labels if the agent hint changed them.
 	m.providerName = m.runtime.CurrentProvider()
 	m.modelName = m.runtime.CurrentModel()
-	// Persist the new agent on the session.
+	// Persist the agent key (not the display label, which may preserve
+	// a legacy custom agent.name) so reloads resolve deterministically.
 	if m.session != nil {
-		m.session.Agent = m.agentName
+		m.session.Agent = m.runtime.CurrentAgent()
 		_ = m.session.Save()
 	}
 	return nil
@@ -159,6 +160,8 @@ func (m *model) Agents() []command.AgentSummary {
 			Name:        a.Name,
 			Description: a.Description,
 			Tools:       append([]string(nil), a.Tools...),
+			Skills:      append([]string(nil), a.Skills...),
+			AllSkills:   a.AllSkills,
 		})
 	}
 	return res

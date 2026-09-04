@@ -27,6 +27,47 @@ func TestAgent_ListWithoutArgs(t *testing.T) {
 	}
 }
 
+func TestAgent_ListShowsSkills(t *testing.T) {
+	ctx := &fakeContext{
+		agent: "general",
+		agentList: []command.AgentSummary{
+			{Name: "coding", Description: "coding", Skills: []string{"code-review"}},
+			{Name: "legal", Description: "legal", Skills: []string{}},
+			{Name: "general", Description: "general", AllSkills: true},
+		},
+	}
+	if err := NewAgent().Execute(ctx, nil); err != nil {
+		t.Fatalf("Agent.Execute list: %v", err)
+	}
+	out := strings.Join(ctx.lines, "\n")
+	if !strings.Contains(out, "skills: code-review") {
+		t.Fatalf("list must show assigned skills, got:\n%s", out)
+	}
+	if !strings.Contains(out, "skills: no skills") {
+		t.Fatalf("list must show empty assignment, got:\n%s", out)
+	}
+	if !strings.Contains(out, "skills: all skills") {
+		t.Fatalf("list must show all-skills, got:\n%s", out)
+	}
+}
+
+func TestAgent_SwitchReportsSkills(t *testing.T) {
+	ctx := &fakeContext{
+		agent: "general",
+		agentList: []command.AgentSummary{
+			{Name: "cyber", Description: "cyber", Skills: []string{"intelligence"}},
+			{Name: "general", Description: "general", AllSkills: true},
+		},
+	}
+	if err := NewAgent().Execute(ctx, []string{"cyber"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	out := strings.Join(ctx.lines, "\n")
+	if !strings.Contains(out, "Skills: intelligence") {
+		t.Fatalf("switch must report skills, got:\n%s", out)
+	}
+}
+
 func TestAgent_SwitchWithArg(t *testing.T) {
 	ctx := &fakeContext{
 		agent: "general",

@@ -37,7 +37,14 @@ func (Agent) Execute(ctx command.Context, args []string) error {
 			if tools == "" {
 				tools = "no tools"
 			}
-			lines = append(lines, fmt.Sprintf("%s %s — %s [%s]", marker, a.Name, a.Description, tools))
+			skills := "all skills"
+			if !a.AllSkills {
+				skills = strings.Join(a.Skills, ", ")
+				if skills == "" {
+					skills = "no skills"
+				}
+			}
+			lines = append(lines, fmt.Sprintf("%s %s — %s\n    tools: %s\n    skills: %s", marker, a.Name, a.Description, tools, skills))
 		}
 		ctx.Println("Available agents:\n  %s", strings.Join(lines, "\n  "))
 		ctx.Println("Active: %s", active)
@@ -55,11 +62,18 @@ func (Agent) Execute(ctx command.Context, args []string) error {
 	if err := ctx.SetAgent(name); err != nil {
 		return fmt.Errorf("switch agent: %w", err)
 	}
-	// Find description for confirmation.
+	// Find description and skills for confirmation.
 	desc := ""
+	skillsLine := "all skills"
 	for _, a := range ctx.Agents() {
 		if a.Name == strings.ToLower(name) {
 			desc = a.Description
+			if !a.AllSkills {
+				skillsLine = strings.Join(a.Skills, ", ")
+				if skillsLine == "" {
+					skillsLine = "no skills"
+				}
+			}
 			break
 		}
 	}
@@ -73,5 +87,6 @@ func (Agent) Execute(ctx command.Context, args []string) error {
 	}
 	activeTools := ctx.Tools()
 	ctx.Println("  Tools: %d available", len(activeTools))
+	ctx.Println("  Skills: %s", skillsLine)
 	return nil
 }
