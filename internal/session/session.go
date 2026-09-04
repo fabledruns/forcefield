@@ -25,7 +25,10 @@ type Session struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-
+	// Agent is the active specialised agent for this session (e.g. "coding").
+	// Empty means old sessions that predate agents; callers should treat
+	// "" as "general" for backwards compatibility.
+	Agent    string    `json:"agent,omitempty"`
 	Messages []Message `json:"messages"`
 }
 
