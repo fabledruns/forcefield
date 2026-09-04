@@ -129,6 +129,44 @@ func ModelReasoningCapabilities(providerID, modelID string) ReasoningCapabilitie
 		return ReasoningCapabilities{}
 	case "lmstudio":
 		return ReasoningCapabilities{}
+	case "opencode-zen", "opencode-go":
+		// Resolve the model's wire protocol first: reasoning controls
+		// differ per transport, and one gateway hosts all three.
+		table := opencodeTableForProvider(providerID)
+		if table == nil {
+			return ReasoningCapabilities{}
+		}
+		protocol, err := opencodeProtocolForModel(table, modelID)
+		if err != nil {
+			return ReasoningCapabilities{}
+		}
+		switch protocol {
+		case opencodeResponses:
+			// Reasoning effort is the Responses-native control.
+			return ReasoningCapabilities{
+				Effort: &EffortCapability{
+					Levels:  []string{"low", "medium", "high"},
+					Default: "medium",
+				},
+			}
+		case opencodeMessages:
+			// Only verified Claude models get budget thinking; other
+			// Anthropic-protocol models stay conservative.
+			if anthropicThinkingModels[modelLower] {
+				return ReasoningCapabilities{
+					Thinking: &ThinkingCapability{
+						Kind:           ThinkingKindBudget,
+						MinBudget:      1024,
+						MaxBudget:      32000,
+						DefaultBudget:  4096,
+						DefaultEnabled: false,
+					},
+				}
+			}
+			return ReasoningCapabilities{}
+		default:
+			return ReasoningCapabilities{}
+		}
 	default:
 		// Generic openai-compatible custom endpoints: handle test models
 		// and known generic effort models. For tests we need a provider
@@ -262,6 +300,16 @@ type ReasoningAware interface {
 var anthropicThinkingModels = map[string]bool{
 	"claude-sonnet-4-5": true,
 	"claude-haiku-4-5":  true,
+	// Newer Claude models served direct and via OpenCode Zen, all on the
+	// Anthropic Messages protocol with budget thinking. Fable and
+	// third-party models on the same protocol stay conservative.
+	"claude-opus-4-5":   true,
+	"claude-opus-4-6":   true,
+	"claude-opus-4-7":   true,
+	"claude-opus-4-8":   true,
+	"claude-sonnet-4-6": true,
+	"claude-sonnet-5":   true,
+	"claude-opus-5":     true,
 }
 
 var geminiThinkingModels = map[string]bool{

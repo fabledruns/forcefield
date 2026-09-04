@@ -181,5 +181,14 @@ func newDefaultFactories() *FactoryRegistry {
 	r.MustRegister("gemini", func(spec Spec) (ModelProvider, error) {
 		return NewGeminiProvider(spec), nil
 	})
+	r.MustRegister("openai-responses", func(spec Spec) (ModelProvider, error) {
+		return NewOpenAIResponses(spec), nil
+	})
+	r.MustRegister("opencode-zen", func(spec Spec) (ModelProvider, error) {
+		return NewOpenCodeZen(spec)
+	})
+	r.MustRegister("opencode-go", func(spec Spec) (ModelProvider, error) {
+		return NewOpenCodeGo(spec)
+	})
 	return r
 }

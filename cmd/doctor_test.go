@@ -372,6 +372,56 @@ func TestDoctorProvider_OpenAICompatible(t *testing.T) {
 	}
 }
 
+func TestDoctorProvider_OpenCodeGo(t *testing.T) {
+	// OpenCode gateways probe GET /models with Bearer auth.
+	home := isolateDoctorHome(t)
+	homeForcefield := filepath.Join(home, ".forcefield")
+	_ = os.MkdirAll(homeForcefield, 0o700)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-fake-secret" {
+			t.Errorf("auth = %q, want Bearer key", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"data":[{"id":"glm-5.3"}]}`)
+	}))
+	defer srv.Close()
+
+	body := "model:\n  provider: opencode-go\n  name: glm-5.3\nproviders:\n  opencode-go:\n    type: opencode-go\n    base_url: " + srv.URL + "\n    api_key_env: OPENCODE_API_KEY\n"
+	path, err := config.Path()
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("OPENCODE_API_KEY", "sk-fake-secret")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var reports []string
+	report := func(v verdict, format string, args ...any) {
+		reports = append(reports, fmt.Sprintf("%s %s", v.String(), fmt.Sprintf(format, args...)))
+	}
+	doctorProvider(cfg, report)
+	foundOK := false
+	for _, r := range reports {
+		if strings.Contains(r, "server is up") {
+			foundOK = true
+		}
+		if strings.Contains(r, "sk-fake-secret") {
+			t.Errorf("report leaked secret: %q", r)
+		}
+	}
+	if !foundOK {
+		t.Errorf("expected server is up report, got %v", reports)
+	}
+}
+
 func TestDoctorProvider_SkipsWhenKeyMissing(t *testing.T) {
 	home := isolateDoctorHome(t)
 	_ = os.MkdirAll(filepath.Join(home, ".forcefield"), 0o700)
