@@ -109,9 +109,9 @@ Detailed steps:
 The runtime registers a special tool named `load_skill` for the **global** skill store (`~/.forcefield/skills/`).
 
 - At startup the runtime scans the global skills directory once (file skills `*.md` and directory skills `*/SKILL.md`) into an in-memory store. Supporting files are ignored and never scanned as skills.
-- The agent system prompt includes only the compact catalog (`id`, `name`, `description`), not full bodies.
+- Each agent's system prompt includes only its assigned compact catalog (`id`, `name`, `description`), not full bodies.
 - When the model needs full skill instructions, it calls `load_skill` with a skill ID.
-- The tool reads the body from the in-memory store and returns it. No disk scan happens during tool execution.
+- The tool reads the body from the in-memory store and returns it — only for IDs in the active agent's set. No disk scan happens during tool execution.
 - The user inspects the same global catalog via `/skills list` and `/skills show <id>`; those commands never inject content into the model — they only print to the transcript.
 - Skills are untrusted Markdown: tool permissions and the `sandbox` executor in `config.yaml` remain authoritative regardless of skill content.
 

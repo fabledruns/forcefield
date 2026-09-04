@@ -107,10 +107,13 @@ agents:
     description: "Custom coding agent"
     system_prompt: "You are a custom coding agent..."
     tools: [read_file, write_file, list_files, pwd, shell]
+    skills: [code-review, debugging]   # omitted keeps built-in; [] means none
+    constraints: ["Stay in scope."]
     provider: openai
     model: gpt-4o-mini
   legal:
     system_prompt: "You are a careful legal assistant..."
+    skills: []   # explicitly no skills
 ```
 
 | Field           | Description |
@@ -118,6 +121,8 @@ agents:
 | `description`   | One-line summary for listings. |
 | `system_prompt` | Domain-specific identity (shared contract still appended). |
 | `tools`         | Explicit allow-list; unknown tools are rejected. |
+| `skills`        | Explicit skill-ID allow-list; omitted keeps built-in, `[]` means none. Unknown IDs warn at runtime, never fail load. |
+| `constraints`   | Behavioral guidance lines (prompt-only, never enforcement). |
 | `provider`      | Optional provider hint; applied via `SetProvider` path, in-memory only. |
 | `model`         | Optional model hint; applied via `SetModel`. |
 

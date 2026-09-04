@@ -71,9 +71,11 @@ Built-in tools are registered through `tools/builtin`.
 | `write_file`  | `tools/filesystem`      | Write content to a file.                         |
 | `list_files`  | `tools/filesystem`      | List files in a directory.                       |
 | `pwd`         | `tools/shell`           | Return the current working directory.            |
-| `load_skill`  | `runtime`               | Load a skill body by ID from the skill store.    |
+| `search_files`| `tools/search`          | Search file contents under a directory. Skips `.git`, sensitive files, symlink escapes; max 100 matches. |
+| `secret_scan` | `tools/security`        | Defensively scan one file/text for hardcoded secrets (local-only, redacted output). |
+| `load_skill`  | `runtime`               | Load a skill body by ID, scoped to the active agent's skill set. |
 
-`load_skill` is registered by the runtime, not by the generic builtin package, because it needs the skill store.
+`load_skill` is registered by the runtime, not by the generic builtin package, because it needs the skill store. It refuses IDs outside the active agent's assignment with a soft error.
 
 ## Execution Flow
 

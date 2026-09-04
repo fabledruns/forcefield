@@ -15,7 +15,7 @@ Slash commands control the chat session. Examples:
 - `/model` — show or switch the active model
 - `/provider` — show or switch the active provider
 - `/sessions` — open the session picker
-- `/status` — show the active agent, model, session size, and tools
+- `/status` — show the active agent, model, session size, tools, and skills
 - `/tools` — list the tools available to the agent
 
 ## Core Interfaces
@@ -83,7 +83,7 @@ Commands act on the session through a small interface. The TUI is the production
 | `provider`   | —       | `/provider [name]`       | Show or switch the active provider.         |
 | `agent`      | —       | `/agent [name]`          | List agents or switch the active agent.     |
 | `sessions`   | `s`     | `/sessions`              | Open the saved session picker.              |
-| `status`     | —       | `/status`                | Show agent, provider, model, session size, tools. |
+| `status`     | —       | `/status`                | Show agent, provider, model, session size, tools, skills. |
 | `tools`      | —       | `/tools`                 | List the tools available to the agent.      |
 | `skills`     | `skill` | `/skills [list|show <id>]` | List and inspect global skills.           |
 

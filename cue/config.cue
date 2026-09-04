@@ -36,12 +36,15 @@ package config
 // AgentName lists the built-in specialised agents recognised by the registry.
 #AgentName: "coding" | "cyber" | "legal" | "docs" | "research" | "devops" | "general"
 
-// AgentConfig is the per-agent override block under agents:. Every field is
-// optional; only non-empty values replace the built-in definition.
+// AgentConfig is the per-agent override block under agents:. Scalars are
+// optional (non-empty replaces). Lists are optional (omitted keeps the
+// built-in; explicit replaces, and explicit empty means "none").
 #AgentConfig: {
 	description?:   string
 	system_prompt?: string
 	tools?: [...string]
+	skills?: [...string]
+	constraints?: [...string]
 	provider?: string
 	model?:    string
 }
