@@ -2,16 +2,21 @@ package providers
 
 import (
 	"net/http"
+	"strings"
+	"time"
 )
 
 // This file keeps the historical NVIDIA NIM and LM Studio constructors
 // working on top of the shared OpenAI-compatible transport. Both services
 // speak that wire protocol; only defaults and error wording differ.
 
-// defaultNvidiaTimeout bounds how long a single request to NVIDIA NIM may
-// take before it's aborted. It mirrors defaultStreamTimeout so the
-// historical constructor shares the same bound.
-const defaultNvidiaTimeout = defaultStreamTimeout
+// defaultNvidiaTimeout bounds how long the client will wait for the first
+// response headers from NVIDIA NIM. Kimi K3 on NIM can take >60s to start
+// streaming reasoning (TTFB), but must not be treated as unreachable.
+// The body is streamed without an overall timeout; only the header phase is
+// bounded. 300s is generous for Kimi K3's slow TTFB while still failing
+// fast on dead endpoints.
+const defaultNvidiaTimeout = 300 * time.Second
 
 // NvidiaProvider is the OpenAI-compatible transport configured for
 // NVIDIA NIM. It exists so existing callers and tests keep compiling;
@@ -33,7 +38,15 @@ func NewNvidiaProvider(endpoint, model, apiKey string, client *http.Client) *Nvi
 	if client != nil {
 		p.client = client
 	} else {
-		p.client = &http.Client{Timeout: defaultNvidiaTimeout}
+		timeout := defaultStreamTimeout
+		if strings.Contains(strings.ToLower(model), "kimi") {
+			timeout = defaultNvidiaTimeout
+		}
+		p.client = &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: timeout,
+			},
+		}
 	}
 	p.authHintEnv = "NVIDIA_API_KEY"
 	// Ask NIM to actually stream reasoning for models that support thinking.

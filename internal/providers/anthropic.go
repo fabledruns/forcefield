@@ -123,6 +123,9 @@ func (a *AnthropicProvider) statusHint(status int, _ string) string {
 }
 
 func (a *AnthropicProvider) wrapTransport(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) || Classify(err) == ErrKindTimeout {
+		return fmt.Errorf("request to %s at %s timed out waiting for response headers: %w", a.displayName(), a.spec.BaseURL, err)
+	}
 	return fmt.Errorf("could not reach %s at %s: %w", a.displayName(), a.spec.BaseURL, err)
 }
 

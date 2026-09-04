@@ -234,6 +234,9 @@ func (o *OllamaProvider) StreamChat(ctx context.Context, messages []Message, too
 	}
 
 	wrapTransport := func(err error) error {
+		if errors.Is(err, context.DeadlineExceeded) || Classify(err) == ErrKindTimeout {
+			return fmt.Errorf("request to Ollama at %s timed out waiting for response headers: %w", o.Endpoint, err)
+		}
 		return fmt.Errorf(
 			"could not reach Ollama at %s (is `ollama serve` running?): %w",
 			o.Endpoint, err,

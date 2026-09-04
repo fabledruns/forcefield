@@ -183,9 +183,10 @@ type model struct {
 	lastKeyAt time.Time
 
 	// mouseEnabled mirrors whether Bubble Tea's mouse tracking is on.
-	// It starts enabled (cell motion: clicks, wheel, drag). F2 toggles it
-	// so users can hand mouse events back to the terminal for native text
-	// selection; keyboard behavior is identical in both modes.
+	// It is always enabled so cursor/mouse interactions (clicks, wheel,
+	// hover, pickers) work without interruption. Text selection remains
+	// available via the terminal's Shift+drag (or equivalent) without
+	// needing a toggle; keyboard behavior is identical.
 	mouseEnabled bool
 
 	// hoverID is the hit-region ID under the pointer, refreshed from
@@ -848,20 +849,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlY:
 		return m, copyLastAssistantMessage(m.entries)
 
-	case tea.KeyF2:
-		// Toggle mouse capture. Off hands the pointer back to the terminal
-		// for native text selection; on restores scrolling/clicks. Keyboard
-		// behavior is identical either way.
-		m.mouseEnabled = !m.mouseEnabled
-		if m.hoverID != "" {
-			m.hoverID = ""
-			m.refreshTranscript()
-		}
-		if m.mouseEnabled {
-			return m, tea.EnableMouseCellMotion
-		}
-		return m, tea.DisableMouse
-
 	case tea.KeyEnter:
 		// Enter-with-modifier inserts a real newline instead of
 		// submitting; see newInput for which chords can actually reach
@@ -1488,7 +1475,7 @@ func (m model) renderFooter() string {
 
 	inputBox := inputBorderStyle.Width(m.width - 2).Render(m.input.View())
 
-	status := helpStyle.Render("enter send · alt+enter newline · ctrl+e tool · ctrl+r think · ctrl+t status · f2 mouse/selection · esc quit")
+	status := helpStyle.Render("enter send · alt+enter newline · ctrl+e tool · ctrl+r think · ctrl+t status · esc quit")
 	if m.waiting {
 		activity := ""
 		if m.showActivity {

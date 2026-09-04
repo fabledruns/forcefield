@@ -5,13 +5,19 @@ import (
 	"time"
 )
 
-// defaultStreamTimeout bounds how long any provider request may take
-// before it's aborted. It covers the entire exchange including reading the
-// streamed body. Without a bound a stalled cloud stream hangs until the OS
-// TCP timeout (minutes to hours). 120s is generous for normal streaming
-// completions while still failing fast on dead connections.
+// defaultStreamTimeout bounds how long the client will wait for the
+// first response headers. It does not bound the entire streamed body.
+// For streaming completions the headers should arrive quickly (even if the
+// model then thinks for a long time), so we bound only the header phase
+// and let the body stream for as long as the provider is actively sending
+// SSE. Without a header bound a dead cloud endpoint would hang until the
+// OS TCP timeout (minutes to hours).
 const defaultStreamTimeout = 120 * time.Second
 
 func newDefaultClient() *http.Client {
-	return &http.Client{Timeout: defaultStreamTimeout}
+	return &http.Client{
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: defaultStreamTimeout,
+		},
+	}
 }

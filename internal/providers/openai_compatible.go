@@ -69,6 +69,16 @@ func NewOpenAICompatible(spec Spec) *OpenAICompatible {
 			},
 		}
 	}
+	// Kimi K3 on NIM can be very slow to start streaming (TTFB) due to
+	// reasoning; give it a longer header timeout so a valid slow response
+	// is not timed out and mis-reported as unreachable.
+	if isNvidiaSpec(spec) && strings.Contains(strings.ToLower(spec.Model), "kimi") {
+		p.client = &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: defaultNvidiaTimeout,
+			},
+		}
+	}
 	return p
 }
 
@@ -154,6 +164,12 @@ func (o *OpenAICompatible) statusHint(status int, _ string) string {
 }
 
 func (o *OpenAICompatible) wrapTransport(err error) error {
+	// Distinguish a header timeout (slow TTFB) from a true unreachable
+	// peer so a valid slow provider response is not mis-reported as
+	// "could not reach" and incorrectly classified as ErrKindConnection.
+	if errors.Is(err, context.DeadlineExceeded) || Classify(err) == ErrKindTimeout {
+		return fmt.Errorf("request to %s at %s timed out waiting for response headers: %w", o.displayName(), o.spec.BaseURL, err)
+	}
 	return fmt.Errorf("could not reach %s at %s: %w", o.displayName(), o.spec.BaseURL, err)
 }
 

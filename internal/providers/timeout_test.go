@@ -9,28 +9,40 @@ import (
 )
 
 // TestDefaultClientHasTimeout pins that every adapter gets a bounded
-// http.Client. A missing timeout would let a dead stream hang until the OS
-// TCP timeout.
+// header timeout. For streaming, the overall Client.Timeout must be 0
+// (no bound on the SSE body), while ResponseHeaderTimeout bounds TTFB.
+// A missing header timeout would let a dead stream hang until the OS TCP
+// timeout, while an overall Timeout would abort a valid long stream (e.g.
+// Kimi K3 reasoning).
 func TestDefaultClientHasTimeout(t *testing.T) {
 	cases := []struct {
-		name   string
-		client *http.Client
+		name        string
+		client      *http.Client
+		wantHeader  time.Duration
+		wantOverall time.Duration
 	}{
-		{"ollama", NewOllamaProvider("http://localhost:11434", "m").client},
-		{"openai-compatible", NewOpenAICompatible(Spec{ID: "test", Type: "openai-compatible", BaseURL: "http://example.com", Model: "m"}).client},
-		{"anthropic", NewAnthropicProvider(Spec{ID: "anthropic", Type: "anthropic", BaseURL: "https://api.anthropic.com", Model: "m"}).client},
-		{"gemini", NewGeminiProvider(Spec{ID: "gemini", Type: "gemini", BaseURL: "https://generativelanguage.googleapis.com", Model: "m"}).client},
-		{"nvidia", NewNvidiaProvider("https://integrate.api.nvidia.com/v1", "m", "", nil).client},
+		{"ollama", NewOllamaProvider("http://localhost:11434", "m").client, defaultStreamTimeout, 0},
+		{"openai-compatible", NewOpenAICompatible(Spec{ID: "test", Type: "openai-compatible", BaseURL: "http://example.com", Model: "m"}).client, defaultStreamTimeout, 0},
+		{"anthropic", NewAnthropicProvider(Spec{ID: "anthropic", Type: "anthropic", BaseURL: "https://api.anthropic.com", Model: "m"}).client, defaultStreamTimeout, 0},
+		{"gemini", NewGeminiProvider(Spec{ID: "gemini", Type: "gemini", BaseURL: "https://generativelanguage.googleapis.com", Model: "m"}).client, defaultStreamTimeout, 0},
+		{"nvidia", NewNvidiaProvider("https://integrate.api.nvidia.com/v1", "m", "", nil).client, defaultStreamTimeout, 0},
+		{"nvidia-kimi", NewOpenAICompatible(Spec{ID: "nvidia", Type: "openai-compatible", BaseURL: "https://integrate.api.nvidia.com/v1", Model: "kimi-k3"}).client, defaultNvidiaTimeout, 0},
 	}
 	for _, c := range cases {
 		if c.client == nil {
 			t.Fatalf("%s client is nil", c.name)
 		}
-		if c.client.Timeout == 0 {
-			t.Errorf("%s client Timeout is 0, want %v", c.name, defaultStreamTimeout)
+		if c.client.Timeout != c.wantOverall {
+			t.Errorf("%s client Timeout = %v, want %v (overall timeout must be 0 for streaming)", c.name, c.client.Timeout, c.wantOverall)
 		}
-		if c.client.Timeout != defaultStreamTimeout {
-			t.Errorf("%s client Timeout = %v, want %v", c.name, c.client.Timeout, defaultStreamTimeout)
+		var gotHeader time.Duration
+		if c.client.Transport != nil {
+			if tr, ok := c.client.Transport.(*http.Transport); ok {
+				gotHeader = tr.ResponseHeaderTimeout
+			}
+		}
+		if gotHeader != c.wantHeader {
+			t.Errorf("%s Transport.ResponseHeaderTimeout = %v, want %v", c.name, gotHeader, c.wantHeader)
 		}
 	}
 }

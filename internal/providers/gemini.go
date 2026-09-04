@@ -117,6 +117,9 @@ func (g *GeminiProvider) statusHint(status int, _ string) string {
 }
 
 func (g *GeminiProvider) wrapTransport(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) || Classify(err) == ErrKindTimeout {
+		return fmt.Errorf("request to %s at %s timed out waiting for response headers: %w", g.displayName(), g.spec.BaseURL, err)
+	}
 	return fmt.Errorf("could not reach %s at %s: %w", g.displayName(), g.spec.BaseURL, err)
 }
 
