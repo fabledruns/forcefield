@@ -17,11 +17,17 @@ const (
 
 	IconSuccess Icon = "✓"
 	IconFailure Icon = "✕"
-	IconWarning Icon = "!"
-	IconCancel  Icon = "⊘"
-	IconRunning Icon = "●"
-	IconIdle    Icon = "○"
-	IconThink   Icon = "◌"
+
+	// Status glyphs for compact tool/thinking rows. The distinction
+	// between outcomes comes from the glyph, not from bright colors.
+	IconDiamond  Icon = "◈" // normal successful tool result
+	IconStar8    Icon = "✳" // countable search/listing result
+	IconThinking Icon = "◇" // thinking status line
+	IconWarning  Icon = "!"
+	IconCancel   Icon = "⊘"
+	IconRunning  Icon = "●"
+	IconIdle     Icon = "○"
+	IconThink    Icon = "◌"
 
 	IconPipe     Icon = "│"
 	IconSep      Icon = "·"

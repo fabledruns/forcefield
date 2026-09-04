@@ -66,6 +66,10 @@ type cachedBlock struct {
 	content   string
 	streaming bool
 	hovered   bool
+	// turn and groupStart capture turn-group membership: a reused block
+	// must have rendered with the same header suppression as before.
+	turn       uint64
+	groupStart bool
 	// thinking, when present
 	thinkingText      string
 	thinkingExpanded  bool
@@ -608,7 +612,7 @@ func (m *model) stopStream(savePartial bool) {
 
 func (m *model) appendAssistantText(text string) {
 	if len(m.entries) == 0 || m.entries[len(m.entries)-1].Role != roleAssistant {
-		m.entries = append(m.entries, chatEntry{Role: roleAssistant, Streaming: true})
+		m.entries = append(m.entries, chatEntry{Role: roleAssistant, Streaming: true, Turn: m.streamGen})
 	}
 	m.entries[len(m.entries)-1].Content += text
 }
@@ -627,6 +631,7 @@ func (m *model) appendThinking(text string) {
 	}
 	m.entries = append(m.entries, chatEntry{
 		Role:     roleActivity,
+		Turn:     m.streamGen,
 		Thinking: &thinkingRecord{text: text, startedAt: time.Now()},
 	})
 }
@@ -687,6 +692,7 @@ func (m *model) startToolActivity(call *providers.ToolCall) {
 	record := &toolRecord{name: call.Name, args: call.Arguments}
 	m.entries = append(m.entries, chatEntry{
 		Role:    roleActivity,
+		Turn:    m.streamGen,
 		Content: formatToolStart(call),
 		Tool:    record,
 	})
@@ -783,7 +789,7 @@ func (m *model) appendToolActivity(text string, record *toolRecord) {
 	if text == "" {
 		return
 	}
-	m.entries = append(m.entries, chatEntry{Role: roleActivity, Content: text, Tool: record})
+	m.entries = append(m.entries, chatEntry{Role: roleActivity, Turn: m.streamGen, Content: text, Tool: record})
 }
 
 // handleKey processes keyboard input: global shortcuts first, then
@@ -1274,6 +1280,7 @@ func (m *model) refreshTranscript() {
 	renderedBlocks := make([]string, len(m.entries))
 	newSpans := make([]contentSpan, 0, len(m.entries))
 	anyDirty := widthChanged || len(oldBlocks) != len(m.entries)
+	starts := groupStarts(m.entries)
 	line := 0
 	for i, e := range m.entries {
 		hovered := false
@@ -1292,7 +1299,7 @@ func (m *model) refreshTranscript() {
 		canReuse := false
 		if !widthChanged && i < len(oldBlocks) {
 			cb := oldBlocks[i]
-			if cb.role == e.Role && cb.content == e.Content && cb.streaming == e.Streaming && cb.hovered == hovered {
+			if cb.role == e.Role && cb.content == e.Content && cb.streaming == e.Streaming && cb.hovered == hovered && cb.turn == e.Turn && cb.groupStart == starts[i] {
 				if e.Thinking != nil {
 					if cb.thinkingText == e.Thinking.text && cb.thinkingExpanded == e.Thinking.expanded && cb.thinkingStreaming == e.Thinking.streaming() {
 						if e.Thinking.streaming() {
@@ -1321,15 +1328,17 @@ func (m *model) refreshTranscript() {
 			// lines already cached in newBlocks[i].lines
 		} else {
 			anyDirty = true
-			block := e.render(width, hovered)
+			block := e.renderGrouped(width, hovered, starts[i] || e.Role != roleAssistant)
 			lines := strings.Count(block, "\n") + 1
 			cb := cachedBlock{
-				rendered:  block,
-				lines:     lines,
-				role:      e.Role,
-				content:   e.Content,
-				streaming: e.Streaming,
-				hovered:   hovered,
+				rendered:   block,
+				lines:      lines,
+				role:       e.Role,
+				content:    e.Content,
+				streaming:  e.Streaming,
+				hovered:    hovered,
+				turn:       e.Turn,
+				groupStart: starts[i],
 			}
 			if e.Thinking != nil {
 				cb.thinkingText = e.Thinking.text
@@ -1363,7 +1372,13 @@ func (m *model) refreshTranscript() {
 				action:    action,
 			})
 		}
-		line += lines + rowsBetweenEntries
+		// Mirror joinGrouped: no blank separator row between members of
+		// one turn group, so hit regions track the drawn rows exactly.
+		step := rowsBetweenEntries
+		if i+1 < len(m.entries) && !starts[i+1] {
+			step = 0
+		}
+		line += lines + step
 	}
 
 	// If nothing dirty and width/hover stable, viewport already shows the
@@ -1383,7 +1398,7 @@ func (m *model) refreshTranscript() {
 		return
 	}
 
-	content := strings.Join(renderedBlocks, "\n\n")
+	content := joinGrouped(renderedBlocks, starts)
 	m.tcacheWidth = width
 	m.tcacheHoverID = hoverID
 	m.tcacheBlocks = newBlocks

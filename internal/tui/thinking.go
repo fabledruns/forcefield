@@ -41,12 +41,10 @@ const liveThinkingLines = 3
 // line until expanded with ctrl+r. hovered marks the block under the
 // pointer for subtle emphasis.
 func renderThinking(t *thinkingRecord, width int, hovered bool) string {
-	caret := IconCollapsed
-	if t.expanded {
-		caret = IconExpanded
-	}
-	header := fmt.Sprintf("%s %s Thinking  %s",
-		caret, IconThink, formatThinkingDuration(t.duration()))
+	// The header carries no expand caret: thinking rows stay one compact
+	// line, and expansion remains available via ctrl+r and mouse click.
+	header := fmt.Sprintf("%s Thinking  %s",
+		IconThinking, formatThinkingDuration(t.duration()))
 	if hovered {
 		header = hoverEmphasisStyle.Render(header)
 	} else {

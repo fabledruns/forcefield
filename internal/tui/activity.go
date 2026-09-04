@@ -86,23 +86,36 @@ func formatToolFinish(result *runtime.ToolResult, eventType runtime.EventType) s
 		return message
 	}
 
+	// The icon follows the summary kind: countable listing results
+	// (list_files, search_files) get the discovery star, plain actions
+	// get the diamond. There is no tool-metadata category framework, and
+	// the result carries only the tool name, so these two branches are
+	// the complete set of tools producing countable listings.
 	var message string
 	switch result.Name {
 	case "list_files":
 		if count := nonEmptyLines(result.Content); count > 0 {
-			message = fmt.Sprintf("%s Found %d entries", IconSuccess, count)
+			message = fmt.Sprintf("%s Found %d entries", IconStar8, count)
+		}
+	case "search_files":
+		// The tool reports zero hits as a "no matches for …" sentence,
+		// which is itself one non-empty line and must not count.
+		if !strings.HasPrefix(strings.TrimSpace(result.Content), "no matches for") {
+			if count := nonEmptyLines(result.Content); count > 0 {
+				message = fmt.Sprintf("%s Found %d matches", IconStar8, count)
+			}
 		}
 	case "read_file":
 		if path, ok := result.Arguments["path"].(string); ok && path != "" {
-			message = fmt.Sprintf("%s Read %s", IconSuccess, path)
+			message = fmt.Sprintf("%s Read %s", IconDiamond, path)
 		}
 	case "write_file":
 		if path, ok := result.Arguments["path"].(string); ok && path != "" {
-			message = fmt.Sprintf("%s Wrote %s", IconSuccess, path)
+			message = fmt.Sprintf("%s Wrote %s", IconDiamond, path)
 		}
 	}
 	if message == "" {
-		message = fmt.Sprintf("%s %s completed", IconSuccess, result.Name)
+		message = fmt.Sprintf("%s %s completed", IconDiamond, result.Name)
 	}
 	return message + durationSuffix(result.Duration)
 }
