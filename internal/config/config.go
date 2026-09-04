@@ -141,6 +141,8 @@ permissions:
     read_file: allow
     list_files: allow
     pwd: allow
+    search_files: allow
+    secret_scan: allow
     write_file: ask
     shell: ask
     add_project_memory: ask

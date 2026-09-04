@@ -32,6 +32,16 @@ tools: [
 		default_permission: "allow"
 	},
 	{
+		name:               "search_files"
+		description:        "Search file contents under a directory for a literal string or regex."
+		default_permission: "allow"
+	},
+	{
+		name:               "secret_scan"
+		description:        "Defensively scan one file or inline text for hardcoded secrets (local-only)."
+		default_permission: "allow"
+	},
+	{
 		name:               "write_file"
 		description:        "Create or overwrite a file with the given content."
 		default_permission: "ask"

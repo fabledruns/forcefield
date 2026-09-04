@@ -6,6 +6,8 @@ import (
 	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 	"forcefield/internal/tools/filesystem"
+	"forcefield/internal/tools/search"
+	"forcefield/internal/tools/security"
 	"forcefield/internal/tools/shell"
 )
 
@@ -52,6 +54,8 @@ func Register(m *tools.Manager, opts ...Option) error {
 		newListFiles(o),
 		shell.NewPWD(),
 		newShell(o),
+		newSearchFiles(o),
+		newSecretScan(o),
 	}
 
 	for _, t := range all {
@@ -91,6 +95,20 @@ func newShell(o options) tools.Tool {
 		return shell.NewShellWithExecutor(o.executor)
 	}
 	return shell.NewShell()
+}
+
+func newSearchFiles(o options) tools.Tool {
+	if o.hasPolicy && o.policy.Mode == sandbox.ModeWSL {
+		return search.NewSearchFilesWithPolicy(o.policy)
+	}
+	return search.NewSearchFiles()
+}
+
+func newSecretScan(o options) tools.Tool {
+	if o.hasPolicy && o.policy.Mode == sandbox.ModeWSL {
+		return security.NewSecretScanWithPolicy(o.policy)
+	}
+	return security.NewSecretScan()
 }
 
 // NewManager returns a Manager with every built-in tool already

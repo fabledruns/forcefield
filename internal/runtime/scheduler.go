@@ -305,7 +305,7 @@ func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit fu
 // model to recognize secrets.
 func isSensitiveCall(call providers.ToolCall) bool {
 	switch call.Name {
-	case "read_file", "write_file", "list_files":
+	case "read_file", "write_file", "list_files", "search_files", "secret_scan":
 		if v, ok := call.Arguments["path"]; ok {
 			if s, ok := v.(string); ok {
 				return filesystem.IsSensitivePath(s)
