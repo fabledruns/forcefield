@@ -167,7 +167,7 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 	switch resolved.Type {
 	case "ollama":
 		auth = func(req *http.Request) {}
-	case "openai-compatible":
+	case "openai-compatible", "opencode-zen", "opencode-go":
 		key := resolved.APIKey
 		auth = func(req *http.Request) {
 			if key != "" {
@@ -219,7 +219,10 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 		}
 		report(vOK, "%s: model %q is available (%d installed)", resolved.Label, cfg.Model.Name, len(names))
 
-	case "openai-compatible":
+	case "openai-compatible", "opencode-zen", "opencode-go":
+		// Both OpenCode gateways serve GET /models in the standard
+		// OpenAI list shape under their versioned base URL, so the same
+		// probe covers them.
 		var body struct {
 			Data []struct {
 				ID string `json:"id"`
