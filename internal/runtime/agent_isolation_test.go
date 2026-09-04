@@ -26,18 +26,17 @@ func newAgentTestRuntime(t *testing.T, provider providers.ModelProvider) *Runtim
 		Model: config.Model{Provider: "ollama", Name: "test-model"},
 	}
 
-	// Pick general as initial
+	// Pick general as initial, built through the real buildAgent path
+	// (per-agent catalog + constraints + legacy handling).
 	def, _ := registry.Get("general")
 	filtered, err := full.Filtered(def.Tools)
 	if err != nil {
 		t.Fatalf("filter general: %v", err)
 	}
-	a := agent.New(def.Name, def.SystemPrompt, "").WithProjectMemory(memory)
 
 	rt := &Runtime{
 		cfg:               cfg,
 		provider:          provider,
-		agent:             a,
 		manager:           filtered,
 		fullManager:       full,
 		agents:            registry,
@@ -46,6 +45,7 @@ func newAgentTestRuntime(t *testing.T, provider providers.ModelProvider) *Runtim
 		scheduler:         newScheduler(filtered, nil, nil, DefaultSchedulerConfig),
 		discovery:         providers.NewDiscovery(providers.DefaultFactories()),
 	}
+	rt.agent = rt.buildAgent(def)
 	return rt
 }
 
@@ -212,14 +212,14 @@ func TestAgent_ProviderModelHintRollback(t *testing.T) {
 	origModel := rt.CurrentModel()
 	origAgent := rt.CurrentAgent()
 	// Create a custom agent with bad model hint by updating registry directly.
-	bad := agent.Definition{Name: "badmodel", Description: "bad", SystemPrompt: "prompt", Tools: []string{"read_file"}, Model: "nonexistent-model-xyz", Provider: ""}
+	bad := agent.Definition{Name: "badmodel", Description: "bad", SystemPrompt: "prompt", Tools: []string{"read_file"}, Skills: []string{}, Model: "nonexistent-model-xyz", Provider: ""}
 	if err := rt.agents.Register(bad); err != nil {
 		// If already exists, update
 		_ = rt.agents.Update(bad)
 	}
 	// SetAgent should fail due to model? But SetModel just sets name without validating model existence; it will succeed because newProvider will succeed even with arbitrary model (model name not validated). So this test is not meaningful for model.
 	// Instead test provider hint failure: unknown provider should fail and rollback.
-	badProv := agent.Definition{Name: "badprov", Description: "bad", SystemPrompt: "prompt", Tools: []string{"read_file"}, Provider: "unknown-provider-xyz"}
+	badProv := agent.Definition{Name: "badprov", Description: "bad", SystemPrompt: "prompt", Tools: []string{"read_file"}, Skills: []string{}, Provider: "unknown-provider-xyz"}
 	if err := rt.agents.Register(badProv); err != nil {
 		_ = rt.agents.Update(badProv)
 	}

@@ -115,3 +115,47 @@ func TestDefinition_Validate(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyOverride_SkillsExplicitSetSemantics(t *testing.T) {
+	base := Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: []string{"a"}, Skills: []string{"s1", "s2"}}
+
+	// Omitted (nil) keeps the built-in assignment.
+	kept := base.ApplyOverride(AgentOverride{Description: "new"})
+	if len(kept.Skills) != 2 || kept.AllSkills {
+		t.Fatalf("nil override must keep skills, got %#v", kept.Skills)
+	}
+
+	// Explicit list replaces.
+	replaced := base.ApplyOverride(AgentOverride{Skills: []string{"s3"}})
+	if len(replaced.Skills) != 1 || replaced.Skills[0] != "s3" {
+		t.Fatalf("override must replace, got %#v", replaced.Skills)
+	}
+
+	// Explicit empty (non-nil) means "no skills" — and stays non-nil
+	// through Clone so reloads cannot reinterpret it.
+	emptied := base.ApplyOverride(AgentOverride{Skills: []string{}})
+	if emptied.Skills == nil || len(emptied.Skills) != 0 {
+		t.Fatalf("explicit empty must mean none, got %#v (nil=%v)", emptied.Skills, emptied.Skills == nil)
+	}
+	if emptied.Clone().Skills == nil {
+		t.Fatalf("Clone collapsed explicit empty to nil")
+	}
+
+	// Explicit list clears the general agent's all-skills behavior.
+	gen := Definition{Name: "general", Description: "d", SystemPrompt: "p", Tools: []string{}, AllSkills: true}
+	scoped := gen.ApplyOverride(AgentOverride{Skills: []string{"s1"}})
+	if scoped.AllSkills {
+		t.Fatalf("explicit skills must clear AllSkills")
+	}
+}
+
+func TestClone_PreservesExplicitEmpty(t *testing.T) {
+	d := Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: []string{}, Skills: []string{}, Constraints: []string{}}
+	c := d.Clone()
+	if c.Skills == nil {
+		t.Fatalf("Clone must preserve non-nil empty Skills")
+	}
+	if c.Tools == nil {
+		t.Fatalf("Clone must preserve non-nil empty Tools")
+	}
+}

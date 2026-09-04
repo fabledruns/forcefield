@@ -77,9 +77,6 @@ func (d Definition) Clone() Definition {
 	return out
 }
 
-// WantsAllSkills reports whether d exposes the full skill catalog.
-func (d Definition) WantsAllSkills() bool { return d.AllSkills }
-
 // Validate reports whether d is well-formed. Tool names are not validated
 // here against the global tool set; that happens when the filtered manager
 // is built so unknown tools surface with the config field name.
