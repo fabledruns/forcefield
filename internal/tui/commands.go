@@ -20,6 +20,7 @@ func newRegistry() *command.Registry {
 	reg.Register(builtin.NewClear())
 	reg.Register(builtin.NewModel())
 	reg.Register(builtin.NewProvider())
+	reg.Register(builtin.NewAgent())
 	reg.Register(builtin.NewHelp(reg))
 	reg.Register(builtin.NewSessions())
 	reg.Register(builtin.NewStatus())
@@ -101,6 +102,66 @@ func (m *model) SetProvider(name string) error {
 	}
 	m.providerName = name
 	return nil
+}
+
+// Agent reports the currently active agent name.
+func (m *model) Agent() string {
+	if m.runtime == nil {
+		return m.agentName
+	}
+	return m.runtime.CurrentAgent()
+}
+
+// agentLabel returns the header label for the active agent, preserving a
+// legacy custom agent.name when one is configured.
+func (m *model) agentLabel() string {
+	if m.runtime == nil {
+		return m.agentName
+	}
+	return m.runtime.AgentDisplayName()
+}
+
+// SetAgent switches the runtime to a new agent, persisting the session's
+// agent and updating the header. It cancels any active stream first so
+// the switch never mutates state underneath a running turn.
+func (m *model) SetAgent(name string) error {
+	if m.runtime == nil {
+		return fmt.Errorf("runtime not available")
+	}
+	// Cancel active stream before mutating agent state.
+	if m.waiting || m.stream != nil {
+		m.stopStream(false)
+	}
+	if err := m.runtime.SetAgent(name); err != nil {
+		return err
+	}
+	m.agentName = m.agentLabel()
+	// Update provider/model labels if the agent hint changed them.
+	m.providerName = m.runtime.CurrentProvider()
+	m.modelName = m.runtime.CurrentModel()
+	// Persist the new agent on the session.
+	if m.session != nil {
+		m.session.Agent = m.agentName
+		_ = m.session.Save()
+	}
+	return nil
+}
+
+// Agents returns summaries for all known agents.
+func (m *model) Agents() []command.AgentSummary {
+	if m.runtime == nil {
+		return nil
+	}
+	out := m.runtime.AgentSummaries()
+	res := make([]command.AgentSummary, 0, len(out))
+	for _, a := range out {
+		res = append(res, command.AgentSummary{
+			Name:        a.Name,
+			Description: a.Description,
+			Tools:       append([]string(nil), a.Tools...),
+		})
+	}
+	return res
 }
 
 // OpenSessionPicker opens the /sessions modal over sessions, which the

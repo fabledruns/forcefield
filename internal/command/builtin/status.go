@@ -23,6 +23,7 @@ func (Status) Usage() string       { return "/status" }
 func (Status) Execute(ctx command.Context, _ []string) error {
 	stats := ctx.SessionStats()
 
+	ctx.Println("Agent:     %s", ctx.Agent())
 	ctx.Println("Provider:  %s", ctx.Provider())
 	ctx.Println("Model:     %s", ctx.Model())
 

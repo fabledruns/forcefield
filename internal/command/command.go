@@ -19,6 +19,13 @@ type SessionStats struct {
 	Chars int
 }
 
+// AgentSummary describes one specialised agent for listings.
+type AgentSummary struct {
+	Name        string
+	Description string
+	Tools       []string
+}
+
 // Context is the session-facing interface used by commands.
 type Context interface {
 	Println(format string, args ...any)
@@ -53,6 +60,12 @@ type Context interface {
 	// LoadSkill returns the Markdown body for a skill id. It reports
 	// ErrSkillNotFound when the id is unknown.
 	LoadSkill(id string) (string, error)
+	// Agent reports the active agent name.
+	Agent() string
+	// SetAgent switches the active agent.
+	SetAgent(name string) error
+	// Agents returns summaries for all known agents.
+	Agents() []AgentSummary
 }
 
 // Command is a slash command.

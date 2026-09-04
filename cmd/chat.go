@@ -22,7 +22,12 @@ scrollable, persistent session instead of one command per question.`,
 	Args: cobra.NoArgs,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return chatStarter(newChatSession())
+		sess := newChatSession()
+		if agentFlag != "" {
+			sess.Agent = agentFlag
+			_ = sess.Save()
+		}
+		return chatStarter(sess)
 	},
 }
 

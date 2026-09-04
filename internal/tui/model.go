@@ -304,12 +304,31 @@ func newModelWithConfig(cfg *config.Config, sess *session.Session, asker permiss
 	}
 	r.SetPermissionAsker(asker)
 
+	// Align runtime's active agent with the session's persisted agent.
+	if sess != nil {
+		if strings.TrimSpace(sess.Agent) != "" {
+			if err := r.SetAgent(sess.Agent); err != nil {
+				// Unknown agent (e.g. removed built-in): fall back to general.
+				_ = r.SetAgent("general")
+				sess.Agent = r.CurrentAgent()
+				_ = sess.Save()
+			} else {
+				// Provider/model hints may have updated the config.
+				sess.Agent = r.CurrentAgent()
+				_ = sess.Save()
+			}
+		} else {
+			sess.Agent = r.CurrentAgent()
+			_ = sess.Save()
+		}
+	}
+
 	entries := sessionEntries(sess)
 
 	return model{
-		agentName:    cfg.Agent.Name,
-		providerName: cfg.Model.Provider,
-		modelName:    cfg.Model.Name,
+		agentName:    r.AgentDisplayName(),
+		providerName: r.CurrentProvider(),
+		modelName:    r.CurrentModel(),
 		input:        input,
 		spinner:      spin,
 		viewport:     viewport.New(0, 0),
@@ -1077,6 +1096,30 @@ func (m model) switchToSession(id string) (tea.Model, tea.Cmd) {
 	// belongs to the old session before swapping it out.
 	m.stopStream(true)
 	m.permissionPrompt = nil
+
+	// Switch runtime agent to the new session's agent, if any.
+	desired := strings.TrimSpace(sess.Agent)
+	if desired != "" && m.runtime != nil {
+		if err := m.runtime.SetAgent(desired); err != nil {
+			m.entries = append(m.entries, chatEntry{
+				Role:    roleSystem,
+				Content: fmt.Sprintf("Session %s had unknown agent %q; using %s", sess.ID, desired, m.runtime.CurrentAgent()),
+			})
+			// Persist fallback so the session file is repaired.
+			sess.Agent = m.runtime.CurrentAgent()
+			_ = sess.Save()
+		}
+	} else if desired == "" && sess != nil && m.runtime != nil {
+		sess.Agent = m.runtime.CurrentAgent()
+		_ = sess.Save()
+	}
+	if m.runtime != nil {
+		m.agentName = m.runtime.AgentDisplayName()
+		m.providerName = m.runtime.CurrentProvider()
+		m.modelName = m.runtime.CurrentModel()
+	} else {
+		m.agentName = strings.TrimSpace(sess.Agent)
+	}
 
 	m.session = sess
 	m.entries = sessionEntries(sess)

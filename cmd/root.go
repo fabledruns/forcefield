@@ -10,6 +10,7 @@ import (
 )
 
 var resumeID string
+var agentFlag string
 
 // Version is the binary version, set at build time via ldflags:
 // go build -ldflags "-X forcefield/cmd.Version=v1.2.3"
@@ -44,6 +45,12 @@ AI-powered workflows without requiring cloud services.`,
 			sess = newSession()
 		}
 
+		// Apply --agent flag with precedence CLI > session > config.
+		if agentFlag != "" {
+			sess.Agent = agentFlag
+			_ = sess.Save()
+		}
+
 		return rootTuiStarter(sess)
 	},
 }
@@ -66,5 +73,11 @@ func init() {
 		"resume",
 		"",
 		"resume an existing session",
+	)
+	rootCmd.PersistentFlags().StringVar(
+		&agentFlag,
+		"agent",
+		"",
+		"select specialised agent (coding, cyber, legal, docs, research, devops, general)",
 	)
 }
