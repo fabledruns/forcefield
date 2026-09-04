@@ -47,13 +47,29 @@ const discoveryTimeout = 20 * time.Second
 // Entries are de-duplicated by ID preserving this priority. The state
 // tells the caller whether triggering DiscoverModels is worthwhile.
 func (r *Runtime) ModelCatalog(providerID string) ([]providers.Model, ModelListState) {
-	resolved, err := r.cfg.ResolveProvider(providerID, r.cfg.Model.Name)
+	if r == nil {
+		return nil, ModelsUnsupported
+	}
+	r.mu.RLock()
+	cfg := r.cfg
+	discovery := r.discovery
+	r.mu.RUnlock()
+	if cfg == nil {
+		return nil, ModelsUnsupported
+	}
+	resolved, err := cfg.ResolveProvider(providerID, cfg.Model.Name)
 	if err != nil {
 		return nil, ModelsUnsupported
 	}
-	spec := resolved.Spec(r.cfg.Model.Name)
+	spec := resolved.Spec(cfg.Model.Name)
 
-	supportsDiscovery := r.discovery.Supports(spec)
+	supportsDiscovery := false
+	var cached []providers.Model
+	var fresh bool
+	if discovery != nil {
+		supportsDiscovery = discovery.Supports(spec)
+		cached, fresh = discovery.Cached(spec)
+	}
 	static := make([]providers.Model, 0, len(resolved.Models))
 	for _, id := range sortedCopy(resolved.Models) {
 		// Catalog/configured entries carry friendly display names where
@@ -65,23 +81,33 @@ func (r *Runtime) ModelCatalog(providerID string) ([]providers.Model, ModelListS
 		})
 	}
 
-	models, fresh := r.discovery.Cached(spec)
+	models, fresh := cached, fresh
 	switch {
 	case fresh:
-		return dedupeModels(r.priorityModels(resolved), models), ModelsFresh
+		return dedupeModels(priorityModelsWithCfg(cfg, resolved), models), ModelsFresh
 	case supportsDiscovery:
 		// Nothing usable cached yet: fall back to configured/catalog
 		// models until the async fetch lands.
-		return dedupeModels(r.priorityModels(resolved), static), ModelsStale
+		return dedupeModels(priorityModelsWithCfg(cfg, resolved), static), ModelsStale
 	default:
 		// No discovery at all: the static list IS the list.
-		return dedupeModels(r.priorityModels(resolved), static), ModelsUnsupported
+		return dedupeModels(priorityModelsWithCfg(cfg, resolved), static), ModelsUnsupported
 	}
 }
 
 // priorityModels lists the models that must lead the picker: the active
 // selection and the entry's configured default.
 func (r *Runtime) priorityModels(resolved config.ResolvedProvider) []providers.Model {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	cfg := r.cfg
+	r.mu.RUnlock()
+	return priorityModelsWithCfg(cfg, resolved)
+}
+
+func priorityModelsWithCfg(cfg *config.Config, resolved config.ResolvedProvider) []providers.Model {
 	var out []providers.Model
 	add := func(id string) {
 		if id != "" {
@@ -92,8 +118,8 @@ func (r *Runtime) priorityModels(resolved config.ResolvedProvider) []providers.M
 			})
 		}
 	}
-	if r.cfg.Model.Provider == resolved.ID {
-		add(r.cfg.Model.Name)
+	if cfg != nil && cfg.Model.Provider == resolved.ID {
+		add(cfg.Model.Name)
 	}
 	add(resolved.Model)
 	return out
@@ -106,7 +132,17 @@ func (r *Runtime) priorityModels(resolved config.ResolvedProvider) []providers.M
 // Failures are returned, never fatal: callers keep whatever ModelCatalog
 // last provided.
 func (r *Runtime) DiscoverModels(ctx context.Context, providerID string) ([]providers.Model, error) {
-	resolved, err := r.cfg.ResolveProvider(providerID, r.cfg.Model.Name)
+	if r == nil {
+		return nil, fmt.Errorf("runtime not available")
+	}
+	r.mu.RLock()
+	cfg := r.cfg
+	discovery := r.discovery
+	r.mu.RUnlock()
+	if cfg == nil || discovery == nil {
+		return nil, fmt.Errorf("model discovery not available")
+	}
+	resolved, err := cfg.ResolveProvider(providerID, cfg.Model.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +154,7 @@ func (r *Runtime) DiscoverModels(ctx context.Context, providerID string) ([]prov
 	}
 	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
-	return r.discovery.Fetch(ctx, resolved.Spec(r.cfg.Model.Name))
+	return discovery.Fetch(ctx, resolved.Spec(cfg.Model.Name))
 }
 
 // dedupeModels appends b onto a dropping IDs already seen, preserving a's

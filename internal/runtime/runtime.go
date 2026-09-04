@@ -52,6 +52,13 @@ const maxContextMessages = 100
 
 // Runtime is the main execution point for Forcefield.
 type Runtime struct {
+	// mu guards the switchable run state below (agent, manager, provider,
+	// cfg, auth state, activeAgent). StreamChat snapshots this state under
+	// RLock so a background run never observes a mid-run SetAgent /
+	// SetModel / SetProvider mutation; switches take effect on the next
+	// StreamChat, never mid-turn. Callers (e.g. the TUI) still cancel any
+	// active stream before switching.
+	mu        sync.RWMutex
 	cfg       *config.Config
 	provider  providers.ModelProvider
 	agent     *agent.Agent
@@ -224,11 +231,19 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 // skill catalog, domain constraints, legacy display name/prompt handling,
 // and shared project memory.
 func (r *Runtime) buildAgent(def agent.Definition) *agent.Agent {
+	if r == nil {
+		return agent.New(def.Name, def.SystemPrompt, "")
+	}
+	r.mu.RLock()
+	cfg := r.cfg
+	registry := r.agents
+	memoryText := r.projectMemoryText
+	r.mu.RUnlock()
 	return agent.New(
-		legacyDisplayName(r.cfg, r.agents, def.Name),
-		effectivePromptFor(r.cfg, def),
+		legacyDisplayName(cfg, registry, def.Name),
+		effectivePromptFor(cfg, def),
 		r.catalogFor(def),
-	).WithConstraints(def.Constraints).WithProjectMemory(r.projectMemoryText)
+	).WithConstraints(def.Constraints).WithProjectMemory(memoryText)
 }
 
 // catalogFor renders the skill catalog text for def: the full store
@@ -236,11 +251,17 @@ func (r *Runtime) buildAgent(def agent.Definition) *agent.Agent {
 // intersected with the assigned IDs in store order. IDs absent from the
 // store are omitted (see SkillWarnings); never fabricated.
 func (r *Runtime) catalogFor(def agent.Definition) string {
-	if r == nil || r.skills == nil {
+	if r == nil {
+		return ""
+	}
+	r.mu.RLock()
+	store := r.skills
+	r.mu.RUnlock()
+	if store == nil {
 		return ""
 	}
 	if def.AllSkills {
-		return skills.FormatCatalog(r.skills.Catalog())
+		return skills.FormatCatalog(store.Catalog())
 	}
 	if len(def.Skills) == 0 {
 		return ""
@@ -250,7 +271,7 @@ func (r *Runtime) catalogFor(def agent.Definition) string {
 		keep[id] = struct{}{}
 	}
 	var filtered []skills.Skill
-	for _, s := range r.skills.Catalog() {
+	for _, s := range store.Catalog() {
 		if _, ok := keep[s.ID]; ok {
 			filtered = append(filtered, s)
 		}
@@ -265,21 +286,29 @@ func (r *Runtime) catalogFor(def agent.Definition) string {
 // the filtered tool manager.
 func (r *Runtime) agentSkillSet() map[string]bool {
 	set := make(map[string]bool)
-	if r == nil || r.skills == nil || r.agents == nil {
+	if r == nil {
 		return set
 	}
-	def, err := r.agents.Get(r.activeAgent)
+	r.mu.RLock()
+	store := r.skills
+	registry := r.agents
+	active := r.activeAgent
+	r.mu.RUnlock()
+	if store == nil || registry == nil {
+		return set
+	}
+	def, err := registry.Get(active)
 	if err != nil {
 		return set
 	}
 	if def.AllSkills {
-		for _, s := range r.skills.Catalog() {
+		for _, s := range store.Catalog() {
 			set[s.ID] = true
 		}
 		return set
 	}
 	for _, id := range def.Skills {
-		if _, ok := r.skills.Get(id); ok {
+		if _, ok := store.Get(id); ok {
 			set[id] = true
 		}
 	}
@@ -291,10 +320,17 @@ func (r *Runtime) agentSkillSet() map[string]bool {
 // lists (e.g. an example skill never installed into ~/.forcefield/skills).
 // Missing skills degrade gracefully everywhere else; this is diagnostics.
 func (r *Runtime) SkillWarnings() []string {
-	if r == nil || r.skills == nil || r.agents == nil {
+	if r == nil {
 		return nil
 	}
-	return SkillAssignmentWarnings(r.agents, r.skills)
+	r.mu.RLock()
+	store := r.skills
+	registry := r.agents
+	r.mu.RUnlock()
+	if store == nil || registry == nil {
+		return nil
+	}
+	return SkillAssignmentWarnings(registry, store)
 }
 
 // SkillAssignmentWarnings reports assigned-but-missing skill IDs for a
@@ -377,6 +413,9 @@ func resolveInitialAgent(cfg *config.Config, registry *agent.Registry) string {
 // pre-feature configs that customized agent.system_prompt behaving as
 // before, regardless of which agent is active.
 func effectivePromptFor(cfg *config.Config, def agent.Definition) string {
+	if cfg == nil {
+		return def.SystemPrompt
+	}
 	if o, ok := cfg.Agents[def.Name]; ok && strings.TrimSpace(o.SystemPrompt) != "" {
 		return strings.TrimSpace(def.SystemPrompt)
 	}
@@ -391,6 +430,9 @@ func effectivePromptFor(cfg *config.Config, def agent.Definition) string {
 // name; anything else is a legacy custom label shown in the header while
 // the "general" definition provides behaviour.
 func legacyDisplayName(cfg *config.Config, registry *agent.Registry, active string) string {
+	if cfg == nil {
+		return active
+	}
 	raw := strings.TrimSpace(cfg.Agent.Name)
 	if raw == "" {
 		return active
@@ -398,8 +440,10 @@ func legacyDisplayName(cfg *config.Config, registry *agent.Registry, active stri
 	if strings.EqualFold(raw, "default") {
 		return active
 	}
-	if _, err := registry.Get(raw); err == nil {
-		return active
+	if registry != nil {
+		if _, err := registry.Get(raw); err == nil {
+			return active
+		}
 	}
 	return raw
 }
@@ -407,7 +451,21 @@ func legacyDisplayName(cfg *config.Config, registry *agent.Registry, active stri
 // refreshAuthState re-reads the active provider's authentication
 // requirements after construction, provider switch, or model switch.
 func (r *Runtime) refreshAuthState() {
-	resolved, err := r.cfg.ResolveProvider(r.cfg.Model.Provider, r.cfg.Model.Name)
+	if r == nil {
+		return
+	}
+	r.mu.RLock()
+	cfg := r.cfg
+	r.mu.RUnlock()
+	if cfg == nil {
+		r.mu.Lock()
+		r.authRequired, r.authEnvVar = false, ""
+		r.mu.Unlock()
+		return
+	}
+	resolved, err := cfg.ResolveProvider(cfg.Model.Provider, cfg.Model.Name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err != nil {
 		r.authRequired, r.authEnvVar = false, ""
 		return
@@ -416,18 +474,49 @@ func (r *Runtime) refreshAuthState() {
 	r.authEnvVar = resolved.AuthEnvVar
 }
 
+// authSnapshot copies the auth state plus provider display name under RLock
+// so background model turns never read live switchable fields.
+func (r *Runtime) authSnapshot() (required bool, envVar, provider string) {
+	if r == nil {
+		return false, "", ""
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	provider = ""
+	if r.cfg != nil {
+		provider = r.cfg.Model.Provider
+	}
+	return r.authRequired, r.authEnvVar, provider
+}
+
 // checkAuth reports an actionable error when the active provider needs an
 // API key that was not found.
 func (r *Runtime) checkAuth() error {
-	if !r.authRequired || r.authEnvVar == "" {
+	required, envVar, provider := r.authSnapshot()
+	if !required || envVar == "" {
 		return nil
 	}
-	if key, _, err := config.ResolveEnvValue(r.authEnvVar); err == nil && key != "" {
+	if key, _, err := config.ResolveEnvValue(envVar); err == nil && key != "" {
 		return nil
 	}
 	return fmt.Errorf(
 		"%s requires an API key - set %s in your environment or .env file and restart Forcefield",
-		providers.DisplayName(r.cfg.Model.Provider), r.authEnvVar,
+		providers.DisplayName(provider), envVar,
+	)
+}
+
+// checkAuthWithSnapshot is checkAuth against an explicit snapshot so a run
+// uses one consistent view even if a switch lands mid-run.
+func checkAuthWithSnapshot(required bool, envVar, provider string) error {
+	if !required || envVar == "" {
+		return nil
+	}
+	if key, _, err := config.ResolveEnvValue(envVar); err == nil && key != "" {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s requires an API key - set %s in your environment or .env file and restart Forcefield",
+		providers.DisplayName(provider), envVar,
 	)
 }
 
@@ -453,20 +542,46 @@ func limitsFromConfig(cfg *config.Config) Limits {
 // callers with their own interactive surface should call this before the
 // first StreamChat/Run.
 func (r *Runtime) SetPermissionAsker(asker permissions.Asker) {
-	r.scheduler.asker = asker
+	if r == nil || r.scheduler == nil {
+		return
+	}
+	r.scheduler.setAsker(asker)
 }
 
 // Permissions returns the runtime's permission manager, e.g. for a
 // "/permissions" command that lists or edits the current rules.
 func (r *Runtime) Permissions() *permissions.Manager {
+	if r == nil || r.scheduler == nil {
+		return nil
+	}
 	return r.scheduler.permissions
 }
 
 // CurrentModel returns the active model name.
-func (r *Runtime) CurrentModel() string { return r.cfg.Model.Name }
+func (r *Runtime) CurrentModel() string {
+	if r == nil {
+		return ""
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.cfg == nil {
+		return ""
+	}
+	return r.cfg.Model.Name
+}
 
 // CurrentProvider returns the active provider name.
-func (r *Runtime) CurrentProvider() string { return r.cfg.Model.Provider }
+func (r *Runtime) CurrentProvider() string {
+	if r == nil {
+		return ""
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.cfg == nil {
+		return ""
+	}
+	return r.cfg.Model.Provider
+}
 
 // CurrentAgent returns the active agent definition key (e.g. "coding").
 // Use AgentDisplayName for the header label, which may preserve a legacy
@@ -475,6 +590,8 @@ func (r *Runtime) CurrentAgent() string {
 	if r == nil {
 		return "general"
 	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if r.activeAgent != "" {
 		return r.activeAgent
 	}
@@ -485,13 +602,23 @@ func (r *Runtime) CurrentAgent() string {
 // definition name, except when a pre-feature config set a custom
 // agent.name, which is preserved verbatim.
 func (r *Runtime) AgentDisplayName() string {
-	if r == nil || r.agent == nil {
-		return r.CurrentAgent()
+	if r == nil {
+		return "general"
 	}
-	if strings.TrimSpace(r.agent.Name) != "" {
-		return r.agent.Name
+	r.mu.RLock()
+	name := ""
+	if r.agent != nil {
+		name = r.agent.Name
 	}
-	return r.CurrentAgent()
+	active := r.activeAgent
+	r.mu.RUnlock()
+	if strings.TrimSpace(name) != "" {
+		return name
+	}
+	if active != "" {
+		return active
+	}
+	return "general"
 }
 
 // AgentSummary describes one available agent for pickers and listings.
@@ -509,11 +636,17 @@ type AgentSummary struct {
 
 // AgentSummaries returns every known agent for listings and pickers.
 func (r *Runtime) AgentSummaries() []AgentSummary {
-	if r == nil || r.agents == nil {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	registry := r.agents
+	r.mu.RUnlock()
+	if registry == nil {
 		return nil
 	}
 	out := make([]AgentSummary, 0)
-	for _, d := range r.agents.List() {
+	for _, d := range registry.List() {
 		out = append(out, AgentSummary{
 			Name:        d.Name,
 			Description: d.Description,
@@ -533,10 +666,20 @@ func (r *Runtime) ListAgents() []AgentSummary { return r.AgentSummaries() }
 
 // CurrentAgentDefinition returns the active agent definition.
 func (r *Runtime) CurrentAgentDefinition() (agent.Definition, error) {
-	if r == nil || r.agents == nil {
+	if r == nil {
 		return agent.Definition{}, fmt.Errorf("agent registry not available")
 	}
-	return r.agents.Get(r.CurrentAgent())
+	r.mu.RLock()
+	registry := r.agents
+	active := r.activeAgent
+	r.mu.RUnlock()
+	if registry == nil {
+		return agent.Definition{}, fmt.Errorf("agent registry not available")
+	}
+	if active == "" {
+		active = "general"
+	}
+	return registry.Get(active)
 }
 
 // SetAgent switches the active agent to name. It rebuilds the system
@@ -547,64 +690,104 @@ func (r *Runtime) SetAgent(name string) error {
 	if r == nil {
 		return fmt.Errorf("runtime not available")
 	}
-	if r.agents == nil || r.fullManager == nil {
+	r.mu.RLock()
+	registry := r.agents
+	full := r.fullManager
+	curActive := r.activeAgent
+	cfgProvider := ""
+	cfgModel := ""
+	if r.cfg != nil {
+		cfgProvider = r.cfg.Model.Provider
+		cfgModel = r.cfg.Model.Name
+	}
+	r.mu.RUnlock()
+	if registry == nil || full == nil {
 		return fmt.Errorf("agent system not initialized")
 	}
 	key := strings.ToLower(strings.TrimSpace(name))
 	if key == "" {
 		return fmt.Errorf("agent name cannot be empty")
 	}
-	def, err := r.agents.Get(key)
+	def, err := registry.Get(key)
 	if err != nil {
 		return err
 	}
-	if key == r.activeAgent {
+	// Compare against the snapshot; the final commit re-checks under Lock
+	// so a concurrent switch cannot interleave silently. The common
+	// no-change case returns early here without taking the write lock.
+	if key == curActive {
 		return nil
 	}
 
 	// Build new filtered manager and agent before mutating to ensure
 	// tool set is valid.
-	filtered, err := r.fullManager.Filtered(def.Tools)
+	filtered, err := full.Filtered(def.Tools)
 	if err != nil {
 		return fmt.Errorf("agent %q has invalid tool set: %w", def.Name, err)
 	}
 
 	// NOTE: buildAgent must run before provider/model hints because
-	// legacyDisplayName/effectivePromptFor read r.cfg (unmutated here).
+	// legacyDisplayName/effectivePromptFor read the pre-switch cfg.
 	// The agent/tools commit below happens only after hints succeed.
 	newAgent := r.buildAgent(def)
 
 	// Snapshot provider/model state for rollback. The agent/tools swap
 	// below only happens after hints succeed, so it needs no rollback.
-	oldCfg := *r.cfg
-	oldProvider := r.provider
-	oldAuthReq := r.authRequired
-	oldAuthEnv := r.authEnvVar
+	r.mu.RLock()
+	var oldCfg config.Config
+	var haveCfg bool
+	var oldProvider providers.ModelProvider
+	var oldAuthReq bool
+	var oldAuthEnv string
+	if r.cfg != nil {
+		oldCfg = *r.cfg
+		haveCfg = true
+	}
+	oldProvider = r.provider
+	oldAuthReq = r.authRequired
+	oldAuthEnv = r.authEnvVar
+	curProvider := cfgProvider
+	curModel := cfgModel
+	r.mu.RUnlock()
 
 	// Apply provider hint first, if any.
-	if def.Provider != "" && def.Provider != r.cfg.Model.Provider {
+	if def.Provider != "" && def.Provider != curProvider {
 		if err := r.SetProvider(def.Provider); err != nil {
 			return fmt.Errorf("agent %q provider %q: %w", def.Name, def.Provider, err)
 		}
+		r.mu.RLock()
+		if r.cfg != nil {
+			curModel = r.cfg.Model.Name
+		}
+		r.mu.RUnlock()
 	}
 	// Apply model hint.
-	if def.Model != "" && def.Model != r.cfg.Model.Name {
+	if def.Model != "" && def.Model != curModel {
 		if err := r.SetModel(def.Model); err != nil {
 			// Roll back provider switch if model fails after provider succeeded.
-			r.cfg = &oldCfg
-			r.provider = oldProvider
-			r.authRequired = oldAuthReq
-			r.authEnvVar = oldAuthEnv
-			r.applyReasoning()
+			if haveCfg {
+				r.mu.Lock()
+				r.cfg = &oldCfg
+				r.provider = oldProvider
+				r.authRequired = oldAuthReq
+				r.authEnvVar = oldAuthEnv
+				r.mu.Unlock()
+				r.applyReasoning()
+			}
 			return fmt.Errorf("agent %q model %q: %w", def.Name, def.Model, err)
 		}
 	}
 
 	// Commit agent/tools switch.
+	r.mu.Lock()
 	r.agent = newAgent
 	r.manager = filtered
-	r.scheduler.manager = filtered
 	r.activeAgent = def.Name
+	sched := r.scheduler
+	r.mu.Unlock()
+	if sched != nil {
+		sched.setManager(filtered)
+	}
 	return nil
 }
 
@@ -635,7 +818,16 @@ type ProviderSummary struct {
 // catalog order (custom entries last). The active provider is included;
 // callers mark it current.
 func (r *Runtime) ProviderSummaries() []ProviderSummary {
-	resolved, _ := r.cfg.ResolveAll(r.cfg.Model.Name)
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	cfg := r.cfg
+	r.mu.RUnlock()
+	if cfg == nil {
+		return nil
+	}
+	resolved, _ := cfg.ResolveAll(cfg.Model.Name)
 	out := make([]ProviderSummary, 0, len(resolved))
 	for _, p := range resolved {
 		caps := providers.CapabilitiesFor(p.Type)
@@ -685,7 +877,16 @@ func contains(list []string, s string) bool {
 // ToolSummaries returns one "name: description" line per registered
 // tool, in registration order, for /tools-style reporting.
 func (r *Runtime) ToolSummaries() []string {
-	defs := r.manager.Definitions()
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	manager := r.manager
+	r.mu.RUnlock()
+	if manager == nil {
+		return nil
+	}
+	defs := manager.Definitions()
 	out := make([]string, 0, len(defs))
 	for _, d := range defs {
 		out = append(out, d.Name+": "+d.Description)
@@ -695,18 +896,30 @@ func (r *Runtime) ToolSummaries() []string {
 
 // Skills returns a copy of the global skill catalog, sorted deterministically.
 func (r *Runtime) Skills() []skills.Skill {
-	if r == nil || r.skills == nil {
+	if r == nil {
 		return nil
 	}
-	return r.skills.Catalog()
+	r.mu.RLock()
+	store := r.skills
+	r.mu.RUnlock()
+	if store == nil {
+		return nil
+	}
+	return store.Catalog()
 }
 
 // LoadSkill returns the Markdown body for a skill id.
 func (r *Runtime) LoadSkill(id string) (string, error) {
-	if r == nil || r.skills == nil {
+	if r == nil {
 		return "", fmt.Errorf("skill %q: %w", id, skills.ErrSkillNotFound)
 	}
-	return r.skills.Load(id)
+	r.mu.RLock()
+	store := r.skills
+	r.mu.RUnlock()
+	if store == nil {
+		return "", fmt.Errorf("skill %q: %w", id, skills.ErrSkillNotFound)
+	}
+	return store.Load(id)
 }
 
 // SetModel switches the active model, keeping the current provider and
@@ -716,18 +929,34 @@ func (r *Runtime) LoadSkill(id string) (string, error) {
 // avoids silently stripping user comments via yaml.Marshal, and keeps the
 // TUI picker fast and non-destructive. Call SaveConfig to persist.
 func (r *Runtime) SetModel(name string) error {
+	if r == nil {
+		return fmt.Errorf("runtime not available")
+	}
 	if name == "" {
 		return fmt.Errorf("model name cannot be empty")
 	}
-	cfg := *r.cfg
-	cfg.Model.Name = name
-	provider, err := newProvider(&cfg)
+	r.mu.RLock()
+	if r.cfg == nil {
+		r.mu.RUnlock()
+		return fmt.Errorf("no config to switch model")
+	}
+	cfgCopy := *r.cfg
+	r.mu.RUnlock()
+	cfgCopy.Model.Name = name
+	provider, err := newProvider(&cfgCopy)
 	if err != nil {
 		return err
 	}
-	r.cfg = &cfg
+	var authReq bool
+	var authEnv string
+	if resolved, rerr := cfgCopy.ResolveProvider(cfgCopy.Model.Provider, cfgCopy.Model.Name); rerr == nil {
+		authReq, authEnv = resolved.AuthRequired, resolved.AuthEnvVar
+	}
+	r.mu.Lock()
+	r.cfg = &cfgCopy
 	r.provider = provider
-	r.refreshAuthState()
+	r.authRequired, r.authEnvVar = authReq, authEnv
+	r.mu.Unlock()
 	r.applyReasoning()
 	return nil
 }
@@ -739,11 +968,20 @@ func (r *Runtime) SetModel(name string) error {
 // leaves the endpoint pointed at the previous one. The change is in-memory
 // only; it does not write config.yaml. See SetModel for rationale.
 func (r *Runtime) SetProvider(name string) error {
+	if r == nil {
+		return fmt.Errorf("runtime not available")
+	}
 	if name == "" {
 		return fmt.Errorf("provider name cannot be empty")
 	}
-	cfg := *r.cfg
-	resolved, err := cfg.ResolveProvider(name, cfg.Model.Name)
+	r.mu.RLock()
+	if r.cfg == nil {
+		r.mu.RUnlock()
+		return fmt.Errorf("no config to switch provider")
+	}
+	cfgCopy := *r.cfg
+	r.mu.RUnlock()
+	resolved, err := cfgCopy.ResolveProvider(name, cfgCopy.Model.Name)
 	if err != nil {
 		return err
 	}
@@ -753,9 +991,9 @@ func (r *Runtime) SetProvider(name string) error {
 			resolved.Label, resolved.AuthEnvVar,
 		)
 	}
-	cfg.Model.Provider = name
-	cfg.Model.Endpoint = resolved.BaseURL
-	provider, err := providers.DefaultFactories().Create(resolved.Spec(cfg.Model.Name))
+	cfgCopy.Model.Provider = name
+	cfgCopy.Model.Endpoint = resolved.BaseURL
+	provider, err := providers.DefaultFactories().Create(resolved.Spec(cfgCopy.Model.Name))
 	if err != nil {
 		// Multi-protocol routers reject models outside their catalog, but
 		// the current model name still belongs to the previous provider
@@ -773,9 +1011,16 @@ func (r *Runtime) SetProvider(name string) error {
 			return fmt.Errorf("create provider %q: %w", name, err)
 		}
 	}
-	r.cfg = &cfg
+	var authReq bool
+	var authEnv string
+	if resolved, rerr := cfgCopy.ResolveProvider(cfgCopy.Model.Provider, cfgCopy.Model.Name); rerr == nil {
+		authReq, authEnv = resolved.AuthRequired, resolved.AuthEnvVar
+	}
+	r.mu.Lock()
+	r.cfg = &cfgCopy
 	r.provider = provider
-	r.refreshAuthState()
+	r.authRequired, r.authEnvVar = authReq, authEnv
+	r.mu.Unlock()
 	r.applyReasoning()
 	return nil
 }
@@ -785,10 +1030,16 @@ func (r *Runtime) SetProvider(name string) error {
 // this explicitly when the user opts into persistence (e.g. /save or
 // ff config). It never writes secrets.
 func (r *Runtime) SaveConfig() error {
-	if r == nil || r.cfg == nil {
+	if r == nil {
 		return fmt.Errorf("no config to save")
 	}
-	if err := r.cfg.Save(); err != nil {
+	r.mu.RLock()
+	cfg := r.cfg
+	r.mu.RUnlock()
+	if cfg == nil {
+		return fmt.Errorf("no config to save")
+	}
+	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
 	return nil
@@ -801,23 +1052,43 @@ func reasoningKey(provider, model string) string {
 
 // CurrentReasoningCapabilities returns the capabilities for the active model.
 func (r *Runtime) CurrentReasoningCapabilities() providers.ReasoningCapabilities {
-	if r == nil || r.cfg == nil {
+	if r == nil {
 		return providers.ReasoningCapabilities{}
 	}
-	return providers.ModelReasoningCapabilities(r.cfg.Model.Provider, r.cfg.Model.Name)
+	r.mu.RLock()
+	if r.cfg == nil {
+		r.mu.RUnlock()
+		return providers.ReasoningCapabilities{}
+	}
+	provider, model := r.cfg.Model.Provider, r.cfg.Model.Name
+	r.mu.RUnlock()
+	return providers.ModelReasoningCapabilities(provider, model)
+}
+
+// currentModelKey copies the active provider/model key under RLock.
+func (r *Runtime) currentModelKey() string {
+	if r == nil {
+		return reasoningKey("", "")
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.cfg == nil {
+		return reasoningKey("", "")
+	}
+	return reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
 }
 
 // CurrentEffort returns the selected effort for the active model, or empty
 // when none is set or the model does not support effort.
 func (r *Runtime) CurrentEffort() string {
-	if r == nil || r.cfg == nil {
+	if r == nil {
 		return ""
 	}
 	caps := r.CurrentReasoningCapabilities()
 	if caps.Effort == nil {
 		return ""
 	}
-	key := reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
+	key := r.currentModelKey()
 	r.reasoningMu.RLock()
 	cfg, ok := r.reasoningSelections[key]
 	r.reasoningMu.RUnlock()
@@ -833,12 +1104,15 @@ func (r *Runtime) CurrentEffort() string {
 
 // SetEffort validates and stores the effort level for the active model.
 func (r *Runtime) SetEffort(level string) error {
+	if r == nil {
+		return fmt.Errorf("runtime not available")
+	}
 	caps := r.CurrentReasoningCapabilities()
 	if err := caps.ValidateEffort(level); err != nil {
 		return err
 	}
 	canonical := caps.CanonicalEffort(level)
-	key := reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
+	key := r.currentModelKey()
 	r.reasoningMu.Lock()
 	if r.reasoningSelections == nil {
 		r.reasoningSelections = make(map[string]providers.ReasoningConfig)
@@ -853,14 +1127,14 @@ func (r *Runtime) SetEffort(level string) error {
 
 // CurrentThinking returns the thinking config for the active model, or nil.
 func (r *Runtime) CurrentThinking() *providers.ThinkingConfig {
-	if r == nil || r.cfg == nil {
+	if r == nil {
 		return nil
 	}
 	caps := r.CurrentReasoningCapabilities()
 	if caps.Thinking == nil {
 		return nil
 	}
-	key := reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
+	key := r.currentModelKey()
 	r.reasoningMu.RLock()
 	cfg, ok := r.reasoningSelections[key]
 	r.reasoningMu.RUnlock()
@@ -884,6 +1158,9 @@ func (r *Runtime) CurrentThinking() *providers.ThinkingConfig {
 
 // SetThinking validates and stores the thinking config for the active model.
 func (r *Runtime) SetThinking(tc providers.ThinkingConfig) error {
+	if r == nil {
+		return fmt.Errorf("runtime not available")
+	}
 	caps := r.CurrentReasoningCapabilities()
 	if err := caps.ValidateThinking(tc); err != nil {
 		return err
@@ -902,7 +1179,7 @@ func (r *Runtime) SetThinking(tc providers.ThinkingConfig) error {
 		v := *tc.Budget
 		deep.Budget = &v
 	}
-	key := reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
+	key := r.currentModelKey()
 	r.reasoningMu.Lock()
 	if r.reasoningSelections == nil {
 		r.reasoningSelections = make(map[string]providers.ReasoningConfig)
@@ -917,10 +1194,10 @@ func (r *Runtime) SetThinking(tc providers.ThinkingConfig) error {
 
 // ClearThinking removes thinking configuration for the active model.
 func (r *Runtime) ClearThinking() {
-	if r == nil || r.cfg == nil {
+	if r == nil {
 		return
 	}
-	key := reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
+	key := r.currentModelKey()
 	r.reasoningMu.Lock()
 	if cfg, ok := r.reasoningSelections[key]; ok {
 		cfg.Thinking = nil
@@ -951,11 +1228,27 @@ func (r *Runtime) ToggleThinking() (bool, error) {
 // applyReasoning filters the stored per-model reasoning config through the
 // current model's capabilities and pushes it to the provider adapter.
 func (r *Runtime) applyReasoning() {
-	if r == nil || r.provider == nil || r.cfg == nil {
+	if r == nil {
 		return
 	}
-	caps := r.CurrentReasoningCapabilities()
-	key := reasoningKey(r.cfg.Model.Provider, r.cfg.Model.Name)
+	r.mu.RLock()
+	provider := r.provider
+	var provName, modelName string
+	if r.cfg != nil {
+		provName, modelName = r.cfg.Model.Provider, r.cfg.Model.Name
+	}
+	r.mu.RUnlock()
+	r.applyReasoningTo(provider, provName, modelName)
+}
+
+// applyReasoningTo is applyReasoning against an explicit snapshot so a run
+// uses one consistent view even if a switch lands mid-run.
+func (r *Runtime) applyReasoningTo(provider providers.ModelProvider, provName, modelName string) {
+	if r == nil || provider == nil {
+		return
+	}
+	caps := providers.ModelReasoningCapabilities(provName, modelName)
+	key := reasoningKey(provName, modelName)
 	r.reasoningMu.RLock()
 	stored, ok := r.reasoningSelections[key]
 	r.reasoningMu.RUnlock()
@@ -981,7 +1274,7 @@ func (r *Runtime) applyReasoning() {
 			}
 		}
 	}
-	if p, ok := r.provider.(providers.ReasoningAware); ok {
+	if p, ok := provider.(providers.ReasoningAware); ok {
 		p.SetReasoning(effective)
 	}
 }
@@ -1037,9 +1330,25 @@ func projectWorkspace() string {
 }
 
 func (r *Runtime) buildMessages(history []providers.Message) []providers.Message {
+	if r == nil {
+		return append([]providers.Message{{Role: providers.SystemRole}}, history...)
+	}
+	r.mu.RLock()
+	agent := r.agent
+	r.mu.RUnlock()
+	return buildMessagesWithAgent(history, agent)
+}
+
+// buildMessagesWithAgent builds the bounded history window for an explicit
+// agent snapshot so background runs never read live switchable state.
+func buildMessagesWithAgent(history []providers.Message, agent *agent.Agent) []providers.Message {
+	prompt := ""
+	if agent != nil {
+		prompt = agent.BuildSystemPrompt()
+	}
 	system := providers.Message{
 		Role:    providers.SystemRole,
-		Content: r.agent.BuildSystemPrompt(),
+		Content: prompt,
 	}
 	if len(history) <= maxContextMessages {
 		messages := make([]providers.Message, 0, len(history)+1)
@@ -1075,23 +1384,65 @@ func (r *Runtime) buildMessages(history []providers.Message) []providers.Message
 	return out
 }
 
+// runSnapshot is one consistent view of the switchable run state. It is
+// captured under RLock at StreamChat entry so SetAgent / SetModel /
+// SetProvider take effect on the next StreamChat, never mid-turn.
+type runSnapshot struct {
+	agent        *agent.Agent
+	manager      *tools.Manager
+	provider     providers.ModelProvider
+	scheduler    *scheduler
+	limits       Limits
+	authRequired bool
+	authEnvVar   string
+	providerName string
+	modelName    string
+}
+
+// snapshotRunState copies the switchable run state under RLock.
+func (r *Runtime) snapshotRunState() runSnapshot {
+	var snap runSnapshot
+	if r == nil {
+		return snap
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	snap.agent = r.agent
+	snap.manager = r.manager
+	snap.provider = r.provider
+	snap.scheduler = r.scheduler
+	snap.limits = r.limits
+	snap.authRequired = r.authRequired
+	snap.authEnvVar = r.authEnvVar
+	if r.cfg != nil {
+		snap.providerName = r.cfg.Model.Provider
+		snap.modelName = r.cfg.Model.Name
+	}
+	return snap
+}
+
 // StreamChat runs the agent loop and emits structured events.
 func (r *Runtime) StreamChat(ctx context.Context, messages []providers.Message) (<-chan Event, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("stream context cannot be nil")
 	}
+	if r == nil {
+		return nil, fmt.Errorf("runtime not available")
+	}
 
+	snap := r.snapshotRunState()
+	initial := buildMessagesWithAgent(messages, snap.agent)
 	events := make(chan Event)
 	go func() {
 		defer close(events)
-		r.run(ctx, r.buildMessages(messages), func(event Event) bool {
+		r.run(ctx, initial, func(event Event) bool {
 			select {
 			case events <- event:
 				return true
 			case <-ctx.Done():
 				return false
 			}
-		})
+		}, snap)
 	}()
 
 	return events, nil
@@ -1138,11 +1489,11 @@ func (r *Runtime) RunContext(ctx context.Context, messages []providers.Message) 
 const maxToolResultChars = 6000
 
 // run executes the persistent agent loop and enforces runtime limits.
-func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit func(Event) bool) {
+func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit func(Event) bool, snap runSnapshot) {
 	state := task.New(goalFrom(messages))
 	ctx = task.WithState(ctx, state)
 
-	limits := r.limits
+	limits := snap.limits
 
 	for {
 		iteration := state.BeginIteration()
@@ -1151,9 +1502,9 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 			return
 		}
 
-		refreshSystemPrompt(messages, r.agent, state)
+		refreshSystemPrompt(messages, snap.agent, state)
 
-		response, err := r.runModelTurn(ctx, messages, emit)
+		response, err := r.runModelTurn(ctx, messages, emit, snap)
 		if err != nil {
 			emit(Event{Type: EventError, Err: err, TaskState: snapshotPtr(state)})
 			return
@@ -1184,7 +1535,11 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 			ToolCalls: response.ToolCalls,
 		})
 
-		results := r.scheduler.Run(ctx, response.ToolCalls, emit)
+		if snap.scheduler == nil || snap.manager == nil {
+			emit(Event{Type: EventError, Err: fmt.Errorf("tool system not initialized"), TaskState: snapshotPtr(state)})
+			return
+		}
+		results := snap.scheduler.RunWithManager(ctx, response.ToolCalls, emit, snap.manager)
 
 		if ctx.Err() != nil {
 			emit(Event{Type: EventError, Err: ctx.Err(), TaskState: snapshotPtr(state)})
@@ -1234,6 +1589,9 @@ func refreshSystemPrompt(messages []providers.Message, a *agent.Agent, state *ta
 	if len(messages) == 0 || messages[0].Role != providers.SystemRole {
 		return
 	}
+	if a == nil {
+		return
+	}
 
 	base := a.BuildSystemPrompt()
 	summary := state.Summary()
@@ -1280,17 +1638,24 @@ func goalFrom(messages []providers.Message) string {
 }
 
 // runModelTurn streams and assembles one provider response.
-func (r *Runtime) runModelTurn(ctx context.Context, messages []providers.Message, emit func(Event) bool) (providers.Response, error) {
+func (r *Runtime) runModelTurn(ctx context.Context, messages []providers.Message, emit func(Event) bool, snap runSnapshot) (providers.Response, error) {
 	if !emit(Event{Type: EventThinking}) {
 		return providers.Response{}, context.Canceled
 	}
 
-	if err := r.checkAuth(); err != nil {
+	if err := checkAuthWithSnapshot(snap.authRequired, snap.authEnvVar, snap.providerName); err != nil {
 		return providers.Response{}, err
 	}
 
-	r.applyReasoning()
-	stream, err := r.provider.StreamChat(ctx, messages, r.manager.Definitions())
+	r.applyReasoningTo(snap.provider, snap.providerName, snap.modelName)
+	if snap.provider == nil {
+		return providers.Response{}, fmt.Errorf("model provider not initialized")
+	}
+	var defs []tools.Definition
+	if snap.manager != nil {
+		defs = snap.manager.Definitions()
+	}
+	stream, err := snap.provider.StreamChat(ctx, messages, defs)
 	if err != nil {
 		return providers.Response{}, fmt.Errorf("model call failed: %w", err)
 	}

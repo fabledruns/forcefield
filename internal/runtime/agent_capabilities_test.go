@@ -151,7 +151,11 @@ func TestCapabilityTransition(t *testing.T) {
 }
 
 // assertToolRejected runs one model turn requesting a tool outside the
-// active agent and requires fail-closed "tool not found".
+// active agent and requires fail-closed "tool not found". It drains the
+// event channel through its terminal event: returning early on
+// EventToolFailed would leave the background run writing to r.agent while
+// the caller switches agents, which races under -race and leaks a goroutine
+// blocked on an unconsumed channel.
 func assertToolRejected(t *testing.T, rt *Runtime, tool string) {
 	t.Helper()
 	rt.provider = &scriptedProvider{turns: [][]providers.StreamEvent{
@@ -162,21 +166,25 @@ func assertToolRejected(t *testing.T, rt *Runtime, tool string) {
 	if err != nil {
 		t.Fatalf("StreamChat: %v", err)
 	}
+	rejected := false
 	for ev := range events {
 		if ev.Type == EventToolFailed && ev.ToolResult != nil && ev.ToolResult.Name == tool {
 			if !strings.Contains(ev.ToolResult.Content, "tool not found") {
 				t.Fatalf("tool %q failed without fail-closed message: %q", tool, ev.ToolResult.Content)
 			}
-			return
+			rejected = true
+			continue
 		}
 		if ev.Type == EventError {
 			t.Fatalf("unexpected run error: %v", ev.Err)
 		}
-		if ev.Type == EventDone {
+		if ev.Type == EventDone || ev.Type == EventBlocked {
 			break
 		}
 	}
-	t.Fatalf("tool %q was not rejected", tool)
+	if !rejected {
+		t.Fatalf("tool %q was not rejected", tool)
+	}
 }
 
 // assertSkillRefused requires load_skill to refuse an existing-but-unassigned skill.

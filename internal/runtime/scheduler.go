@@ -40,6 +40,10 @@ var DefaultSchedulerConfig = SchedulerConfig{
 // scheduler runs independent tool calls concurrently and centralizes
 // permission checks.
 type scheduler struct {
+	// managerMu guards manager so SetAgent can swap the filtered tool set
+	// without racing an in-flight Run. Run captures the manager under
+	// RLock and executes against that snapshot.
+	managerMu   sync.RWMutex
 	manager     *tools.Manager
 	permissions *permissions.Manager
 	asker       permissions.Asker
@@ -78,8 +82,56 @@ func newScheduler(manager *tools.Manager, perms *permissions.Manager, asker perm
 	}
 }
 
+// getManager returns the current filtered tool manager under RLock.
+func (s *scheduler) getManager() *tools.Manager {
+	if s == nil {
+		return nil
+	}
+	s.managerMu.RLock()
+	defer s.managerMu.RUnlock()
+	return s.manager
+}
+
+// setManager swaps the filtered tool manager under Lock.
+func (s *scheduler) setManager(m *tools.Manager) {
+	if s == nil {
+		return
+	}
+	s.managerMu.Lock()
+	s.manager = m
+	s.managerMu.Unlock()
+}
+
+// getAsker returns the current permission asker under RLock.
+func (s *scheduler) getAsker() permissions.Asker {
+	if s == nil {
+		return nil
+	}
+	s.managerMu.RLock()
+	defer s.managerMu.RUnlock()
+	return s.asker
+}
+
+// setAsker swaps the permission asker under Lock.
+func (s *scheduler) setAsker(a permissions.Asker) {
+	if s == nil {
+		return
+	}
+	s.managerMu.Lock()
+	s.asker = a
+	s.managerMu.Unlock()
+}
+
 // Run executes calls concurrently and returns results in call order.
 func (s *scheduler) Run(ctx context.Context, calls []providers.ToolCall, emit func(Event) bool) []ToolResult {
+	return s.RunWithManager(ctx, calls, emit, s.getManager())
+}
+
+// RunWithManager executes calls against an explicit manager snapshot so a
+// runtime agent switch mid-run cannot swap the tool set underneath an
+// in-flight batch. Callers that already hold a consistent run snapshot
+// should prefer this over Run.
+func (s *scheduler) RunWithManager(ctx context.Context, calls []providers.ToolCall, emit func(Event) bool, manager *tools.Manager) []ToolResult {
 	results := make([]ToolResult, len(calls))
 	if len(calls) == 0 {
 		return results
@@ -116,7 +168,7 @@ func (s *scheduler) Run(ctx context.Context, calls []providers.ToolCall, emit fu
 				return
 			}
 
-			result := s.runOne(ctx, call, safeEmit)
+			result := s.runOneWithManager(ctx, call, safeEmit, manager)
 			results[i] = result
 			if ctx.Err() != nil {
 				stopped.Store(true)
@@ -130,10 +182,31 @@ func (s *scheduler) Run(ctx context.Context, calls []providers.ToolCall, emit fu
 
 // runOne executes one tool call with retries, timeouts, and progress events.
 func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit func(Event) bool) ToolResult {
+	return s.runOneWithManager(ctx, call, emit, s.getManager())
+}
+
+// runOneWithManager executes one tool call against an explicit manager
+// snapshot. See RunWithManager for why the snapshot matters.
+func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCall, emit func(Event) bool, manager *tools.Manager) ToolResult {
 	started := time.Now()
 	emit(Event{Type: EventToolStart, ToolCall: &call})
 
-	tool, ok := s.manager.Lookup(call.Name)
+	if manager == nil {
+		result := ToolResult{
+			ToolCallID: call.ID,
+			Name:       call.Name,
+			Arguments:  call.Arguments,
+			Success:    false,
+			IsError:    true,
+			Content:    "tool not found: " + call.Name,
+			Duration:   time.Since(started),
+			Attempt:    1,
+			Err:        tools.ErrNotFound,
+		}
+		emit(Event{Type: EventToolFailed, ToolResult: &result})
+		return result
+	}
+	tool, ok := manager.Lookup(call.Name)
 	if !ok {
 		result := ToolResult{
 			ToolCallID: call.ID,
@@ -168,7 +241,7 @@ func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit fu
 		return result
 	}
 
-	if denied, result := s.checkPermission(ctx, call, emit); denied {
+	if denied, result := s.checkPermissionWithManager(ctx, call, emit, manager); denied {
 		return *result
 	}
 
@@ -333,6 +406,12 @@ func (s *scheduler) setSessionDecision(tool string, d permissions.Decision) {
 
 // checkPermission resolves a tool call's permission before execution.
 func (s *scheduler) checkPermission(ctx context.Context, call providers.ToolCall, emit func(Event) bool) (denied bool, result *ToolResult) {
+	return s.checkPermissionWithManager(ctx, call, emit, s.getManager())
+}
+
+// checkPermissionWithManager is checkPermission against an explicit manager
+// snapshot. See RunWithManager for why the snapshot matters.
+func (s *scheduler) checkPermissionWithManager(ctx context.Context, call providers.ToolCall, emit func(Event) bool, manager *tools.Manager) (denied bool, result *ToolResult) {
 	if s.permissions == nil {
 		return false, nil // no permission manager configured: fail open
 	}
@@ -366,7 +445,7 @@ func (s *scheduler) checkPermission(ctx context.Context, call providers.ToolCall
 	}
 
 	if decision == permissions.Ask {
-		resolved, err := s.resolveAsk(ctx, call)
+		resolved, err := s.resolveAskWithManager(ctx, call, manager)
 		if err != nil {
 			result := s.deniedResult(call, fmt.Sprintf("permission prompt failed: %v", err))
 			emit(Event{Type: EventToolDenied, ToolResult: result})
@@ -394,7 +473,13 @@ type executionEnforcementSource interface {
 // resolveAsk prompts for a decision and handles "always" as session-scoped.
 // It serializes concurrent asks so the single TUI modal is never overwritten.
 func (s *scheduler) resolveAsk(ctx context.Context, call providers.ToolCall) (permissions.Decision, error) {
-	if s.asker == nil {
+	return s.resolveAskWithManager(ctx, call, s.getManager())
+}
+
+// resolveAskWithManager is resolveAsk against an explicit manager snapshot.
+func (s *scheduler) resolveAskWithManager(ctx context.Context, call providers.ToolCall, manager *tools.Manager) (permissions.Decision, error) {
+	asker := s.getAsker()
+	if asker == nil {
 		// No interactive surface available (e.g. non-interactive
 		// automation): fail closed rather than silently executing.
 		return permissions.Deny, fmt.Errorf("tool %q requires approval but no permission prompt is configured", call.Name)
@@ -404,13 +489,13 @@ func (s *scheduler) resolveAsk(ctx context.Context, call providers.ToolCall) (pe
 	defer s.askMu.Unlock()
 
 	req := permissions.Request{Tool: call.Name, Arguments: call.Arguments}
-	if src, ok := s.lookupEnforcementSource(call.Name); ok {
+	if src, ok := lookupEnforcementSource(manager, call.Name); ok {
 		if e, ok := src.ExecutionEnforcement(ctx); ok {
 			req.Execution = &e
 		}
 	}
 
-	prompt, err := s.asker.Ask(ctx, req)
+	prompt, err := asker.Ask(ctx, req)
 	if err != nil {
 		return permissions.Deny, err
 	}
@@ -440,7 +525,14 @@ func (s *scheduler) deniedResult(call providers.ToolCall, reason string) *ToolRe
 // lookupEnforcementSource resolves the registered tool implementing the
 // enforcement-source interface, if any.
 func (s *scheduler) lookupEnforcementSource(name string) (executionEnforcementSource, bool) {
-	tool, ok := s.manager.Lookup(name)
+	return lookupEnforcementSource(s.getManager(), name)
+}
+
+func lookupEnforcementSource(manager *tools.Manager, name string) (executionEnforcementSource, bool) {
+	if manager == nil {
+		return nil, false
+	}
+	tool, ok := manager.Lookup(name)
 	if !ok {
 		return nil, false
 	}
