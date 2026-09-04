@@ -3,6 +3,7 @@
 package filesystem
 
 import (
+	"errors"
 	"os"
 	"syscall"
 )
@@ -16,8 +17,10 @@ func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	if _, err := f.Write(data); err != nil {
+		if closeErr := f.Close(); closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
 		return err
 	}
 	return f.Close()
