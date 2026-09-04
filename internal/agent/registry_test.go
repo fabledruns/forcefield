@@ -8,7 +8,7 @@ import (
 
 func TestRegistry_RegisterAndGet(t *testing.T) {
 	r := NewRegistry()
-	d := Definition{Name: "test", Description: "test agent", SystemPrompt: "you are test", Tools: []string{"read_file"}}
+	d := Definition{Name: "test", Description: "test agent", SystemPrompt: "you are test", Tools: []string{"read_file"}, Skills: []string{"s1"}, Constraints: []string{"stay put"}}
 	if err := r.Register(d); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestRegistry_UnknownAgent(t *testing.T) {
 
 func TestRegistry_Duplicate(t *testing.T) {
 	r := NewRegistry()
-	d := Definition{Name: "dup", Description: "x", SystemPrompt: "y", Tools: []string{}}
+	d := Definition{Name: "dup", Description: "x", SystemPrompt: "y", Tools: []string{}, Skills: []string{}}
 	if err := r.Register(d); err != nil {
 		t.Fatalf("first Register: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestRegistry_CaseInsensitive(t *testing.T) {
 func TestRegistry_DefaultRegistryIsIndependent(t *testing.T) {
 	a := DefaultRegistry()
 	b := DefaultRegistry()
-	_ = a.Register(Definition{Name: "extra", Description: "x", SystemPrompt: "y", Tools: []string{}})
+	_ = a.Register(Definition{Name: "extra", Description: "x", SystemPrompt: "y", Tools: []string{}, Skills: []string{}})
 	if _, err := b.Get("extra"); err == nil {
 		t.Fatalf("modifying one registry affected the other")
 	}
@@ -90,13 +90,20 @@ func TestDefinition_Validate(t *testing.T) {
 		def  Definition
 		ok   bool
 	}{
-		{"valid", Definition{Name: "ok", Description: "d", SystemPrompt: "p", Tools: []string{"read_file"}}, true},
-		{"empty name", Definition{Name: "", Description: "d", SystemPrompt: "p", Tools: []string{}}, false},
-		{"empty desc", Definition{Name: "x", Description: "", SystemPrompt: "p", Tools: []string{}}, false},
-		{"empty prompt", Definition{Name: "x", Description: "d", SystemPrompt: "", Tools: []string{}}, false},
-		{"nil tools", Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: nil}, false},
-		{"duplicate tool", Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: []string{"a", "a"}}, false},
-		{"empty tool", Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: []string{""}}, false},
+		{"valid", Definition{Name: "ok", Description: "d", SystemPrompt: "p", Tools: []string{"read_file"}, Skills: []string{"s"}}, true},
+		{"valid all-skills", Definition{Name: "ok", Description: "d", SystemPrompt: "p", Tools: []string{}, AllSkills: true}, true},
+		{"empty name", Definition{Name: "", Description: "d", SystemPrompt: "p", Tools: []string{}, Skills: []string{}}, false},
+		{"empty desc", Definition{Name: "x", Description: "", SystemPrompt: "p", Tools: []string{}, Skills: []string{}}, false},
+		{"empty prompt", Definition{Name: "x", Description: "d", SystemPrompt: "", Tools: []string{}, Skills: []string{}}, false},
+		{"nil tools", Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: nil, Skills: []string{}}, false},
+		{"duplicate tool", Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: []string{"a", "a"}, Skills: []string{}}, false},
+		{"empty tool", Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: []string{""}, Skills: []string{}}, false},
+		{"nil skills without all", Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: []string{}, Skills: nil}, false},
+		{"skills with all", Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: []string{}, Skills: []string{"s"}, AllSkills: true}, false},
+		{"duplicate skill", Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: []string{}, Skills: []string{"s", "s"}}, false},
+		{"empty skill", Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: []string{}, Skills: []string{""}}, false},
+		{"empty constraint", Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: []string{}, Skills: []string{}, Constraints: []string{""}}, false},
+		{"duplicate constraint", Definition{Name: "x", Description: "d", SystemPrompt: "p", Tools: []string{}, Skills: []string{}, Constraints: []string{"c", "c"}}, false},
 	}
 	for _, c := range cases {
 		err := c.def.Validate()
