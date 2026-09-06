@@ -273,6 +273,7 @@ func (r *OpenCodeRouter) Capabilities() Capabilities {
 		ToolCalling:       true,
 		Reasoning:         true,
 		ParallelToolCalls: true,
+		MaxOutputTokens:   4096,
 	}
 }
 

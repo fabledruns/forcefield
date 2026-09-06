@@ -87,10 +87,11 @@ func formatToolFinish(result *runtime.ToolResult, eventType runtime.EventType) s
 	}
 
 	// The icon follows the summary kind: countable listing results
-	// (list_files, search_files) get the discovery star, plain actions
-	// get the diamond. There is no tool-metadata category framework, and
-	// the result carries only the tool name, so these two branches are
-	// the complete set of tools producing countable listings.
+	// (list_files, search_files, find_files) get the discovery star,
+	// plain actions get the diamond. There is no tool-metadata category
+	// framework, and the result carries only the tool name, so these
+	// three branches are the complete set of tools producing countable
+	// listings.
 	var message string
 	switch result.Name {
 	case "list_files":
@@ -103,6 +104,13 @@ func formatToolFinish(result *runtime.ToolResult, eventType runtime.EventType) s
 		if !strings.HasPrefix(strings.TrimSpace(result.Content), "no matches for") {
 			if count := nonEmptyLines(result.Content); count > 0 {
 				message = fmt.Sprintf("%s Found %d matches", IconStar8, count)
+			}
+		}
+	case "find_files":
+		// Zero hits are a "no files matching …" sentence, likewise not a count.
+		if !strings.HasPrefix(strings.TrimSpace(result.Content), "no files matching") {
+			if count := nonEmptyLines(result.Content); count > 0 {
+				message = fmt.Sprintf("%s Found %d files", IconStar8, count)
 			}
 		}
 	case "read_file":

@@ -9,6 +9,7 @@ import (
 
 	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
+	"forcefield/internal/redact"
 	"forcefield/internal/sandbox"
 	"forcefield/internal/session"
 	"forcefield/internal/tools"
@@ -132,9 +133,19 @@ func (s *scheduler) Run(ctx context.Context, calls []providers.ToolCall, emit fu
 // in-flight batch. Callers that already hold a consistent run snapshot
 // should prefer this over Run.
 func (s *scheduler) RunWithManager(ctx context.Context, calls []providers.ToolCall, emit func(Event) bool, manager *tools.Manager) []ToolResult {
+	return s.runWithConcurrency(ctx, calls, emit, manager, s.cfg.MaxConcurrency)
+}
+
+// runWithConcurrency is RunWithManager with an explicit worker cap. The
+// runtime lowers it to 1 for providers that report no parallel tool
+// support; values <= 0 also mean sequential.
+func (s *scheduler) runWithConcurrency(ctx context.Context, calls []providers.ToolCall, emit func(Event) bool, manager *tools.Manager, maxConcurrency int) []ToolResult {
 	results := make([]ToolResult, len(calls))
 	if len(calls) == 0 {
 		return results
+	}
+	if maxConcurrency <= 0 {
+		maxConcurrency = 1
 	}
 
 	var emitMu sync.Mutex
@@ -144,7 +155,7 @@ func (s *scheduler) RunWithManager(ctx context.Context, calls []providers.ToolCa
 		return emit(e)
 	}
 
-	sem := make(chan struct{}, s.cfg.MaxConcurrency)
+	sem := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
 	var stopped atomic.Bool
 
@@ -248,6 +259,10 @@ func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCa
 	meta := tools.MetadataOf(tool)
 
 	onChunk := func(chunk tools.StreamChunk) {
+		// Live output reaches the transcript as it streams, bypassing
+		// the result scrub below: redact here so shell progress can
+		// never display a secret the final result would have hidden.
+		chunk.Data = redact.Scrub(chunk.Data)
 		emit(Event{Type: EventToolProgress, ToolProgress: &ToolProgress{
 			ToolCallID: call.ID,
 			Name:       call.Name,
@@ -265,16 +280,12 @@ func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCa
 	var lastErr error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		callCtx := ctx
-		var cancel context.CancelFunc
-		if meta.Timeout > 0 {
-			callCtx, cancel = context.WithTimeout(ctx, meta.Timeout)
-		}
+		// Every attempt runs under the resolved tool timeout, always
+		// clamped to the hard MaxTimeout ceiling.
+		callCtx, cancel := context.WithTimeout(ctx, effectiveTimeout(tool, meta))
 
 		res, err := execute(callCtx, tool, call.Arguments, onChunk)
-		if cancel != nil {
-			cancel()
-		}
+		cancel()
 		last, lastErr = res, err
 
 		if ctx.Err() != nil {
@@ -378,9 +389,16 @@ func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCa
 // model to recognize secrets.
 func isSensitiveCall(call providers.ToolCall) bool {
 	switch call.Name {
-	case "read_file", "write_file", "list_files", "search_files", "secret_scan":
+	case "read_file", "write_file", "list_files", "search_files", "find_files", "git", "secret_scan":
 		if v, ok := call.Arguments["path"]; ok {
 			if s, ok := v.(string); ok {
+				return filesystem.IsSensitivePath(s)
+			}
+		}
+	case "shell_job":
+		// Jobs scope through cwd rather than path.
+		if v, ok := call.Arguments["cwd"]; ok {
+			if s, ok := v.(string); ok && s != "" {
 				return filesystem.IsSensitivePath(s)
 			}
 		}
@@ -447,6 +465,22 @@ func (s *scheduler) checkPermissionWithManager(ctx context.Context, call provide
 	if decision == permissions.Ask {
 		resolved, err := s.resolveAskWithManager(ctx, call, manager)
 		if err != nil {
+			// Cancellation while the prompt was open is a cancel, not a
+			// denial: report ToolCancelled so the transcript, session,
+			// and failure counters all see the truth.
+			if ctx.Err() != nil {
+				result := ToolResult{
+					ToolCallID: call.ID,
+					Name:       call.Name,
+					Arguments:  call.Arguments,
+					Success:    false,
+					IsError:    true,
+					Content:    "tool execution cancelled",
+					Err:        ctx.Err(),
+				}
+				emit(Event{Type: EventToolCancelled, ToolResult: &result})
+				return true, &result
+			}
 			result := s.deniedResult(call, fmt.Sprintf("permission prompt failed: %v", err))
 			emit(Event{Type: EventToolDenied, ToolResult: result})
 			return true, result
@@ -545,6 +579,20 @@ func execute(ctx context.Context, tool tools.Tool, args map[string]any, onChunk 
 		return st.ExecuteStream(ctx, args, onChunk)
 	}
 	return tool.Execute(ctx, args)
+}
+
+// effectiveTimeout resolves one tool call's execution bound: a
+// configured per-tool override wins, then the advertised metadata, then
+// the shared default — always clamped to the hard MaxTimeout ceiling so
+// no tool (and no misconfigured override) can run unbounded.
+func effectiveTimeout(tool tools.Tool, meta tools.Metadata) time.Duration {
+	timeout := meta.Timeout
+	if lp, ok := tool.(tools.LimitsProvider); ok {
+		if l := lp.ToolLimits(); l.Timeout > 0 {
+			timeout = l.Timeout
+		}
+	}
+	return tools.ClampTimeout(timeout, tools.DefaultToolTimeout)
 }
 
 func (s *scheduler) cancelledResult(call providers.ToolCall) ToolResult {

@@ -66,7 +66,7 @@ func resolveWithinWorkspace(workspace, dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve workspace %s: %w", ws, err)
 	}
-	wsResolved, err := filepath.EvalSymlinks(wsAbs)
+	wsResolved, err := EvalLinks(wsAbs)
 	if err != nil {
 		return "", fmt.Errorf("%w: %s (%v)", ErrInvalidDir, wsAbs, err)
 	}
@@ -117,7 +117,7 @@ func resolveWithinWorkspace(workspace, dir string) (string, error) {
 	// differently-spelled alias of the workspace) or OUTWARD (an escape),
 	// and only the resolved form tells them apart. The unresolved path is
 	// used solely to classify failures for nonexistent directories.
-	resolved, evalErr := filepath.EvalSymlinks(abs)
+	resolved, evalErr := EvalLinks(abs)
 	if evalErr != nil {
 		if !withinAny(wsAbs, wsResolved, abs) {
 			return "", fmt.Errorf("%w: %s is outside %s", ErrWorkspaceEscape, abs, wsResolved)
@@ -170,7 +170,7 @@ func EnsureWithinWorkspace(workspace, path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve workspace %s: %w", ws, err)
 	}
-	wsResolved, err := filepath.EvalSymlinks(wsAbs)
+	wsResolved, err := EvalLinks(wsAbs)
 	if err != nil {
 		return "", fmt.Errorf("%w: %s (%v)", ErrInvalidDir, wsAbs, err)
 	}
@@ -200,7 +200,7 @@ func EnsureWithinWorkspace(workspace, path string) (string, error) {
 	if !withinAny(wsAbs, wsResolved, abs) {
 		return "", fmt.Errorf("%w: %s is outside %s", ErrWorkspaceEscape, abs, wsResolved)
 	}
-	resolved, err := filepath.EvalSymlinks(abs)
+	resolved, err := EvalLinks(abs)
 	if err == nil {
 		if !withinAny(wsAbs, wsResolved, resolved) {
 			return "", fmt.Errorf("%w: %s resolves outside %s", ErrWorkspaceEscape, resolved, wsResolved)
@@ -221,7 +221,7 @@ func EnsureWithinWorkspace(workspace, path string) (string, error) {
 			}
 			continue
 		}
-		resolvedParent, err := filepath.EvalSymlinks(cur)
+		resolvedParent, err := EvalLinks(cur)
 		if err != nil {
 			return "", fmt.Errorf("%w: %s", ErrInvalidDir, abs)
 		}
@@ -231,6 +231,81 @@ func EnsureWithinWorkspace(workspace, path string) (string, error) {
 		break
 	}
 	return abs, nil
+}
+
+// maxLinkDepth bounds junction/symlink chasing in EvalLinks.
+const maxLinkDepth = 255
+
+// EvalLinks resolves path fully, following symlinks AND Windows
+// junctions/mount points. filepath.EvalSymlinks skips NTFS junctions
+// — Go does not report them as ModeSymlink, so it returns them
+// unresolved — and a junction pointing outside the workspace would
+// then pass containment. EvalLinks runs the standard resolver first
+// (preserving its case, 8.3, alias, and symlink handling) and then
+// resolves anything left behind via Readlink, which does report
+// junction targets. Missing paths error exactly like EvalSymlinks so
+// callers keep their exists/not-exists branching.
+func EvalLinks(path string) (string, error) {
+	normalized, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	return resolveJunctions(normalized)
+}
+
+// resolveJunctions chases reparse points EvalSymlinks left unresolved,
+// leftmost-first with a depth guard against cycles.
+func resolveJunctions(clean string) (string, error) {
+	for i := 0; i < maxLinkDepth; i++ {
+		target, rest, ok := firstJunctionTarget(clean)
+		if !ok {
+			return clean, nil
+		}
+		if rest == "" {
+			clean = target
+		} else {
+			clean = filepath.Clean(target + string(os.PathSeparator) + rest)
+		}
+	}
+	return "", fmt.Errorf("too many links resolving %s", clean)
+}
+
+// firstJunctionTarget scans existing path prefixes leftmost-first and
+// returns the first Readlink hit spliced with its remainder. Plain
+// symlinks never reach here (the standard resolver already handled
+// them); hits are junctions/mount points.
+func firstJunctionTarget(clean string) (target, rest string, ok bool) {
+	vol := filepath.VolumeName(clean)
+	restPath := strings.TrimPrefix(clean, vol)
+	restPath = strings.TrimPrefix(restPath, string(os.PathSeparator))
+	if restPath == "" {
+		return "", "", false // volume root itself
+	}
+	parts := strings.Split(restPath, string(os.PathSeparator))
+	prefix := vol + string(os.PathSeparator)
+	if vol == "" {
+		prefix = string(os.PathSeparator)
+	}
+	for i, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			// Should not occur post-Clean; bail rather than misresolve.
+			return "", "", false
+		}
+		prefix = filepath.Join(prefix, part)
+		link, err := os.Readlink(prefix)
+		if err != nil {
+			continue
+		}
+		if !filepath.IsAbs(link) && !isAbsLike(link) {
+			link = filepath.Join(filepath.Dir(prefix), link)
+		}
+		remainder := strings.Join(parts[i+1:], string(os.PathSeparator))
+		return link, remainder, true
+	}
+	return "", "", false
 }
 
 // within reports whether path equals root or lies underneath it,

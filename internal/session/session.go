@@ -3,7 +3,10 @@ package session
 
 import (
 	"forcefield/internal/providers"
+	"forcefield/internal/redact"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Message is one session message. ToolCalls, ToolCallID, and Name are
@@ -30,6 +33,88 @@ type Session struct {
 	// "" as "general" for backwards compatibility.
 	Agent    string    `json:"agent,omitempty"`
 	Messages []Message `json:"messages"`
+	// Turn is the execution envelope for the latest tool-calling turn:
+	// which calls were decided, which are still running, and how the
+	// turn ended. It is what makes a crash between "model responded" and
+	// "tool results persisted" recoverable instead of ambiguous. Nil for
+	// old session files (which predate it) and for sessions that never
+	// ran a tool; every field is additive and omitempty.
+	Turn *TurnState `json:"turn,omitempty"`
+}
+
+// TurnStatus is the lifecycle state of one tool-calling turn.
+type TurnStatus string
+
+const (
+	// TurnInProgress means tool calls were decided and at least one has
+	// not reached a terminal state. A Turn left in this state on disk
+	// means Forcefield stopped unexpectedly mid-turn.
+	TurnInProgress TurnStatus = "in_progress"
+	// TurnComplete means the run finished the turn normally.
+	TurnComplete TurnStatus = "complete"
+	// TurnInterrupted means the process died mid-turn (crash/kill): the
+	// calls were never re-executed and must stay terminal.
+	TurnInterrupted TurnStatus = "interrupted"
+	// TurnCancelled means the user (or a teardown path) cancelled the
+	// turn before it finished.
+	TurnCancelled TurnStatus = "cancelled"
+)
+
+// CallStatus is the execution state of one tool call within a turn.
+// in_progress (pending/running) is the only non-terminal pair; every
+// other value is final and never re-queued.
+type CallStatus string
+
+const (
+	CallPending     CallStatus = "pending"
+	CallRunning     CallStatus = "running"
+	CallDone        CallStatus = "done"
+	CallFailed      CallStatus = "failed"
+	CallDenied      CallStatus = "denied"
+	CallCancelled   CallStatus = "cancelled"
+	CallInterrupted CallStatus = "interrupted"
+)
+
+// isTerminalCallStatus reports whether st ends a call's lifecycle.
+func isTerminalCallStatus(st CallStatus) bool {
+	switch st {
+	case CallDone, CallFailed, CallDenied, CallCancelled, CallInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
+// PendingCall tracks one tool call's execution status within the active
+// turn. ID/Name/Arguments mirror the assistant tool_calls batch so
+// recovery can pair intent with outcome without re-running anything.
+type PendingCall struct {
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments,omitempty"`
+	Status    CallStatus     `json:"status"`
+	StartedAt time.Time      `json:"started_at,omitempty"`
+	EndedAt   time.Time      `json:"ended_at,omitempty"`
+	Attempt   int            `json:"attempt,omitempty"`
+	Error     string         `json:"error,omitempty"`
+}
+
+// TurnState is the crash-recovery envelope for the latest tool-calling
+// turn. It holds at most one batch (the run loop finishes each batch
+// before the next model turn), so it never grows with history.
+type TurnState struct {
+	ID string `json:"id,omitempty"`
+	// Status is the turn lifecycle state; in_progress on disk means the
+	// process stopped before the turn finished.
+	Status TurnStatus `json:"status,omitempty"`
+	// ModelCompleted reports whether the model response that decided
+	// this turn finished streaming (true once tool calls were produced
+	// or the final answer completed). Informational for debugging
+	// failed runs; recovery never branches on it.
+	ModelCompleted bool          `json:"model_completed,omitempty"`
+	StartedAt      time.Time     `json:"started_at,omitempty"`
+	EndedAt        time.Time     `json:"ended_at,omitempty"`
+	Pending        []PendingCall `json:"pending,omitempty"`
 }
 
 // maxSessionMessages bounds how many messages a session file may hold.
@@ -96,8 +181,18 @@ func (s *Session) ProviderMessages() []providers.Message {
 func (s *Session) AddProviderMessage(msg providers.Message) {
 	// Scrub secrets before persistence so session files and provider replay
 	// never contain raw keys. This is defense-in-depth even though
-	// sensitive files now require Ask.
+	// sensitive files now require Ask. Tool-call arguments get the same
+	// treatment (copied — the caller's map is never mutated): commands,
+	// paths, and file content routinely carry credentials.
 	msg.Content = ScrubContent(msg.Content)
+	if len(msg.ToolCalls) > 0 {
+		calls := make([]providers.ToolCall, len(msg.ToolCalls))
+		for i, tc := range msg.ToolCalls {
+			tc.Arguments = redact.ScrubMap(tc.Arguments)
+			calls[i] = tc
+		}
+		msg.ToolCalls = calls
+	}
 	s.Messages = append(s.Messages, Message{
 		Role:       string(msg.Role),
 		Content:    msg.Content,
@@ -130,6 +225,226 @@ func (s *Session) AddToolResult(toolCallID, name, content string) {
 		Name:       name,
 		Content:    content,
 	})
+}
+
+// RepairInterruptedTurn appends synthetic cancelled results for assistant
+// tool calls that have no matching tool result message. Cancellation (or
+// a crash/kill) can strand an assistant tool_calls batch: the batch is
+// persisted when the call starts, but the result never arrives because
+// the run was torn down first. Left alone, the session would replay an
+// assistant message with dangling tool calls, which strict provider APIs
+// reject — making the session unresumable.
+//
+// Repair keeps the session recoverable: every tool call gains a result,
+// the user can continue or resume, and the file stays a faithful record
+// (the content names the interruption explicitly). It returns how many
+// results were synthesized; 0 means the session was already consistent.
+// Callers should Save when the count is positive.
+func (s *Session) RepairInterruptedTurn() int {
+	if s == nil {
+		return 0
+	}
+	resultIDs := make(map[string]struct{}, len(s.Messages))
+	for _, m := range s.Messages {
+		if m.Role == string(providers.ToolRole) && m.ToolCallID != "" {
+			resultIDs[m.ToolCallID] = struct{}{}
+		}
+	}
+	type orphan struct {
+		id   string
+		name string
+	}
+	var orphans []orphan
+	for _, m := range s.Messages {
+		if m.Role != string(providers.AssistantRole) {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID == "" {
+				continue
+			}
+			if _, ok := resultIDs[tc.ID]; ok {
+				continue
+			}
+			orphans = append(orphans, orphan{id: tc.ID, name: tc.Name})
+			resultIDs[tc.ID] = struct{}{} // same ID twice: repair once
+		}
+	}
+	for _, o := range orphans {
+		s.AddToolResult(o.id, o.name, "tool execution cancelled (turn interrupted before the result was recorded)")
+	}
+	return len(orphans)
+}
+
+// BeginTurn starts a new tool-calling turn envelope, replacing any
+// finished turn's record. The run loop finishes each tool batch before
+// the next model turn, so at most one turn is ever in flight and the
+// envelope stays bounded. It returns the new turn ID.
+func (s *Session) BeginTurn() string {
+	if s == nil {
+		return ""
+	}
+	id := uuid.NewString()
+	now := time.Now()
+	s.Turn = &TurnState{
+		ID:        id,
+		Status:    TurnInProgress,
+		StartedAt: now,
+	}
+	s.UpdatedAt = now
+	return id
+}
+
+// ensureTurn returns the active in-progress turn, starting one when
+// there is none or the last one already reached a terminal state.
+func (s *Session) ensureTurn() *TurnState {
+	if s == nil {
+		return nil
+	}
+	if s.Turn == nil || s.Turn.Status != TurnInProgress {
+		s.BeginTurn()
+	}
+	return s.Turn
+}
+
+// AddPendingCall records a decided tool call as running before its
+// execution completes. Call it alongside the assistant tool_calls batch
+// persist, under the same Save, so intent and status commit atomically.
+// A duplicate ID is ignored: the first record wins. String arguments are
+// scrubbed (a copied map — the caller's is never mutated) so secrets in
+// commands, paths, or content never reach the session file.
+func (s *Session) AddPendingCall(call providers.ToolCall) {
+	if s == nil || call.ID == "" {
+		return
+	}
+	turn := s.ensureTurn()
+	if turn == nil {
+		return
+	}
+	for _, p := range turn.Pending {
+		if p.ID == call.ID {
+			return
+		}
+	}
+	now := time.Now()
+	turn.Pending = append(turn.Pending, PendingCall{
+		ID:        call.ID,
+		Name:      call.Name,
+		Arguments: redact.ScrubMap(call.Arguments),
+		Status:    CallRunning,
+		StartedAt: now,
+	})
+	turn.ModelCompleted = true // calls exist only after a full response
+	s.UpdatedAt = now
+}
+
+// ResolvePendingCall marks a pending call terminal. Unknown IDs are
+// ignored so late or duplicate terminal events can never corrupt the
+// record. Terminal states are final: resolving twice keeps the first.
+func (s *Session) ResolvePendingCall(id string, status CallStatus, errMsg string) {
+	if s == nil || s.Turn == nil || id == "" {
+		return
+	}
+	if !isTerminalCallStatus(status) {
+		return
+	}
+	for i := range s.Turn.Pending {
+		p := &s.Turn.Pending[i]
+		if p.ID != id || isTerminalCallStatus(p.Status) {
+			continue
+		}
+		p.Status = status
+		p.EndedAt = time.Now()
+		p.Error = redact.Scrub(errMsg)
+		s.UpdatedAt = p.EndedAt
+		return
+	}
+}
+
+// EndTurn closes the active turn with a terminal status. It only
+// transitions out of in_progress, so a late Done can never overwrite an
+// already-recorded cancel or interrupt. Unsettled calls settle with the
+// turn (cancelled turns cancel them, interrupted ones interrupt them; a
+// complete turn with a still-running call marks it interrupted, since its
+// outcome was never observed). It returns true when it changed anything;
+// callers should Save then.
+func (s *Session) EndTurn(status TurnStatus, modelCompleted bool) bool {
+	if s == nil || s.Turn == nil {
+		return false
+	}
+	if s.Turn.Status != TurnInProgress {
+		return false
+	}
+	switch status {
+	case TurnComplete, TurnInterrupted, TurnCancelled:
+		s.Turn.Status = status
+	default:
+		return false
+	}
+	now := time.Now()
+	s.Turn.EndedAt = now
+	if modelCompleted {
+		s.Turn.ModelCompleted = modelCompleted
+	}
+	for i := range s.Turn.Pending {
+		p := &s.Turn.Pending[i]
+		if isTerminalCallStatus(p.Status) {
+			continue
+		}
+		if status == TurnCancelled {
+			p.Status = CallCancelled
+		} else {
+			p.Status = CallInterrupted
+		}
+		p.EndedAt = now
+	}
+	s.UpdatedAt = now
+	return true
+}
+
+// CancelTurn marks the active turn and its unsettled calls cancelled.
+// It is idempotent and a no-op without an in-progress turn; callers
+// should Save when it reports a change.
+func (s *Session) CancelTurn() bool {
+	if s == nil || s.Turn == nil || s.Turn.Status != TurnInProgress {
+		return false
+	}
+	now := time.Now()
+	s.Turn.Status = TurnCancelled
+	s.Turn.EndedAt = now
+	for i := range s.Turn.Pending {
+		p := &s.Turn.Pending[i]
+		if !isTerminalCallStatus(p.Status) {
+			p.Status = CallCancelled
+			p.EndedAt = now
+		}
+	}
+	s.UpdatedAt = now
+	return true
+}
+
+// RecoverInterruptedTurn detects a turn that was in progress when
+// Forcefield stopped unexpectedly (crash/kill) and marks it and its
+// unsettled calls interrupted. Interrupted calls are terminal: recovery
+// never re-executes anything, it only records. Pair with
+// RepairInterruptedTurn (which synthesizes the missing tool result
+// messages) and Save when it reports a change.
+func (s *Session) RecoverInterruptedTurn() bool {
+	if s == nil || s.Turn == nil || s.Turn.Status != TurnInProgress {
+		return false
+	}
+	now := time.Now()
+	s.Turn.Status = TurnInterrupted
+	s.Turn.EndedAt = now
+	for i := range s.Turn.Pending {
+		p := &s.Turn.Pending[i]
+		if !isTerminalCallStatus(p.Status) {
+			p.Status = CallInterrupted
+			p.EndedAt = now
+		}
+	}
+	s.UpdatedAt = now
+	return true
 }
 
 // AppendToolCallToLastAssistant appends one ToolCall to the last assistant

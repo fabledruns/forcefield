@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"forcefield/internal/permissions"
+	"forcefield/internal/redact"
 )
 
 // permissionPrompt tracks a single pending "ask" permission decision the
@@ -216,6 +217,11 @@ func (p *permissionPrompt) formatToolBlock() string {
 		var val string
 		switch s := v.(type) {
 		case string:
+			// Scrub before display (and before truncation, so a secret
+			// split by the cut still matches): the modal shows what the
+			// tool would do, never credentials. The approval decision
+			// itself is unaffected.
+			s = redact.Scrub(s)
 			origLen := len(s)
 			truncated := false
 			// Truncate very long strings (e.g. write_file content) but make the truncation explicit
@@ -260,8 +266,13 @@ func (p *permissionPrompt) formatToolBlock() string {
 // actionDescription describes what the tool wants to do in words a human
 // can read at a glance, instead of dumping raw JSON arguments. Tools
 // without a known argument shape fall back to their full arguments so
-// nothing about the request is hidden.
+// nothing about the request is hidden. Display only: the text is scrubbed
+// so commands carrying tokens never paint them.
 func (p *permissionPrompt) actionDescription() string {
+	return redact.Scrub(p.describeAction())
+}
+
+func (p *permissionPrompt) describeAction() string {
 	args := p.request.Arguments
 	switch p.request.Tool {
 	case "shell":
@@ -290,7 +301,8 @@ func (p *permissionPrompt) actionDescription() string {
 		}
 		return "list_files " + path
 	}
-	return formatToolCallSummary(p.request.Tool, args)
+	// Display only: scrub so commands carrying tokens never paint them.
+	return redact.Scrub(formatToolCallSummary(p.request.Tool, args))
 }
 
 // riskNote returns an honest, one-line description of what approving this

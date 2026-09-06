@@ -26,9 +26,10 @@ type OllamaProvider struct {
 // Capabilities reports what this adapter supports.
 func (o *OllamaProvider) Capabilities() Capabilities {
 	return Capabilities{
-		Streaming:   true,
-		ToolCalling: true,
-		Reasoning:   true,
+		Streaming:       true,
+		ToolCalling:     true,
+		Reasoning:       true,
+		MaxOutputTokens: 4096,
 	}
 }
 

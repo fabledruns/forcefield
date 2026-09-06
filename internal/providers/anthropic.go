@@ -66,6 +66,7 @@ func (a *AnthropicProvider) Capabilities() Capabilities {
 		ToolCalling:       true,
 		Reasoning:         true,
 		ParallelToolCalls: true,
+		MaxOutputTokens:   8192,
 	}
 }
 

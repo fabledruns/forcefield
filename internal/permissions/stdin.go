@@ -55,31 +55,62 @@ func (a *StdinAsker) Ask(ctx context.Context, req Request) (Prompt, error) {
 
 	fmt.Fprint(out, "\nAllow?\n\n(y) Yes\n(n) No\n(a) Always allow this tool\n(d) Always deny this tool\n\n> ")
 
+	// Read on a dedicated goroutine so ctx cancellation (Ctrl+C during
+	// "ff run") unblocks the prompt: a blocked terminal read cannot be
+	// interrupted directly. One reader owns the buffered stream for the
+	// whole prompt so multi-line piped input is never lost to over-reads.
+	// The reader parks after Ask returns (answer, EOF, or cancel) and
+	// exits on EOF or process end; at most one parks per prompt.
+	type lineResult struct {
+		line string
+		err  error
+	}
+	lines := make(chan lineResult)
+	parked := make(chan struct{})
+	defer close(parked)
 	reader := bufio.NewReader(in)
+	go func() {
+		for {
+			line, err := reader.ReadString('\n')
+			select {
+			case lines <- lineResult{line: line, err: err}:
+			case <-parked:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	for {
-		if err := ctx.Err(); err != nil {
-			return PromptDenyOnce, err
+		select {
+		case <-ctx.Done():
+			return PromptDenyOnce, ctx.Err()
+		case res := <-lines:
+			line, err := res.line, res.err
+			answer := strings.ToLower(strings.TrimSpace(line))
+
+			switch answer {
+			case "y", "yes":
+				return PromptAllowOnce, nil
+			case "n", "no":
+				return PromptDenyOnce, nil
+			case "a", "always":
+				return PromptAlwaysAllow, nil
+			case "d", "deny":
+				return PromptAlwaysDeny, nil
+			}
+
+			if err != nil {
+				// EOF or read failure with no usable answer: fail closed.
+				return PromptDenyOnce, fmt.Errorf("permissions: read answer: %w", err)
+			}
+
+			if err := ctx.Err(); err != nil {
+				return PromptDenyOnce, err
+			}
+			fmt.Fprint(out, "please enter y, n, a, or d: ")
 		}
-
-		line, err := reader.ReadString('\n')
-		answer := strings.ToLower(strings.TrimSpace(line))
-
-		switch answer {
-		case "y", "yes":
-			return PromptAllowOnce, nil
-		case "n", "no":
-			return PromptDenyOnce, nil
-		case "a", "always":
-			return PromptAlwaysAllow, nil
-		case "d", "deny":
-			return PromptAlwaysDeny, nil
-		}
-
-		if err != nil {
-			// EOF or read failure with no usable answer: fail closed.
-			return PromptDenyOnce, fmt.Errorf("permissions: read answer: %w", err)
-		}
-
-		fmt.Fprint(out, "please enter y, n, a, or d: ")
 	}
 }

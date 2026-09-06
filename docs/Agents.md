@@ -42,7 +42,7 @@ available tool still passes permissions.
 | `docs` | read/write/list/pwd/search + runtime | none assigned | don't change code behavior |
 | `research` | read/list/pwd/search + runtime | intelligence | facts-vs-interpretation |
 | `devops` | read/write/list/pwd/shell/search + runtime | intelligence, debugging | no destructive commands |
-| `general` | all 10 tools | **all** installed skills | none |
+| `general` | all 13 tools | **all** installed skills | none |
 
 "+ runtime" = `load_skill, update_task_state, add_project_memory`.
 Skill IDs reference the global store; IDs not installed degrade gracefully
@@ -97,8 +97,8 @@ to a different skill. Bodies are never fabricated.
 
 Permissions remain global (`permissions.default` + `permissions.tools`). An agent's definition does not bypass the permission system. `Always allow` decisions are tool-scoped, not `agent+tool` scoped — a prior `Always allow shell` under `coding` still applies after switching to `cyber` for the shared `shell` tool. Documented as future work.
 
-New tools ship with defaults: `search_files: allow`, `secret_scan: allow`
-(read-only, consistent with `read_file`/`list_files`). Both join the
+New tools ship with defaults: `search_files: allow`, `find_files: allow`, `secret_scan: allow`
+(read-only, consistent with `read_file`/`list_files`). All three join the
 sensitive-path escalation set (`secret_scan` on a sensitive path still
 requires approval).
 

@@ -37,6 +37,16 @@ tools: [
 		default_permission: "allow"
 	},
 	{
+		name:               "find_files"
+		description:        "Find files and directories under a directory by filename glob or substring."
+		default_permission: "allow"
+	},
+	{
+		name:               "git"
+		description:        "Inspect a git repository (read-only): status, diffs, log, changed files."
+		default_permission: "allow"
+	},
+	{
 		name:               "secret_scan"
 		description:        "Defensively scan one file or inline text for hardcoded secrets (local-only)."
 		default_permission: "allow"
@@ -49,6 +59,11 @@ tools: [
 	{
 		name:               "shell"
 		description:        "Execute a shell command through the sandbox executor and return its output and exit code."
+		default_permission: "ask"
+	},
+	{
+		name:               "shell_job"
+		description:        "Run a shell command in the background and poll, list, or cancel it."
 		default_permission: "ask"
 	},
 	{

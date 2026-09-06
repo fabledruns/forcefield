@@ -114,12 +114,11 @@ func TestShell_CapturesVeryLongLine(t *testing.T) {
 		t.Fatalf("result.IsError = true, content: %.100s", result.Content)
 	}
 	// With 2 MiB cap, 3 MiB should be truncated
-	if got := len(strings.TrimRight(result.Stdout, "\n")); got > maxShellOutputBytes {
-		t.Errorf("captured stdout length = %d, exceeds cap %d", got, maxShellOutputBytes)
+	if got := len(strings.TrimRight(result.Stdout, "\n")); got > tools.DefaultShellMaxBytes {
+		t.Errorf("captured stdout length = %d, exceeds cap %d", got, tools.DefaultShellMaxBytes)
 	}
-	if got := len(strings.TrimRight(result.Stdout, "\n")); got < maxShellOutputBytes-1024 {
-		t.Logf("result stdout len %d, content len %d, stderr len %d, content snippet %.500q", len(result.Stdout), len(result.Content), len(result.Stderr), result.Content)
-		t.Errorf("captured stdout length = %d, want near cap %d (truncated)", got, maxShellOutputBytes)
+	if got := len(strings.TrimRight(result.Stdout, "\n")); got < tools.DefaultShellMaxBytes-1024 {
+		t.Errorf("captured stdout length = %d, want near cap %d (truncated)", got, tools.DefaultShellMaxBytes)
 	}
 	if !strings.Contains(result.Content, "truncated") {
 		t.Errorf("expected truncation marker, got content snippet %.500q", result.Content)

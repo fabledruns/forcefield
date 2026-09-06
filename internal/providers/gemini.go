@@ -10,9 +10,22 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 
 	"forcefield/internal/tools"
 )
+
+// syntheticCallSeq numbers provider-synthesized tool call IDs. Gemini
+// supplies no call IDs, so the adapter mints them; the counter is
+// process-wide — never per-turn — so IDs stay unique across every turn
+// of every run and the runtime can treat a repeated ID as the same
+// call instead of a counter collision.
+var syntheticCallSeq atomic.Int64
+
+// nextSyntheticCallID mints a unique tool call ID.
+func nextSyntheticCallID() string {
+	return fmt.Sprintf("call-%d", syntheticCallSeq.Add(1))
+}
 
 // GeminiProvider talks to Google's native Generative Language API. A
 // dedicated adapter is warranted because the protocol differs from
@@ -60,6 +73,7 @@ func (g *GeminiProvider) Capabilities() Capabilities {
 		ToolCalling:       true,
 		Reasoning:         true,
 		ParallelToolCalls: true,
+		MaxOutputTokens:   8192,
 	}
 }
 
@@ -422,7 +436,7 @@ func (g *GeminiProvider) StreamChat(ctx context.Context, messages []Message, def
 							args = map[string]any{}
 						}
 						pendingCalls = append(pendingCalls, ToolCall{
-							ID:        fmt.Sprintf("call-%d", len(pendingCalls)+1),
+							ID:        nextSyntheticCallID(),
 							Name:      part.FunctionCall.Name,
 							Arguments: args,
 						})
@@ -500,7 +514,7 @@ func (g *GeminiProvider) Complete(ctx context.Context, messages []Message, defs 
 				args = map[string]any{}
 			}
 			calls = append(calls, ToolCall{
-				ID:        fmt.Sprintf("call-%d", len(calls)+1),
+				ID:        nextSyntheticCallID(),
 				Name:      part.FunctionCall.Name,
 				Arguments: args,
 			})

@@ -162,6 +162,23 @@ func TestGeminiStreamFullTurn(t *testing.T) {
 	}
 }
 
+func TestSyntheticCallIDsUniqueAcrossTurns(t *testing.T) {
+	// Synthesized IDs must never collide across turns: the runtime keys
+	// idempotency on them, and a per-turn counter would conflate
+	// distinct calls from different turns.
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		id := nextSyntheticCallID()
+		if id == "" {
+			t.Fatal("empty synthetic ID")
+		}
+		if seen[id] {
+			t.Fatalf("duplicate synthetic ID %q", id)
+		}
+		seen[id] = true
+	}
+}
+
 func TestGeminiFinishReasonLengthMapsToLength(t *testing.T) {
 	p := geminiServer(t, func(t *testing.T, w http.ResponseWriter, r *http.Request) {
 		writeSSEPayloads(w, `{"candidates":[{"content":{"parts":[{"text":"cut off"}],"role":"model"},"finishReason":"MAX_TOKENS"}]}`)

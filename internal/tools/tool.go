@@ -67,7 +67,7 @@ type Metadata struct {
 // MetadataProvider: safe to run in parallel, no special permissions, a
 // generous default timeout, no streaming/retry behavior assumed.
 var DefaultMetadata = Metadata{
-	Timeout:          30 * time.Second,
+	Timeout:          DefaultToolTimeout,
 	SupportsParallel: true,
 }
 

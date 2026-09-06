@@ -6,6 +6,7 @@ import (
 	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 	"forcefield/internal/tools/filesystem"
+	"forcefield/internal/tools/git"
 	"forcefield/internal/tools/search"
 	"forcefield/internal/tools/security"
 	"forcefield/internal/tools/shell"
@@ -18,6 +19,7 @@ type options struct {
 	executor  sandbox.Executor
 	policy    sandbox.Policy
 	hasPolicy bool
+	limits    map[string]tools.Limits
 }
 
 // WithExecutor routes shell commands through the given sandbox.Executor.
@@ -27,9 +29,8 @@ func WithExecutor(e sandbox.Executor) Option {
 }
 
 // WithPolicy configures filesystem tools (read_file, write_file, list_files)
-// to enforce workspace confinement when policy.Mode is wsl. In native mode
-// or when no policy is supplied, filesystem tools preserve historical
-// unrestricted behavior.
+// to enforce workspace confinement when the policy confines (wsl mode or
+// strict native). Otherwise tools preserve historical unrestricted behavior.
 func WithPolicy(p sandbox.Policy) Option {
 	return func(o *options) { o.policy = p; o.hasPolicy = true }
 }
@@ -38,6 +39,27 @@ func WithPolicy(p sandbox.Policy) Option {
 // only care about filesystem confinement.
 func WithFS(p sandbox.Policy) Option {
 	return WithPolicy(p)
+}
+
+// WithLimits applies per-tool output/timeout overrides. Keys are tool
+// names; tools that do not implement tools.LimitsSetter ignore their
+// entry. Only positive fields take effect per tool.
+func WithLimits(m map[string]tools.Limits) Option {
+	return func(o *options) { o.limits = m }
+}
+
+// applyLimits hands a tool its configured override when present.
+func applyLimits(t tools.Tool, m map[string]tools.Limits) {
+	if len(m) == 0 {
+		return
+	}
+	l, ok := m[t.Name()]
+	if !ok {
+		return
+	}
+	if s, ok := t.(tools.LimitsSetter); ok {
+		s.SetLimits(l)
+	}
 }
 
 // Register adds every built-in tool to m. Call it once, right after
@@ -54,11 +76,15 @@ func Register(m *tools.Manager, opts ...Option) error {
 		newListFiles(o),
 		shell.NewPWD(),
 		newShell(o),
+		newShellJob(o),
 		newSearchFiles(o),
+		newFindFiles(o),
+		newGit(o),
 		newSecretScan(o),
 	}
 
 	for _, t := range all {
+		applyLimits(t, o.limits)
 		if err := m.Register(t); err != nil {
 			return err
 		}
@@ -68,7 +94,7 @@ func Register(m *tools.Manager, opts ...Option) error {
 }
 
 func newReadFile(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Mode == sandbox.ModeWSL {
+	if o.hasPolicy && o.policy.Confines() {
 		return filesystem.NewReadFileWithPolicy(o.policy)
 	}
 	// Native or unspecified: preserve historical unrestricted behavior.
@@ -76,14 +102,14 @@ func newReadFile(o options) tools.Tool {
 }
 
 func newWriteFile(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Mode == sandbox.ModeWSL {
+	if o.hasPolicy && o.policy.Confines() {
 		return filesystem.NewWriteFileWithPolicy(o.policy)
 	}
 	return filesystem.NewWriteFile()
 }
 
 func newListFiles(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Mode == sandbox.ModeWSL {
+	if o.hasPolicy && o.policy.Confines() {
 		return filesystem.NewListFilesWithPolicy(o.policy)
 	}
 	return filesystem.NewListFiles()
@@ -97,15 +123,38 @@ func newShell(o options) tools.Tool {
 	return shell.NewShell()
 }
 
+// newShellJob picks the background-job constructor matching the
+// options, sharing the shell executor (and its workspace policy).
+func newShellJob(o options) tools.Tool {
+	if o.executor != nil {
+		return shell.NewShellJobWithExecutor(o.executor)
+	}
+	return shell.NewShellJob()
+}
+
 func newSearchFiles(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Mode == sandbox.ModeWSL {
+	if o.hasPolicy && o.policy.Confines() {
 		return search.NewSearchFilesWithPolicy(o.policy)
 	}
 	return search.NewSearchFiles()
 }
 
+func newFindFiles(o options) tools.Tool {
+	if o.hasPolicy && o.policy.Confines() {
+		return search.NewFindFilesWithPolicy(o.policy)
+	}
+	return search.NewFindFiles()
+}
+
+func newGit(o options) tools.Tool {
+	if o.hasPolicy && o.policy.Confines() {
+		return git.NewGitWithPolicy(o.policy)
+	}
+	return git.NewGit()
+}
+
 func newSecretScan(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Mode == sandbox.ModeWSL {
+	if o.hasPolicy && o.policy.Confines() {
 		return security.NewSecretScanWithPolicy(o.policy)
 	}
 	return security.NewSecretScan()

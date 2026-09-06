@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -83,7 +84,7 @@ func TestRunCommand_AgentFlagUnknownAgentErrors(t *testing.T) {
 	origRun := runtimeRun
 	defer func() { runtimeRun = origRun }()
 	called := false
-	runtimeRun = func([]providers.Message) (providers.Response, error) {
+	runtimeRun = func(context.Context, []providers.Message) (providers.Response, error) {
 		called = true
 		return providers.Response{Content: "ok"}, nil
 	}

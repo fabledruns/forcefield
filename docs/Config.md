@@ -92,10 +92,17 @@ A key found this way stays inside Forcefield: it is never written back into the 
 
 ### `agent`
 
-| Field           | Required | Description                                      |
-| --------------- | -------- | ------------------------------------------------ |
-| `name`          | No       | Display name of the default agent (`default` treated as `general`). |
-| `system_prompt` | No       | Agent identity. The operating contract is always appended by the agent package. |
+| Field                  | Required | Description                                      |
+| ---------------------- | -------- | ------------------------------------------------ |
+| `name`                 | No       | Display name of the default agent (`default` treated as `general`). |
+| `system_prompt`        | No       | Agent identity. The operating contract is always appended by the agent package. |
+| `max_iterations`       | No       | Cap on model turns per run (default 60). |
+| `max_tool_calls`       | No       | Cap on total tool calls per run (default 300). |
+| `max_consecutive_failures` | No   | Cap on consecutive failing tool calls (default 5). |
+| `context_window`       | No       | Override the model's context window in tokens. Resolved from the provider capability table when omitted; unknown models fall back to message-count windowing. |
+| `context_reserve`      | No       | Tokens reserved for the next model response. Defaults to the model's approximate output limit. |
+| `max_context_messages` | No       | Cap on history messages per request (default 100). Always enforced, even when the token budget is known. |
+| `context_summary`      | No       | When `true`, evicted middle turns are replaced with a compact digest instead of dropped silently (default `false`). |
 
 ### `agents`
 
@@ -125,8 +132,42 @@ agents:
 | `constraints`   | Behavioral guidance lines (prompt-only, never enforcement). |
 | `provider`      | Optional provider hint; applied via `SetProvider` path, in-memory only. |
 | `model`         | Optional model hint; applied via `SetModel`. |
+| `max_iterations` / `max_tool_calls` / `max_consecutive_failures` | Per-agent run bounds; positive values win over the global `agent.*` block. |
+| `context_window` / `context_reserve` / `max_context_messages` | Per-agent context budget; same precedence. |
+| `context_summary` | Per-agent digest flag (`true`/`false`); unset keeps the global value. |
 
-See [Agents](Agents.md) for the built-in list and tool matrix.
+Permissions stay global: profiles cannot widen (or narrow) the permission system. See [Agents](Agents.md) for the built-in list and tool matrix.
+
+### `tools`
+
+Optional per-tool output/execution overrides. Every field is optional;
+omitted values resolve to the tool defaults (see [Tools](Tools.md)).
+
+```yaml
+tools:
+  shell:
+    max_bytes: 1048576
+    timeout_seconds: 60
+  search_files:
+    max_lines: 40
+```
+
+| Field             | Description |
+| ----------------- | ----------- |
+| `max_bytes`       | Combined output byte cap (shell stdout+stderr, read size). Must be positive. |
+| `max_lines`       | Reported line/finding cap (listings, matches, findings). Must be positive. |
+| `timeout_seconds` | Execution timeout, 0–300. The scheduler enforces 300s as the hard ceiling. |
+
+Unknown tool names are rejected at load.
+
+### `workspace`
+
+| Field   | Required | Description |
+| ------- | -------- | ----------- |
+| `root`  | No       | Project root for filesystem tools and shell working directories. Empty resolves to the Git top-level when available, else the working directory. An explicit root (absolute or startup-relative) must exist. |
+| `mode`  | No       | `permissive` (default, historical behavior) or `strict` (confine every filesystem tool and the shell cwd to the root). Old configs without this block stay permissive. |
+
+See [Sandbox](Sandbox.md) for the boundary algorithm and guarantees.
 
 ## Functions
 

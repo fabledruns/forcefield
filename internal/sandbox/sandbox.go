@@ -94,12 +94,27 @@ type Policy struct {
 	// confined to for working-directory purposes. Empty means the
 	// process's current working directory, resolved per request.
 	Workspace string
+	// Strict, when true, cages filesystem tools and shell working
+	// directories to Workspace in every mode, including native. It runs
+	// the exact same resolve + canonicalize + boundary-check pipeline
+	// the wsl path uses (see policy.go); only the execution backend
+	// differs. Default false preserves historical native behavior.
+	Strict bool
 	// Distro selects a WSL distribution (mode wsl only). Empty means the
 	// system default distribution.
 	Distro string
 	// Network is the requested network policy (mode wsl honors it;
 	// native always has host networking).
 	Network Network
+}
+
+// Confines reports whether filesystem paths are caged to Workspace:
+// always in wsl mode, and in native mode only when Strict is set.
+// Tools and executors branch on this — never on Mode directly — so
+// strict-native enforces the identical invariant as the wsl path.
+func (p Policy) Confines() bool {
+	mode, _ := ParseMode(string(p.Mode))
+	return mode == ModeWSL || p.Strict
 }
 
 // DefaultPolicy returns the historical execution policy: native mode,

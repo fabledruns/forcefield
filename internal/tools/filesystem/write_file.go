@@ -58,7 +58,7 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 	}
 
 	resolved := path
-	if w.policy.Mode == sandbox.ModeWSL {
+	if w.policy.Confines() {
 		rp, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, path)
 		if err != nil {
 			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
@@ -73,11 +73,11 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 		// TOCTOU mitigation: re-validate after MkdirAll. A concurrent
 		// writer could have created a symlink between the initial check
 		// and the directory creation.
-		if w.policy.Mode == sandbox.ModeWSL {
+		if w.policy.Confines() {
 			if _, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, resolved); err != nil {
 				return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 			}
-			if realDir, err := filepath.EvalSymlinks(filepath.Dir(resolved)); err == nil {
+			if realDir, err := sandbox.EvalLinks(filepath.Dir(resolved)); err == nil {
 				if _, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, realDir); err != nil {
 					return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 				}
@@ -105,7 +105,7 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 	// and the write is not followed. In native mode preserve historical
 	// behavior (follow symlinks).
 	var writeErr error
-	if w.policy.Mode == sandbox.ModeWSL {
+	if w.policy.Confines() {
 		writeErr = writeFileNoFollow(resolved, []byte(content), targetPerm)
 	} else {
 		writeErr = os.WriteFile(resolved, []byte(content), targetPerm)

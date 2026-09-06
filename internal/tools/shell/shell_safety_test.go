@@ -69,11 +69,11 @@ func TestShell_ShellOutputCap(t *testing.T) {
 		t.Fatal("expected truncated after exceeding 2 MiB")
 	}
 	stdout := out.stdoutString()
-	if len(stdout) > maxShellOutputBytes {
-		t.Fatalf("stdout len %d exceeds cap %d", len(stdout), maxShellOutputBytes)
+	if len(stdout) > tools.DefaultShellMaxBytes {
+		t.Fatalf("stdout len %d exceeds cap %d", len(stdout), tools.DefaultShellMaxBytes)
 	}
 	// Ensure total counted correctly (with newlines)
-	if out.total > maxShellOutputBytes {
+	if out.total > tools.DefaultShellMaxBytes {
 		t.Fatalf("total %d exceeds cap", out.total)
 	}
 	// Subsequent writes should not increase total
@@ -105,7 +105,7 @@ func TestShell_StreamPipeCapAndDrain(t *testing.T) {
 		t.Fatal("expected truncated after large pipe")
 	}
 	s := out.stdoutString()
-	if len(s) > maxShellOutputBytes {
+	if len(s) > tools.DefaultShellMaxBytes {
 		t.Fatalf("captured len %d exceeds cap", len(s))
 	}
 	// Ensure we drained (streamPipe returned) and didn't hang
@@ -128,7 +128,7 @@ func TestShell_StreamPipeCombinedCap(t *testing.T) {
 	}
 	totalCaptured := len(out.stdoutString()) + len(out.stderrString()) + out.total // out.total already includes both with newlines
 	// total should be <= cap + small slack (newline)
-	if out.total > maxShellOutputBytes {
+	if out.total > tools.DefaultShellMaxBytes {
 		t.Fatalf("combined total %d exceeds cap", out.total)
 	}
 	_ = totalCaptured
@@ -154,10 +154,10 @@ func TestShell_LargeOutputIsCappedIntegration(t *testing.T) {
 	}
 	// Should not be OOM, should return
 	combined := len(result.Stdout) + len(result.Stderr)
-	if combined > maxShellOutputBytes+1024 { // allow small marker overhead
-		t.Fatalf("combined output %d exceeds cap %d (truncated=%v, content snippet %q)", combined, maxShellOutputBytes, strings.Contains(result.Content, "truncated"), result.Content[:200])
+	if combined > tools.DefaultShellMaxBytes+1024 { // allow small marker overhead
+		t.Fatalf("combined output %d exceeds cap %d (truncated=%v, content snippet %q)", combined, tools.DefaultShellMaxBytes, strings.Contains(result.Content, "truncated"), result.Content[:200])
 	}
-	if combined > maxShellOutputBytes {
+	if combined > tools.DefaultShellMaxBytes {
 		// If over cap, content should contain truncation marker
 		if !strings.Contains(result.Content, "truncated") {
 			t.Errorf("expected truncation marker in content when over cap, got %q", result.Content[len(result.Content)-200:])

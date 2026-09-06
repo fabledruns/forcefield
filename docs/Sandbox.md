@@ -52,6 +52,40 @@ Unknown values are rejected when config loads, naming the exact field and value.
 
 ---
 
+## Workspace boundary
+
+```yaml
+workspace:
+  root: ""          # empty = Git top-level when available, else cwd
+  mode: permissive  # permissive | strict
+```
+
+The workspace root resolves once at startup: an explicit `root`
+(absolute, or relative to the startup directory, and it must exist),
+else the Git top-level, else the working directory. `ff doctor`
+reports the resolved root and mode.
+
+- **Permissive** (default): historical behavior. Nothing is confined;
+  old configs without this block are unaffected.
+- **Strict**: every filesystem tool (`read_file`, `write_file`,
+  `list_files`, `search_files`, `find_files`, `secret_scan`) and the
+  shell working directory resolve through one shared pipeline —
+  resolve + canonicalize (symlinks/junctions included) + boundary
+  check — then permission check, then execution. Relative paths anchor
+  at the root; absolute paths, drive letters, UNC paths, `..`
+  traversal, and symlinks resolving outside are rejected with
+  `ErrWorkspaceEscape`/`ErrInvalidDir` before anything runs. The
+  enforcement lives in the execution layer (`internal/sandbox` shared
+  with the `wsl` path), never in prompts or tool descriptions.
+
+Strict native enforces the same path invariant as the `wsl` path; only
+the backend differs (host Bash, full environment, host network).
+Command *text* is not filtered — a command may still name outside
+paths; that action is gated by permissions (`ask`), exactly as in
+`wsl` mode.
+
+---
+
 ## What `wsl` mode enforces
 
 These properties hold at boundaries Forcefield controls:

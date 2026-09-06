@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"forcefield/internal/redact"
 )
 
 // Entry is a single durable memory fact.
@@ -143,6 +145,14 @@ var ErrEmptyText = fmt.Errorf("memory text cannot be empty")
 // duplicate-prevention rule: exact (whitespace-trimmed) text matches.
 func (s *Store) Add(text string) (entry Entry, added bool, err error) {
 	text = strings.TrimSpace(text)
+	if text == "" {
+		return Entry{}, false, ErrEmptyText
+	}
+	// Scrub before dedup and persistence so a secret never reaches the
+	// memory file, even when the model echoes credentials into a fact.
+	// Variants differing only by secret then dedup together, which is
+	// the desired behavior for a sanitized store.
+	text = redact.Scrub(text)
 	if text == "" {
 		return Entry{}, false, ErrEmptyText
 	}

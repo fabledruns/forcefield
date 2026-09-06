@@ -93,9 +93,10 @@ func (o *OpenAICompatible) displayName() string {
 // Capabilities reports what this transport supports.
 func (o *OpenAICompatible) Capabilities() Capabilities {
 	return Capabilities{
-		Streaming:   true,
-		ToolCalling: true,
-		Reasoning:   true,
+		Streaming:       true,
+		ToolCalling:     true,
+		Reasoning:       true,
+		MaxOutputTokens: 4096,
 	}
 }
 

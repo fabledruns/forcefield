@@ -130,6 +130,172 @@ func TestLoadRejectsCustomProviderWithoutAnyEndpoint(t *testing.T) {
 	}
 }
 
+// TestLoadContextBudgetFields pins that the additive context-budget keys
+// parse and that omitting them keeps zero values (existing configs keep
+// working unchanged with table/default resolution).
+func TestLoadContextBudgetFields(t *testing.T) {
+	isolateHome(t)
+	writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n"+
+		"agent:\n  name: default\n  context_window: 16000\n  context_reserve: 1000\n"+
+		"  max_context_messages: 42\n  context_summary: true\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Agent.ContextWindow != 16000 {
+		t.Errorf("ContextWindow = %d, want 16000", cfg.Agent.ContextWindow)
+	}
+	if cfg.Agent.ContextReserve != 1000 {
+		t.Errorf("ContextReserve = %d, want 1000", cfg.Agent.ContextReserve)
+	}
+	if cfg.Agent.MaxContextMessages != 42 {
+		t.Errorf("MaxContextMessages = %d, want 42", cfg.Agent.MaxContextMessages)
+	}
+	if !cfg.Agent.ContextSummary {
+		t.Error("ContextSummary = false, want true")
+	}
+}
+
+func TestLoadContextBudgetFieldsDefaultToZero(t *testing.T) {
+	isolateHome(t)
+	writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Agent.ContextWindow != 0 || cfg.Agent.ContextReserve != 0 ||
+		cfg.Agent.MaxContextMessages != 0 || cfg.Agent.ContextSummary {
+		t.Errorf("context fields = %+v, want zeros (backwards compatible)", cfg.Agent)
+	}
+}
+
+// TestLoadToolsOverrides pins that the additive tools: block parses and
+// that omitting it keeps a nil map (existing configs behave identically).
+func TestLoadToolsOverrides(t *testing.T) {
+	isolateHome(t)
+	writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n"+
+		"tools:\n  shell:\n    max_bytes: 1048576\n    timeout_seconds: 60\n  search_files:\n    max_lines: 40\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Tools["shell"].MaxBytes != 1048576 {
+		t.Errorf("shell max_bytes = %d, want 1048576", cfg.Tools["shell"].MaxBytes)
+	}
+	if cfg.Tools["shell"].TimeoutSeconds != 60 {
+		t.Errorf("shell timeout = %v, want 60", cfg.Tools["shell"].TimeoutSeconds)
+	}
+	if cfg.Tools["search_files"].MaxLines != 40 {
+		t.Errorf("search max_lines = %d, want 40", cfg.Tools["search_files"].MaxLines)
+	}
+}
+
+func TestLoadToolsDefaultsToNil(t *testing.T) {
+	isolateHome(t)
+	writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.Tools) != 0 {
+		t.Errorf("tools = %+v, want empty (backwards compatible)", cfg.Tools)
+	}
+}
+
+func TestLoadRejectsInvalidToolsOverrides(t *testing.T) {
+	for name, body := range map[string]string{
+		"unknown tool":         "tools:\n  frobnicate:\n    max_bytes: 10\n",
+		"negative bytes":       "tools:\n  shell:\n    max_bytes: -5\n",
+		"negative lines":       "tools:\n  shell:\n    max_lines: -1\n",
+		"timeout over ceiling": "tools:\n  shell:\n    timeout_seconds: 301\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			isolateHome(t)
+			writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n"+body)
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() accepted invalid tools override (%s)", name)
+			}
+		})
+	}
+}
+
+// TestLoadWorkspaceDefaults pins backwards compatibility: configs
+// without a workspace block load with empty root and permissive mode.
+func TestLoadWorkspaceDefaults(t *testing.T) {
+	isolateHome(t)
+	writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Workspace.Root != "" || (cfg.Workspace.Mode != "" && cfg.Workspace.Mode != WorkspacePermissive) {
+		t.Errorf("workspace = %+v, want empty (permissive default)", cfg.Workspace)
+	}
+	if mode, err := ParseWorkspaceMode(cfg.Workspace.Mode); err != nil || mode != WorkspacePermissive {
+		t.Errorf("ParseWorkspaceMode(%q) = %q, %v; want permissive", cfg.Workspace.Mode, mode, err)
+	}
+}
+
+func TestLoadWorkspaceStrict(t *testing.T) {
+	isolateHome(t)
+	writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n"+
+		"workspace:\n  root: /tmp\n  mode: strict\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Workspace.Root != "/tmp" || cfg.Workspace.Mode != WorkspaceStrict {
+		t.Errorf("workspace = %+v", cfg.Workspace)
+	}
+}
+
+func TestLoadRejectsBadWorkspaceMode(t *testing.T) {
+	isolateHome(t)
+	writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n"+
+		"workspace:\n  mode: fortress\n")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted unknown workspace mode")
+	} else if !strings.Contains(err.Error(), "workspace.mode") {
+		t.Errorf("error = %v, want it to name workspace.mode", err)
+	}
+}
+
+// TestLoadAgentRuntimeSettings pins per-agent run bounds: explicit
+// values parse, omitted stays nil/zero, and explicit false is distinct
+// from unset for the summary flag.
+func TestLoadAgentRuntimeSettings(t *testing.T) {
+	isolateHome(t)
+	writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n"+
+		"agents:\n  coding:\n    max_iterations: 20\n    max_tool_calls: 50\n"+
+		"    context_window: 16000\n    context_summary: true\n"+
+		"  legal:\n    context_summary: false\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	coding := cfg.Agents["coding"]
+	if coding.MaxIterations != 20 || coding.MaxToolCalls != 50 || coding.ContextWindow != 16000 {
+		t.Errorf("coding = %+v", coding)
+	}
+	if coding.ContextSummary == nil || !*coding.ContextSummary {
+		t.Errorf("coding summary = %v, want explicit true", coding.ContextSummary)
+	}
+	legal := cfg.Agents["legal"]
+	if legal.ContextSummary == nil || *legal.ContextSummary {
+		t.Errorf("legal summary = %v, want explicit false (distinct from unset)", legal.ContextSummary)
+	}
+	if cfg.Agents["general"].ContextSummary != nil {
+		t.Error("unset summary must stay nil")
+	}
+}
+
 func TestLoadRejectsInvalidPermissionValues(t *testing.T) {
 	isolateHome(t)
 	writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://x\n  name: m\npermissions:\n  default: sometimes\n")

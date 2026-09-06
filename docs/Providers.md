@@ -86,10 +86,11 @@ type Capabilities struct {
     Reasoning         bool
     ParallelToolCalls bool
     ContextWindow     int // tokens; 0 = unknown
+    MaxOutputTokens   int // tokens per turn; 0 = unknown
 }
 ```
 
-Capabilities are explicit metadata: pickers render them ("local · tools · streaming"), and future runtime features can gate on them instead of asking which provider is configured. No current adapter claims vision because no Forcefield message can carry image content yet; the field exists so that support can be added honestly later.
+Capabilities are explicit metadata: pickers render them ("local · tools · streaming"), and the runtime negotiates behavior from them instead of branching on provider names. `ResolveCapabilities(provider, model)` merges instance-reported transport features with the known-model limit table; providers too old to report keep historical behavior. The runtime currently negotiates three decisions: tool definitions are withheld only when tool calling is explicitly unreported-as-absent, tool batches run sequentially without reported parallel support, and the context budget prefers reported window/reserve over table values. No current adapter claims vision because no Forcefield message can carry image content yet; the field exists so that support can be added honestly later.
 
 Model discovery is optional. Adapters may implement:
 

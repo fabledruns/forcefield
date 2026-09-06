@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"forcefield/internal/redact"
 	"forcefield/internal/sandbox"
 )
 
@@ -68,6 +69,23 @@ type Agent struct {
 	MaxIterations          int `yaml:"max_iterations,omitempty"`
 	MaxToolCalls           int `yaml:"max_tool_calls,omitempty"`
 	MaxConsecutiveFailures int `yaml:"max_consecutive_failures,omitempty"`
+
+	// ContextWindow overrides the model's context window in tokens.
+	// Zero (or omitted) resolves from the provider capability table,
+	// falling back to message-count windowing for unknown models.
+	ContextWindow int `yaml:"context_window,omitempty"`
+	// ContextReserve overrides the tokens reserved for the next model
+	// response. Zero falls back to the model's approximate output
+	// limit, then to a conservative default.
+	ContextReserve int `yaml:"context_reserve,omitempty"`
+	// MaxContextMessages overrides how many history messages (excluding
+	// the system prompt) are sent to the provider. Zero keeps the
+	// built-in default.
+	MaxContextMessages int `yaml:"max_context_messages,omitempty"`
+	// ContextSummary, when true, replaces evicted middle turns with a
+	// compact deterministic digest instead of dropping them silently.
+	// Default false preserves the historic drop-middle behavior.
+	ContextSummary bool `yaml:"context_summary,omitempty"`
 }
 
 // Permissions configures whether tool invocations run automatically or
@@ -110,6 +128,12 @@ type SandboxWSL struct {
 // means "no skills"). Unknown agent names are rejected at validation.
 // Unknown skill IDs are NOT rejected here (the skill store is user-local
 // and unavailable to this package); the runtime warns and omits them.
+//
+// Runtime settings (MaxIterations and friends) scope the shared run
+// bounds to one agent: positive values win over the global agent.*
+// block, zero keeps it. ContextSummary is a pointer so "unset" stays
+// distinct from an explicit false. Permissions are deliberately absent:
+// the permission system stays global and no profile may widen it.
 type AgentConfig struct {
 	Description  string   `yaml:"description,omitempty"`
 	SystemPrompt string   `yaml:"system_prompt,omitempty"`
@@ -118,6 +142,68 @@ type AgentConfig struct {
 	Constraints  []string `yaml:"constraints,omitempty"`
 	Provider     string   `yaml:"provider,omitempty"`
 	Model        string   `yaml:"model,omitempty"`
+
+	MaxIterations          int   `yaml:"max_iterations,omitempty"`
+	MaxToolCalls           int   `yaml:"max_tool_calls,omitempty"`
+	MaxConsecutiveFailures int   `yaml:"max_consecutive_failures,omitempty"`
+	ContextWindow          int   `yaml:"context_window,omitempty"`
+	ContextReserve         int   `yaml:"context_reserve,omitempty"`
+	MaxContextMessages     int   `yaml:"max_context_messages,omitempty"`
+	ContextSummary         *bool `yaml:"context_summary,omitempty"`
+}
+
+// ToolLimits overrides output and execution bounds for one built-in
+// tool. Every field is optional; omitted (or zero) values resolve to the
+// tool's default from the shared limits table. Timeouts above 300s are
+// rejected: the scheduler enforces 300s as the hard execution ceiling.
+type ToolLimits struct {
+	MaxBytes       int     `yaml:"max_bytes,omitempty"`
+	MaxLines       int     `yaml:"max_lines,omitempty"`
+	TimeoutSeconds float64 `yaml:"timeout_seconds,omitempty"`
+}
+
+// Workspace declares the project root all filesystem operations resolve
+// against, and how strictly it is enforced.
+//
+// An empty root resolves at startup to the Git top-level when available,
+// otherwise the current working directory. An explicit root may be
+// absolute or relative to the startup directory; it must exist.
+//
+// Mode "" and "permissive" both mean permissive: historical native
+// behavior is preserved and nothing is confined. "strict" cages every
+// filesystem tool and the shell working directory to the root through
+// the shared boundary pipeline. Strict is opt-in; old configs without
+// this block keep working unchanged.
+type Workspace struct {
+	Root string `yaml:"root,omitempty"`
+	Mode string `yaml:"mode,omitempty"`
+}
+
+// Workspace modes.
+const (
+	WorkspacePermissive = "permissive"
+	WorkspaceStrict     = "strict"
+)
+
+// ParseWorkspaceMode converts a workspace mode string: empty means
+// permissive, preserving behavior for configs that never set it.
+func ParseWorkspaceMode(s string) (string, error) {
+	switch s {
+	case "", WorkspacePermissive:
+		return WorkspacePermissive, nil
+	case WorkspaceStrict:
+		return WorkspaceStrict, nil
+	default:
+		return "", fmt.Errorf("unknown workspace mode %q (supported: \"permissive\", \"strict\")", s)
+	}
+}
+
+// Tracing controls the local-only execution trace (internal/trace):
+// append-oriented JSONL under .forcefield/traces/, disabled unless
+// explicitly enabled. Traces never leave the machine.
+type Tracing struct {
+	Enabled bool   `yaml:"enabled,omitempty"`
+	Dir     string `yaml:"dir,omitempty"`
 }
 
 // Config is the top-level shape of config.yaml.
@@ -128,6 +214,9 @@ type Config struct {
 	Agents      map[string]AgentConfig    `yaml:"agents,omitempty"`
 	Permissions Permissions               `yaml:"permissions"`
 	Sandbox     Sandbox                   `yaml:"sandbox"`
+	Tools       map[string]ToolLimits     `yaml:"tools,omitempty"`
+	Workspace   Workspace                 `yaml:"workspace,omitempty"`
+	Tracing     Tracing                   `yaml:"tracing,omitempty"`
 }
 
 const defaultConfigTemplate = `model:
@@ -148,9 +237,12 @@ permissions:
     list_files: allow
     pwd: allow
     search_files: allow
+    find_files: allow
+    git: allow
     secret_scan: allow
     write_file: ask
     shell: ask
+    shell_job: ask
     add_project_memory: ask
 
 sandbox:
@@ -168,6 +260,15 @@ sandbox:
   wsl:
     distribution: ""    # empty = the system default distribution
     network: disabled   # "disabled" (enforced when possible, else refused) or "host"
+
+workspace:
+  # Project root for filesystem tools and shell working directories.
+  #   root: ""          # empty = Git top-level when available, else cwd
+  #   mode: permissive  # "permissive" (historical behavior) or "strict"
+  # Strict cages every filesystem tool and the shell cwd to the root;
+  # see docs/Sandbox.md. Old configs without this block stay permissive.
+  root: ""
+  mode: permissive
 `
 
 // Dir returns the Forcefield home directory (~/.forcefield), creating it
@@ -268,7 +369,13 @@ func ResolveAPIKey() (key, source string, err error) {
 // a named-file error rather than being partially applied.
 func ResolveEnvValue(name string) (value, source string, err error) {
 	if v := os.Getenv(name); v != "" {
-		return strings.TrimSpace(v), "environment", nil
+		v = strings.TrimSpace(v)
+		// This lookup exists only for credential variables (api_key_env
+		// and the legacy key): register the exact value so a key echoed
+		// back by tool output, errors, or diagnostics is redacted
+		// everywhere the centralized scrub runs.
+		redact.AddSecret(v)
+		return v, "environment", nil
 	}
 
 	// Project-local .env wins over the global one; the environment wins
@@ -292,6 +399,7 @@ func ResolveEnvValue(name string) (value, source string, err error) {
 			return "", "", fmt.Errorf("%s: %w", path, parseErr)
 		}
 		if v := values[name]; v != "" {
+			redact.AddSecret(v)
 			return v, fmt.Sprintf(".env file %s", path), nil
 		}
 	}
@@ -462,6 +570,14 @@ func (c *Config) validate() error {
 		return err
 	}
 
+	if err := validateTools(c.Tools); err != nil {
+		return err
+	}
+
+	if _, err := ParseWorkspaceMode(c.Workspace.Mode); err != nil {
+		return fmt.Errorf("workspace.mode: %w", err)
+	}
+
 	return nil
 }
 
@@ -524,7 +640,33 @@ func validateAgents(agents map[string]AgentConfig) error {
 	return nil
 }
 
-// validatePermissionValue checks a raw permissions string without
+// knownTools is the set of tool names a tools: override block may
+// address. Kept here (like knownAgents) so a typo fails fast at load
+// instead of silently never applying.
+var knownTools = map[string]struct{}{
+	"read_file": {}, "write_file": {}, "list_files": {}, "pwd": {},
+	"shell": {}, "shell_job": {}, "search_files": {}, "find_files": {}, "git": {}, "secret_scan": {},
+	"load_skill": {}, "update_task_state": {}, "add_project_memory": {},
+}
+
+func validateTools(entries map[string]ToolLimits) error {
+	for name, lim := range entries {
+		if _, ok := knownTools[name]; !ok {
+			return fmt.Errorf("tools.%s: unknown tool %q (available: add_project_memory, find_files, git, list_files, load_skill, pwd, read_file, search_files, secret_scan, shell, shell_job, update_task_state, write_file)", name, name)
+		}
+		if lim.MaxBytes < 0 {
+			return fmt.Errorf("tools.%s.max_bytes must be positive (got %d)", name, lim.MaxBytes)
+		}
+		if lim.MaxLines < 0 {
+			return fmt.Errorf("tools.%s.max_lines must be positive (got %d)", name, lim.MaxLines)
+		}
+		if lim.TimeoutSeconds < 0 || lim.TimeoutSeconds > 300 {
+			return fmt.Errorf("tools.%s.timeout_seconds must be between 0 and 300 (got %v)", name, lim.TimeoutSeconds)
+		}
+	}
+	return nil
+}
+
 // depending on internal/permissions, which itself depends on this
 // package to load and save config.yaml. "" is valid and means "ask".
 func validatePermissionValue(field, value string) error {

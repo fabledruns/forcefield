@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"forcefield/internal/agent"
@@ -15,12 +17,16 @@ import (
 	"forcefield/internal/memory"
 	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
+	"forcefield/internal/redact"
 	"forcefield/internal/sandbox"
 	"forcefield/internal/session"
 	"forcefield/internal/skills"
 	"forcefield/internal/task"
 	"forcefield/internal/tools"
 	"forcefield/internal/tools/builtin"
+	"forcefield/internal/trace"
+
+	"github.com/google/uuid"
 )
 
 // Limits bounds a single run so a long-horizon task can't spin forever.
@@ -95,6 +101,16 @@ type Runtime struct {
 	// agent from the shared store via catalogFor (no cache: the catalog
 	// is small and switches are infrequent).
 	projectMemoryText string
+	// workspaceRoot is the resolved project root every filesystem tool
+	// and the shell executor are scoped to (in confining modes).
+	// workspaceCwd is the process working directory at construction:
+	// the permissive-mode anchor and the base explicit relative roots
+	// resolve against. Both are fixed for the runtime lifetime.
+	workspaceRoot string
+	workspaceCwd  string
+	// tracer records the local-only execution trace when enabled in
+	// config. Nil-safe: a nil or disabled tracer records nothing.
+	tracer *trace.Tracer
 }
 
 func New() (*Runtime, error) {
@@ -152,7 +168,11 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 		return nil, fmt.Errorf("create %s executor (sandbox.mode = %q): %w", policy.Mode, cfg.Sandbox.Mode, err)
 	}
 
-	fullManager, err := builtin.NewManager(builtin.WithExecutor(executor), builtin.WithPolicy(policy))
+	fullManager, err := builtin.NewManager(
+		builtin.WithExecutor(executor),
+		builtin.WithPolicy(policy),
+		builtin.WithLimits(toolLimitsFromConfig(cfg)),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create tool manager: %w", err)
 	}
@@ -193,6 +213,7 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 
 	asker := permissions.NewStdinAsker()
 
+	cwd, _ := os.Getwd()
 	r := &Runtime{
 		cfg:                 cfg,
 		provider:            provider,
@@ -206,6 +227,9 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 		agents:              registry,
 		activeAgent:         def.Name,
 		projectMemoryText:   memoryText,
+		workspaceRoot:       policy.Workspace,
+		workspaceCwd:        cwd,
+		tracer:              trace.New(cfg.Tracing.Enabled, cfg.Tracing.Dir),
 	}
 	r.agent = r.buildAgent(def)
 	// Scope load_skill to the active agent's skill set. The closures read
@@ -536,6 +560,74 @@ func limitsFromConfig(cfg *config.Config) Limits {
 	return limits
 }
 
+// toolLimitsFromConfig converts the optional tools: overrides into the
+// shared limits form. Absent entries resolve to each tool's default at
+// use time, so existing configs behave exactly as before.
+func toolLimitsFromConfig(cfg *config.Config) map[string]tools.Limits {
+	if cfg == nil || len(cfg.Tools) == 0 {
+		return nil
+	}
+	out := make(map[string]tools.Limits, len(cfg.Tools))
+	for name, lim := range cfg.Tools {
+		out[name] = tools.Limits{
+			MaxBytes: lim.MaxBytes,
+			MaxLines: lim.MaxLines,
+			Timeout:  time.Duration(lim.TimeoutSeconds * float64(time.Second)),
+		}
+	}
+	return out
+}
+
+// limitsForAgent overlays one agent profile's run bounds onto the
+// global base: positive profile values win, everything else keeps the
+// base. A nil config or unknown agent leaves the base untouched, so
+// existing behavior is preserved unless a profile opts in.
+func limitsForAgent(cfg *config.Config, agentName string, base Limits) Limits {
+	if cfg == nil {
+		return base
+	}
+	o, ok := cfg.Agents[agentName]
+	if !ok {
+		return base
+	}
+	out := base
+	if o.MaxIterations > 0 {
+		out.MaxIterations = o.MaxIterations
+	}
+	if o.MaxToolCalls > 0 {
+		out.MaxToolCalls = o.MaxToolCalls
+	}
+	if o.MaxConsecutiveFailures > 0 {
+		out.MaxConsecutiveFailures = o.MaxConsecutiveFailures
+	}
+	return out
+}
+
+// contextBudgetFromConfig builds the per-turn context budget for one
+// agent profile: profile settings win, then the global agent.* block,
+// then negotiated provider capabilities, then the static model table,
+// then conservative defaults. Non-positive values fall through each
+// layer, so existing configs keep working unchanged.
+func contextBudgetFromConfig(cfg *config.Config, modelName, agentName string, caps providers.Capabilities) ContextBudget {
+	limit, reserve, maxMsg := cfg.Agent.ContextWindow, cfg.Agent.ContextReserve, cfg.Agent.MaxContextMessages
+	summarize := cfg.Agent.ContextSummary
+	if o, ok := cfg.Agents[agentName]; ok {
+		if o.ContextWindow > 0 {
+			limit = o.ContextWindow
+		}
+		if o.ContextReserve > 0 {
+			reserve = o.ContextReserve
+		}
+		if o.MaxContextMessages > 0 {
+			maxMsg = o.MaxContextMessages
+		}
+		if o.ContextSummary != nil {
+			summarize = *o.ContextSummary
+		}
+	}
+	return BudgetForCaps(modelName, limit, reserve, maxMsg, summarize, caps)
+}
+
 // SetPermissionAsker replaces how "ask" permission decisions are
 // resolved. The default (set in New) prompts on stdin/stdout, which
 // isn't usable once something like the TUI has taken over the terminal;
@@ -581,6 +673,24 @@ func (r *Runtime) CurrentProvider() string {
 		return ""
 	}
 	return r.cfg.Model.Provider
+}
+
+// WorkspaceRoot returns the resolved project root filesystem tools and
+// the shell executor are scoped to in confining modes.
+func (r *Runtime) WorkspaceRoot() string {
+	if r == nil {
+		return ""
+	}
+	return r.workspaceRoot
+}
+
+// WorkspaceCwd returns the process working directory captured at
+// construction: the permissive-mode anchor.
+func (r *Runtime) WorkspaceCwd() string {
+	if r == nil {
+		return ""
+	}
+	return r.workspaceCwd
 }
 
 // CurrentAgent returns the active agent definition key (e.g. "coding").
@@ -1279,7 +1389,9 @@ func (r *Runtime) applyReasoningTo(provider providers.ModelProvider, provName, m
 	}
 }
 
-// newPolicy builds the sandbox policy for the current project workspace.
+// newPolicy builds the sandbox policy for the resolved workspace root.
+// The root and strict flag come from ResolveWorkspace/workspace.mode, so
+// filesystem tools and the shell executor share one boundary.
 func newPolicy(cfg *config.Config) (sandbox.Policy, error) {
 	mode, err := sandbox.ParseMode(cfg.Sandbox.Mode)
 	if err != nil {
@@ -1289,9 +1401,14 @@ func newPolicy(cfg *config.Config) (sandbox.Policy, error) {
 	if err != nil {
 		return sandbox.Policy{}, fmt.Errorf("invalid sandbox.wsl.network: %w", err)
 	}
+	root, err := ResolveWorkspace(cfg)
+	if err != nil {
+		return sandbox.Policy{}, err
+	}
 	return sandbox.Policy{
 		Mode:      mode,
-		Workspace: projectWorkspace(),
+		Workspace: root,
+		Strict:    cfg.Workspace.Mode == config.WorkspaceStrict,
 		Distro:    cfg.Sandbox.WSL.Distribution,
 		Network:   network,
 	}, nil
@@ -1313,20 +1430,56 @@ func newExecutor(cfg *config.Config) (sandbox.Executor, error) {
 	return executor, nil
 }
 
-// projectWorkspace resolves the directory shell commands treat as their
-// working context: the Git repository root when the process runs inside
-// one, otherwise the current directory. Failures fall back to "" so the
-// executor resolves per-request instead of failing startup.
-func projectWorkspace() string {
+// ResolveWorkspace resolves the effective workspace root for cfg. An
+// explicit workspace.root wins (absolute, or relative to the startup
+// directory, and it must exist). Otherwise the root is the Git
+// top-level when the process runs inside a repository, else the current
+// working directory. This is the single resolution point: the runtime
+// calls it once at construction and both the tool policy and the shell
+// executor inherit the result, so no second resolver can disagree.
+//
+// An explicit root that does not exist is an error (fail fast with a
+// named path); the fallback chain itself never errors on missing git.
+func ResolveWorkspace(cfg *config.Config) (string, error) {
+	if cfg != nil && strings.TrimSpace(cfg.Workspace.Root) != "" {
+		return resolveExplicitRoot(cfg.Workspace.Root)
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("resolve working directory: %w", err)
 	}
 	root, err := memory.ProjectRoot(cwd)
 	if err != nil {
-		return cwd
+		return cwd, nil
 	}
-	return root
+	return root, nil
+}
+
+// resolveExplicitRoot absolutizes a configured root (relative roots
+// anchor at the startup directory) and requires it to exist.
+func resolveExplicitRoot(root string) (string, error) {
+	orig := root
+	if !filepath.IsAbs(root) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolve workspace.root %q: %w", orig, err)
+		}
+		root = filepath.Join(cwd, root)
+	}
+	abs := filepath.Clean(root)
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("workspace.root %q: %w", orig, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("workspace.root %q is not a directory", orig)
+	}
+	// Canonicalize symlinks/junctions once so containment checks and
+	// doctor reporting use one stable spelling.
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	return abs, nil
 }
 
 func (r *Runtime) buildMessages(history []providers.Message) []providers.Message {
@@ -1335,13 +1488,31 @@ func (r *Runtime) buildMessages(history []providers.Message) []providers.Message
 	}
 	r.mu.RLock()
 	agent := r.agent
+	cfg := r.cfg
+	provider := r.provider
+	activeAgent := r.activeAgent
 	r.mu.RUnlock()
-	return buildMessagesWithAgent(history, agent)
+	budget := DefaultContextBudget()
+	if cfg != nil {
+		budget = contextBudgetFromConfig(cfg, cfg.Model.Name, activeAgent, providers.ResolveCapabilities(provider, cfg.Model.Name))
+	}
+	return buildMessagesWithBudget(history, agent, budget)
 }
 
 // buildMessagesWithAgent builds the bounded history window for an explicit
 // agent snapshot so background runs never read live switchable state.
+// It uses the default budget (message-count windowing, pair-aware); use
+// buildMessagesWithBudget when a resolved per-model budget is available.
 func buildMessagesWithAgent(history []providers.Message, agent *agent.Agent) []providers.Message {
+	return buildMessagesWithBudget(history, agent, DefaultContextBudget())
+}
+
+// buildMessagesWithBudget is buildMessagesWithAgent with an explicit
+// context budget: token-aware when the model's window is known, otherwise
+// message-count windowing. It always preserves the system prompt, the
+// first user message (task goal), recent turns, and tool call/result
+// pairing, reserving space for the next model response.
+func buildMessagesWithBudget(history []providers.Message, agent *agent.Agent, budget ContextBudget) []providers.Message {
 	prompt := ""
 	if agent != nil {
 		prompt = agent.BuildSystemPrompt()
@@ -1350,37 +1521,22 @@ func buildMessagesWithAgent(history []providers.Message, agent *agent.Agent) []p
 		Role:    providers.SystemRole,
 		Content: prompt,
 	}
-	if len(history) <= maxContextMessages {
-		messages := make([]providers.Message, 0, len(history)+1)
-		messages = append(messages, system)
-		messages = append(messages, history...)
-		return messages
+	out, _ := budget.SelectContext(system, history)
+	return out
+}
+
+// windowForProvider splits a full run history (system at [0]) into the
+// budgeted provider view for one turn. The full history is never mutated:
+// callers keep appending to it while each model request stays within the
+// snapshot's context budget.
+func windowForProvider(messages []providers.Message, snap runSnapshot) []providers.Message {
+	if len(messages) == 0 {
+		return buildMessagesWithBudget(nil, snap.agent, snap.contextBudget)
 	}
-	// History exceeds window: preserve the first user message (task goal)
-	// plus the most recent tail. This is a conservative mitigation, not a
-	// full summarization, but it bounds growth.
-	goalIdx := -1
-	for i, m := range history {
-		if m.Role == providers.UserRole && strings.TrimSpace(m.Content) != "" {
-			goalIdx = i
-			break
-		}
+	if messages[0].Role != providers.SystemRole {
+		return buildMessagesWithBudget(messages, snap.agent, snap.contextBudget)
 	}
-	keepGoal := goalIdx >= 0 && goalIdx < len(history)-maxContextMessages
-	tailSize := maxContextMessages
-	if keepGoal {
-		tailSize = maxContextMessages - 1
-	}
-	start := len(history) - tailSize
-	if start < 0 {
-		start = 0
-	}
-	out := make([]providers.Message, 0, 1+maxContextMessages+1)
-	out = append(out, system)
-	if keepGoal {
-		out = append(out, history[goalIdx])
-	}
-	out = append(out, history[start:]...)
+	out, _ := snap.contextBudget.SelectContext(messages[0], messages[1:])
 	return out
 }
 
@@ -1388,11 +1544,18 @@ func buildMessagesWithAgent(history []providers.Message, agent *agent.Agent) []p
 // captured under RLock at StreamChat entry so SetAgent / SetModel /
 // SetProvider take effect on the next StreamChat, never mid-turn.
 type runSnapshot struct {
-	agent        *agent.Agent
-	manager      *tools.Manager
-	provider     providers.ModelProvider
-	scheduler    *scheduler
-	limits       Limits
+	agent         *agent.Agent
+	manager       *tools.Manager
+	provider      providers.ModelProvider
+	scheduler     *scheduler
+	limits        Limits
+	contextBudget ContextBudget
+	// caps holds the negotiated provider capabilities for this run
+	// (transport features from the instance, limits from the model
+	// table); capsReported distinguishes "known to lack" from
+	// "too old to say" so unreported providers keep history.
+	caps         providers.Capabilities
+	capsReported bool
 	authRequired bool
 	authEnvVar   string
 	providerName string
@@ -1414,9 +1577,21 @@ func (r *Runtime) snapshotRunState() runSnapshot {
 	snap.limits = r.limits
 	snap.authRequired = r.authRequired
 	snap.authEnvVar = r.authEnvVar
+	// Capabilities negotiate independently of configuration: even a
+	// config-less runtime reports what its provider can do.
+	modelName := ""
 	if r.cfg != nil {
 		snap.providerName = r.cfg.Model.Provider
 		snap.modelName = r.cfg.Model.Name
+		modelName = r.cfg.Model.Name
+	}
+	snap.caps = providers.ResolveCapabilities(r.provider, modelName)
+	snap.capsReported = providers.ReportsCapabilities(r.provider)
+	if r.cfg != nil {
+		snap.limits = limitsForAgent(r.cfg, r.activeAgent, snap.limits)
+		snap.contextBudget = contextBudgetFromConfig(r.cfg, modelName, r.activeAgent, snap.caps)
+	} else {
+		snap.contextBudget = DefaultContextBudget()
 	}
 	return snap
 }
@@ -1431,21 +1606,95 @@ func (r *Runtime) StreamChat(ctx context.Context, messages []providers.Message) 
 	}
 
 	snap := r.snapshotRunState()
-	initial := buildMessagesWithAgent(messages, snap.agent)
+	initial := buildMessagesWithBudget(messages, snap.agent, snap.contextBudget)
+	// Local execution trace (P1.11): one run handle for the whole
+	// StreamChat invocation. Nil when disabled or unopenable — every
+	// trace call below is nil-safe, so tracing can never fail the run.
+	var tr *trace.Run
+	if r.tracer.Enabled() {
+		tr = r.tracer.StartRun(uuid.NewString(), trace.RunMeta{
+			Provider:     snap.providerName,
+			Model:        snap.modelName,
+			Agent:        r.CurrentAgent(),
+			MessageCount: len(messages),
+		})
+	}
 	events := make(chan Event)
 	go func() {
 		defer close(events)
+		if tr != nil {
+			defer tr.Close()
+		}
 		r.run(ctx, initial, func(event Event) bool {
 			select {
 			case events <- event:
+				// Record what the consumer observed: dropped
+				// (cancelled) events never happened from its view.
+				traceEvent(tr, event)
 				return true
 			case <-ctx.Done():
 				return false
 			}
-		}, snap)
+		}, snap, tr)
 	}()
 
 	return events, nil
+}
+
+// traceEvent translates one observed runtime event into the local
+// execution trace. Text, thinking, and progress deltas are deliberately
+// skipped: turn boundaries plus tool start/outcome pairs carry the
+// diagnostic signal without per-token volume.
+func traceEvent(tr *trace.Run, e Event) {
+	if tr == nil {
+		return
+	}
+	switch e.Type {
+	case EventToolStart:
+		if e.ToolCall != nil {
+			tr.ToolCall(e.ToolCall.ID, e.ToolCall.Name, e.ToolCall.Arguments)
+		}
+	case EventToolFinish, EventToolFailed, EventToolCancelled, EventToolDenied:
+		if e.ToolResult == nil {
+			return
+		}
+		res := e.ToolResult
+		var exit *int
+		if res.HasExitCode {
+			v := res.ExitCode
+			exit = &v
+		}
+		errText := ""
+		if res.Err != nil {
+			errText = res.Err.Error()
+		}
+		tr.ToolResult(res.ToolCallID, res.Name, traceToolStatus(e.Type), res.Success, res.Duration, res.Attempt, exit, res.Content, errText)
+	case EventDone:
+		finalLen := 0
+		if e.Response != nil {
+			finalLen = len(e.Response.Content)
+		}
+		tr.RunDone(string(e.Status), finalLen)
+	case EventError:
+		tr.RunError(e.Err)
+	case EventBlocked:
+		tr.RunBlocked(e.Err)
+	}
+}
+
+func traceToolStatus(t EventType) string {
+	switch t {
+	case EventToolFinish:
+		return "finish"
+	case EventToolFailed:
+		return "failed"
+	case EventToolCancelled:
+		return "cancelled"
+	case EventToolDenied:
+		return "denied"
+	default:
+		return "unknown"
+	}
 }
 
 // Stream is kept as a compatibility alias for StreamChat.
@@ -1489,11 +1738,16 @@ func (r *Runtime) RunContext(ctx context.Context, messages []providers.Message) 
 const maxToolResultChars = 6000
 
 // run executes the persistent agent loop and enforces runtime limits.
-func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit func(Event) bool, snap runSnapshot) {
+func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit func(Event) bool, snap runSnapshot, tr *trace.Run) {
 	state := task.New(goalFrom(messages))
 	ctx = task.WithState(ctx, state)
 
 	limits := snap.limits
+	// executed records every tool call ID that ran in this run, with
+	// its terminal outcome. A repeated ID reuses the recorded result
+	// instead of executing again, so a provider retry or a model echo
+	// can never duplicate a side-effecting tool call.
+	executed := make(map[string]executedCall)
 
 	for {
 		iteration := state.BeginIteration()
@@ -1504,18 +1758,29 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 
 		refreshSystemPrompt(messages, snap.agent, state)
 
-		response, err := r.runModelTurn(ctx, messages, emit, snap)
+		// Window the provider view every turn so conversation/tool
+		// history can never grow past the model's context budget. The
+		// full messages slice is retained for future windows; only
+		// this turn's request is bounded.
+		windowed := windowForProvider(messages, snap)
+		turnStart := time.Now()
+		tr.TurnStart(int64(iteration), len(windowed), estimateMessagesTokens(windowed))
+		response, err := r.runModelTurn(ctx, windowed, emit, snap)
 		if err != nil {
+			tr.TurnError(int64(iteration), err, time.Since(turnStart))
 			emit(Event{Type: EventError, Err: err, TaskState: snapshotPtr(state)})
 			return
 		}
+		tr.TurnEnd(int64(iteration), string(response.StopReason),
+			response.Usage.PromptTokens, response.Usage.CompletionTokens,
+			response.Usage.TotalTokens, len(response.ToolCalls), time.Since(turnStart))
 
 		if len(response.ToolCalls) == 0 {
 			// Length exhaustion is incomplete, not success. If the model
 			// stopped because it hit its max tokens, the answer is truncated
 			// and the task should be marked blocked rather than done.
 			if response.StopReason == providers.FinishLength {
-				r.emitBlocked(emit, state, "model output truncated due to length limit (finish_reason=length) - response incomplete")
+				r.emitBlocked(emit, state, "model output truncated due to length limit (finish_reason=length) - response incomplete; retry with narrower tool output, fewer turns in context, or a model with a larger context window")
 				return
 			}
 			status := state.FinalStatus()
@@ -1539,7 +1804,7 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 			emit(Event{Type: EventError, Err: fmt.Errorf("tool system not initialized"), TaskState: snapshotPtr(state)})
 			return
 		}
-		results := snap.scheduler.RunWithManager(ctx, response.ToolCalls, emit, snap.manager)
+		results := r.executeCalls(ctx, response.ToolCalls, emit, snap, executed)
 
 		if ctx.Err() != nil {
 			emit(Event{Type: EventError, Err: ctx.Err(), TaskState: snapshotPtr(state)})
@@ -1566,6 +1831,98 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 			return
 		}
 	}
+}
+
+// executedCall is the recorded outcome of one tool call ID within a
+// run: the result plus the terminal event kind originally emitted, so
+// a repeated ID replays the identical observable outcome.
+type executedCall struct {
+	result   ToolResult
+	terminal EventType
+}
+
+// executeCalls runs one batch of tool calls with run-scoped idempotency.
+// Calls whose non-empty ID already executed reuse the recorded result
+// (marked explicitly, never silently) and emit the same Start/terminal
+// event pair, keeping transcript and session pairing intact. Calls
+// without IDs always execute — without identity there is nothing safe
+// to key on. Fresh calls run concurrently through the scheduler; the
+// returned slice aligns with calls.
+func (r *Runtime) executeCalls(ctx context.Context, calls []providers.ToolCall, emit func(Event) bool, snap runSnapshot, executed map[string]executedCall) []ToolResult {
+	results := make([]ToolResult, len(calls))
+	var fresh []providers.ToolCall
+	var freshIdx []int
+	for i := range calls {
+		tc := calls[i]
+		if tc.ID != "" {
+			if prev, ok := executed[tc.ID]; ok {
+				dup := prev.result
+				dup.Content += "\n\n[note: this tool call repeats call " + tc.ID +
+					" from earlier in the same run; the recorded result is reused and the tool was not executed again]"
+				results[i] = dup
+				call := tc
+				emit(Event{Type: EventToolStart, ToolCall: &call})
+				emit(Event{Type: prev.terminal, ToolResult: &dup})
+				continue
+			}
+		}
+		fresh = append(fresh, tc)
+		freshIdx = append(freshIdx, i)
+	}
+	if len(fresh) > 0 {
+		// Concurrency follows negotiated capabilities: providers that
+		// report no parallel tool support run batches sequentially.
+		// Unreported providers keep the configured concurrency.
+		maxConc := snap.scheduler.cfg.MaxConcurrency
+		if snap.capsReported && !snap.caps.ParallelToolCalls {
+			maxConc = 1
+		}
+		terminals := make(map[string]EventType, len(fresh))
+		watchEmit := func(e Event) bool {
+			if e.ToolResult != nil {
+				switch e.Type {
+				case EventToolFinish, EventToolFailed, EventToolCancelled, EventToolDenied:
+					terminals[e.ToolResult.ToolCallID] = e.Type
+				}
+			}
+			return emit(e)
+		}
+		freshResults := snap.scheduler.runWithConcurrency(ctx, fresh, watchEmit, snap.manager, maxConc)
+		for j, res := range freshResults {
+			results[freshIdx[j]] = res
+			id := fresh[j].ID
+			if id == "" {
+				continue
+			}
+			terminal, ok := terminals[id]
+			if !ok {
+				// No terminal event (e.g. cancelled before start, which
+				// is deliberately eventless): record as cancelled so a
+				// repeat can never execute what this run skipped.
+				terminal = EventToolCancelled
+			}
+			executed[id] = executedCall{result: res, terminal: terminal}
+		}
+	}
+	return results
+}
+
+// toolCallingAllowed reports whether tool definitions are offered this
+// turn. Definitions are withheld only when the provider explicitly
+// reports no tool support; unreported providers keep the historical
+// behavior of receiving them.
+func toolCallingAllowed(snap runSnapshot) bool {
+	return !snap.capsReported || snap.caps.ToolCalling
+}
+
+// estimateMessagesTokens sums the context-budget token estimates for a
+// provider-bound message window. Used for trace metadata only.
+func estimateMessagesTokens(messages []providers.Message) int {
+	total := 0
+	for _, m := range messages {
+		total += messageTokens(m)
+	}
+	return total
 }
 
 // emitBlocked reports a runtime-enforced stop with the final task snapshot.
@@ -1637,12 +1994,64 @@ func goalFrom(messages []providers.Message) string {
 	return ""
 }
 
-// runModelTurn streams and assembles one provider response.
-func (r *Runtime) runModelTurn(ctx context.Context, messages []providers.Message, emit func(Event) bool, snap runSnapshot) (providers.Response, error) {
-	if !emit(Event{Type: EventThinking}) {
-		return providers.Response{}, context.Canceled
-	}
+// maxTurnRetries bounds turn-level provider retries on top of the first
+// attempt: a clean transient failure (nothing emitted yet) is retried at
+// most twice more, so a sustained outage fails after 3 attempts instead
+// of stalling the run.
+const maxTurnRetries = 2
 
+// transientError marks a model-turn failure the runtime classifies as
+// transient: a later turn (automatic or manual) may succeed. It preserves
+// the wrapped chain so errors.Is/As callers keep working.
+type transientError struct{ err error }
+
+func (e *transientError) Error() string {
+	return e.err.Error() + " (transient provider failure; retrying may succeed)"
+}
+
+func (e *transientError) Unwrap() error { return e.err }
+
+// IsTransientError reports whether the runtime marked err as a transient
+// provider failure.
+func IsTransientError(err error) bool {
+	var te *transientError
+	return errors.As(err, &te)
+}
+
+// markTransient wraps err when the provider classifies it transient;
+// anything else (auth, quota, invalid requests, cancellations) passes
+// through unchanged.
+func markTransient(err error) error {
+	if err == nil || !providers.IsTransient(err) {
+		return err
+	}
+	return &transientError{err: err}
+}
+
+// canRetryTurn reports whether a failed model turn may be retried
+// without risking duplicate output: only a clean failure (no text,
+// thinking, or tool calls emitted yet) that is transient, with attempts
+// remaining and a live context. Anything already emitted must never be
+// replayed — the TUI already showed it and the session may reference it.
+func canRetryTurn(attempt int, emitted bool, err error, ctx context.Context) bool {
+	if attempt >= maxTurnRetries {
+		return false
+	}
+	if emitted {
+		return false
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	return providers.IsTransient(err)
+}
+
+// runModelTurn streams and assembles one provider response, retrying
+// clean transient failures with bounded backoff. Retries never replay
+// output and never reach tool execution (the scheduler runs only after a
+// turn succeeds), so a retried request cannot duplicate tool calls or
+// persist inconsistent state.
+func (r *Runtime) runModelTurn(ctx context.Context, messages []providers.Message, emit func(Event) bool, snap runSnapshot) (providers.Response, error) {
 	if err := checkAuthWithSnapshot(snap.authRequired, snap.authEnvVar, snap.providerName); err != nil {
 		return providers.Response{}, err
 	}
@@ -1652,46 +2061,94 @@ func (r *Runtime) runModelTurn(ctx context.Context, messages []providers.Message
 		return providers.Response{}, fmt.Errorf("model provider not initialized")
 	}
 	var defs []tools.Definition
-	if snap.manager != nil {
+	if snap.manager != nil && toolCallingAllowed(snap) {
 		defs = snap.manager.Definitions()
 	}
+
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return providers.Response{}, err
+		}
+		if !emit(Event{Type: EventThinking}) {
+			return providers.Response{}, context.Canceled
+		}
+		resp, emitted, err := r.streamOneTurn(ctx, messages, emit, snap, defs)
+		if err == nil {
+			return resp, nil
+		}
+		if !canRetryTurn(attempt, emitted, err, ctx) {
+			return providers.Response{}, markTransient(err)
+		}
+		delay := providers.TurnRetryDelay(attempt, err)
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return providers.Response{}, ctx.Err()
+		}
+	}
+}
+
+// streamOneTurn streams and assembles a single provider attempt. It
+// reports whether anything user-visible (thinking, text, or tool calls)
+// was emitted, so the caller can decide whether a retry is safe.
+func (r *Runtime) streamOneTurn(ctx context.Context, messages []providers.Message, emit func(Event) bool, snap runSnapshot, defs []tools.Definition) (providers.Response, bool, error) {
 	stream, err := snap.provider.StreamChat(ctx, messages, defs)
 	if err != nil {
-		return providers.Response{}, fmt.Errorf("model call failed: %w", err)
+		// Provider errors can echo request or response fragments;
+		// scrub before the error is surfaced, logged, or persisted.
+		// The chain is preserved for errors.Is/As callers.
+		return providers.Response{}, false, redact.ScrubError(fmt.Errorf("model call failed: %w", err))
 	}
 
 	var response providers.Response
-	for event := range stream {
-		if event.Err != nil {
-			return providers.Response{}, fmt.Errorf("model stream failed: %w", event.Err)
-		}
+	emitted := false
+	// Select on ctx alongside the provider channel so a hung provider
+	// that never closes its stream cannot wedge the run forever: on
+	// cancellation the turn ends promptly, and the provider's own
+	// goroutine exits via its context checks (all built-in adapters
+	// observe ctx on send and on read).
+	for {
+		select {
+		case <-ctx.Done():
+			return providers.Response{}, emitted, ctx.Err()
+		case event, ok := <-stream:
+			if !ok {
+				if err := ctx.Err(); err != nil {
+					return providers.Response{}, emitted, err
+				}
+				return response, emitted, nil
+			}
+			if event.Err != nil {
+				return providers.Response{}, emitted, redact.ScrubError(fmt.Errorf("model stream failed: %w", event.Err))
+			}
 
-		if event.Thinking != "" {
-			if !emit(Event{Type: EventThinking, Thinking: event.Thinking}) {
-				return providers.Response{}, context.Canceled
+			if event.Thinking != "" {
+				emitted = true
+				if !emit(Event{Type: EventThinking, Thinking: event.Thinking}) {
+					return providers.Response{}, emitted, context.Canceled
+				}
+			}
+
+			if event.Text != "" {
+				emitted = true
+				response.Content += event.Text
+				if !emit(Event{Type: EventText, Text: event.Text}) {
+					return providers.Response{}, emitted, context.Canceled
+				}
+			}
+
+			if len(event.ToolCalls) > 0 {
+				emitted = true
+			}
+			response.ToolCalls = append(response.ToolCalls, event.ToolCalls...)
+			if event.Usage != nil {
+				response.Usage = *event.Usage
+			}
+			if event.StopReason != providers.FinishNone {
+				response.StopReason = event.StopReason
 			}
 		}
-
-		if event.Text != "" {
-			response.Content += event.Text
-			if !emit(Event{Type: EventText, Text: event.Text}) {
-				return providers.Response{}, context.Canceled
-			}
-		}
-
-		response.ToolCalls = append(response.ToolCalls, event.ToolCalls...)
-		if event.Usage != nil {
-			response.Usage = *event.Usage
-		}
-		if event.StopReason != providers.FinishNone {
-			response.StopReason = event.StopReason
-		}
 	}
-
-	if err := ctx.Err(); err != nil {
-		return providers.Response{}, err
-	}
-	return response, nil
 }
 
 func Run(messages []providers.Message) (providers.Response, error) {

@@ -15,6 +15,7 @@ import (
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
 	"forcefield/internal/memory"
+	"forcefield/internal/redact"
 	"forcefield/internal/runtime"
 	"forcefield/internal/sandbox"
 	"forcefield/internal/session"
@@ -61,12 +62,13 @@ It never prints secret values such as API keys.`,
 			if v == vFail {
 				failed = true
 			}
-			fmt.Printf("%s %s\n", v, fmt.Sprintf(format, args...))
+			fmt.Print(doctorLine(v, format, args...))
 		}
 
 		cfg := doctorConfig(report)
 		doctorAPIKey(cfg, report)
 		doctorProvider(cfg, report)
+		doctorWorkspace(cfg, report)
 		doctorSessions(report)
 		doctorSkills(report)
 		doctorMemory(report)
@@ -80,6 +82,14 @@ It never prints secret values such as API keys.`,
 		fmt.Println("\nAll checks passed.")
 		return nil
 	},
+}
+
+// doctorLine formats one diagnostic line and scrubs it before it can
+// reach the terminal. Probe errors echo remote content (URLs, transport
+// errors, malformed bodies), so every line passes the centralized
+// redaction even though no check intentionally prints secrets.
+func doctorLine(v verdict, format string, args ...any) string {
+	return fmt.Sprintf("%s %s\n", v, redact.Scrub(fmt.Sprintf(format, args...)))
 }
 
 // doctorConfig loads and validates config.yaml, reporting its path and
@@ -427,7 +437,9 @@ func doctorSandbox(cfg *config.Config, report func(verdict, string, ...any)) {
 
 // newSandboxExecutor builds the same executor runtime.New uses, from the
 // loaded config alone. Kept separate from runtime so doctor can diagnose a
-// broken sandbox configuration without booting a full Runtime.
+// broken sandbox configuration without booting a full Runtime. Workspace
+// resolution is shared with the runtime (never duplicated): an explicit
+// root that does not exist fails here exactly as it would at startup.
 func newSandboxExecutor(cfg *config.Config) (sandbox.Executor, error) {
 	mode, err := sandbox.ParseMode(cfg.Sandbox.Mode)
 	if err != nil {
@@ -437,20 +449,40 @@ func newSandboxExecutor(cfg *config.Config) (sandbox.Executor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid sandbox.wsl.network: %w", err)
 	}
-	workspace := ""
-	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-		if root, rootErr := memory.ProjectRoot(cwd); rootErr == nil {
-			workspace = root
-		} else {
-			workspace = cwd
-		}
+	workspace, err := runtime.ResolveWorkspace(cfg)
+	if err != nil {
+		return nil, err
 	}
 	return sandbox.NewExecutor(sandbox.Policy{
 		Mode:      mode,
 		Workspace: workspace,
+		Strict:    cfg.Workspace.Mode == config.WorkspaceStrict,
 		Distro:    cfg.Sandbox.WSL.Distribution,
 		Network:   network,
 	})
+}
+
+// doctorWorkspace reports the resolved project root and enforcement mode
+// so a user can see exactly what the boundary cages (strict) or anchors
+// (permissive) before any tool runs.
+func doctorWorkspace(cfg *config.Config, report func(verdict, string, ...any)) {
+	if cfg == nil {
+		return
+	}
+	root, err := runtime.ResolveWorkspace(cfg)
+	if err != nil {
+		report(vFail, "workspace: %v", err)
+		return
+	}
+	mode := cfg.Workspace.Mode
+	if mode == "" {
+		mode = config.WorkspacePermissive
+	}
+	if mode == config.WorkspaceStrict {
+		report(vOK, "workspace: root %s (strict: filesystem tools and shell cwd are confined here)", root)
+		return
+	}
+	report(vOK, "workspace: root %s (permissive: historical native behavior, nothing confined)", root)
 }
 
 func init() {

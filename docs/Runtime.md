@@ -104,6 +104,28 @@ Detailed steps:
 7. Append each tool result as a tool message.
 8. Repeat from step 2.
 
+## Context Management
+
+History is windowed to a per-turn context budget before every model
+request, so long runs can never grow until the provider rejects them:
+
+- The runtime estimates tokens at ~4 runes per token (deterministic,
+  local — never billed or reported as usage).
+- The model's window resolves from `agent.context_window`, then the
+  provider capability table (`internal/providers/context_limits.go`),
+  then falls back to message-count windowing for unknown models. No
+  single model's window is hard-coded into the loop.
+- Space for the next response is reserved (`agent.context_reserve`,
+  defaulting to the model's approximate output limit).
+- Selection always preserves the system prompt, the first user message
+  (task goal), the most recent turns, and tool call/result pairing —
+  an assistant `tool_calls` message is never split from its results.
+- With `agent.context_summary: true`, evicted middle turns are replaced
+  by a compact deterministic digest (turn excerpts + tools used);
+  otherwise they are dropped, most-recent-first.
+- A `finish_reason=length` turn emits `EventBlocked` (not `EventDone`)
+  with guidance to narrow tool output or use a larger-window model.
+
 ## Skill Loading
 
 The runtime registers a special tool named `load_skill` for the **global** skill store (`~/.forcefield/skills/`).
@@ -123,8 +145,28 @@ The runtime registers a special tool named `load_skill` for the **global** skill
 | `ff run [task]`          | One-shot prompt through `runtime.Run`.           |
 | `runtime.Run(messages)`  | Convenience helper that creates a runtime and runs once. |
 
+## Local Execution Trace
+
+When enabled, the runtime records a structured, append-oriented JSONL
+trace per run under `.forcefield/traces/<runID>.jsonl`
+(`internal/trace`). Each line carries a sequence number, timestamp,
+turn, call ID, status, durations, and errors across: run start, model
+turns (request size, stop reason, token usage), tool calls (scrubbed
+arguments), tool outcomes, and the terminal event.
+
+```yaml
+tracing:
+  enabled: false   # traces never leave the machine; enable to diagnose runs
+  dir: ""          # "" = .forcefield/traces
+```
+
+Traces are disabled by default. All free text is capped and passed
+through the centralized redaction before writing; per-run files are
+byte-capped. Crash-abandoned files stay on disk for post-mortem use.
+Text/thinking deltas are not recorded — turn boundaries plus tool
+start/outcome pairs carry the signal.
+
 ## Design Notes
 
-- The runtime owns the multi-turn tool loop. Providers stream only one turn.
-- Model and provider switches (`SetModel`/`SetProvider`) take effect on the next request and are in-memory only (temporary) — they do not write `config.yaml` unless `SaveConfig` is called explicitly. See `docs/Config.md`.
+- The runtime owns the multi-turn tool loop. Providers stream only one turn.- Model and provider switches (`SetModel`/`SetProvider`) take effect on the next request and are in-memory only (temporary) — they do not write `config.yaml` unless `SaveConfig` is called explicitly. See `docs/Config.md`.
 - Cancellation through context stops emission and ends the run cleanly when possible.

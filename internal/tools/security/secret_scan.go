@@ -3,7 +3,7 @@
 // hardcoded secrets. It never transmits anything, never uses the network,
 // never validates credentials against services, and never uses findings.
 //
-// Confinement mirrors read_file: WSL mode cages paths to the workspace;
+// Confinement mirrors read_file: confined modes cage paths to the workspace;
 // native mode uses the path as given. Findings are reported with redacted
 // snippets (match middle masked) as defense-in-depth on top of the
 // scheduler's output scrubbing.
@@ -24,8 +24,6 @@ const (
 	// maxScanBytes bounds a single scanned file. Larger files are refused
 	// with a note, not read partially.
 	maxScanBytes = 1 << 20 // 1 MiB
-	// maxFindings bounds reported findings.
-	maxFindings = 50
 )
 
 // rule is one deterministic detection pattern.
@@ -54,6 +52,9 @@ var rules = []rule{
 // SecretScan scans one file (or inline text) for hardcoded secrets.
 type SecretScan struct {
 	policy sandbox.Policy
+	// limits overrides the findings bound. Zero values resolve via
+	// tools.DefaultLimitsFor("secret_scan").
+	limits tools.Limits
 }
 
 // NewSecretScan returns a ready-to-register SecretScan tool.
@@ -62,6 +63,24 @@ func NewSecretScan() *SecretScan { return &SecretScan{} }
 // NewSecretScanWithPolicy returns a SecretScan confined to
 // policy.Workspace when policy.Mode is wsl.
 func NewSecretScanWithPolicy(p sandbox.Policy) *SecretScan { return &SecretScan{policy: p} }
+
+// SetLimits overrides the findings bound. Only positive fields take
+// effect; the rest resolve to the tool defaults.
+func (s *SecretScan) SetLimits(l tools.Limits) {
+	s.limits = l
+}
+
+// ToolLimits reports the resolved bounds.
+func (s *SecretScan) ToolLimits() tools.Limits {
+	return s.resolveLimits()
+}
+
+func (s *SecretScan) resolveLimits() tools.Limits {
+	if s == nil {
+		return tools.DefaultLimitsFor("secret_scan")
+	}
+	return s.limits.WithDefaults(tools.DefaultLimitsFor("secret_scan"))
+}
 
 func (SecretScan) Name() string { return "secret_scan" }
 
@@ -113,7 +132,7 @@ func (s SecretScan) Execute(_ context.Context, args map[string]any) (tools.Resul
 		name = "<text>"
 	} else {
 		resolved := path
-		if s.policy.Mode == sandbox.ModeWSL {
+		if s.policy.Confines() {
 			rp, err := sandbox.ResolveWithinWorkspace(s.policy.Workspace, path)
 			if err != nil {
 				return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: %v", path, err)}, nil
@@ -139,6 +158,9 @@ func (s SecretScan) Execute(_ context.Context, args map[string]any) (tools.Resul
 	}
 
 	var findings []finding
+	// findingCap bounds reported findings; it resolves from the shared
+	// limits table (default 50) so configured max_lines overrides apply.
+	findingCap := s.resolveLimits().MaxLines
 	lines := strings.Split(string(data), "\n")
 	for i, line := range lines {
 		for _, r := range rules {
@@ -147,11 +169,11 @@ func (s SecretScan) Execute(_ context.Context, args map[string]any) (tools.Resul
 				continue
 			}
 			findings = append(findings, finding{line: i + 1, rule: r.id, snip: redact(line, loc[0], loc[1])})
-			if len(findings) >= maxFindings {
+			if len(findings) >= findingCap {
 				break
 			}
 		}
-		if len(findings) >= maxFindings {
+		if len(findings) >= findingCap {
 			break
 		}
 	}
@@ -165,11 +187,15 @@ func (s SecretScan) Execute(_ context.Context, args map[string]any) (tools.Resul
 		fmt.Fprintf(&b, "%s:%d: %s: %s\n", name, f.line, f.rule, f.snip)
 	}
 	out := strings.TrimRight(b.String(), "\n")
-	if len(findings) >= maxFindings {
-		out += fmt.Sprintf("\n\n[truncated at %d findings]", maxFindings)
+	var meta map[string]any
+	if len(findings) >= findingCap {
+		out += fmt.Sprintf("\n\n[truncated at %d findings]", findingCap)
+		meta = map[string]any{
+			"truncated": true, "findings": len(findings), "finding_limit": findingCap,
+		}
 	}
 	out += "\n\nThese are heuristic matches for review only. Rotate any real credentials; do not paste them elsewhere."
-	return tools.Result{Content: out}, nil
+	return tools.Result{Content: out, Metadata: meta}, nil
 }
 
 // redact masks the middle of a matched region, keeping 2 chars on each

@@ -51,7 +51,7 @@ func newAgentTestRuntime(t *testing.T, provider providers.ModelProvider) *Runtim
 
 func registerTestTools(t *testing.T, m *tools.Manager) {
 	t.Helper()
-	names := []string{"read_file", "write_file", "list_files", "pwd", "shell", "search_files", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
+	names := []string{"read_file", "write_file", "list_files", "pwd", "shell", "shell_job", "search_files", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
 	for _, name := range names {
 		n := name
 		tool := &testAgentTool{name: n}
@@ -76,17 +76,17 @@ func (t *testAgentTool) Execute(_ context.Context, args map[string]any) (tools.R
 
 func TestAgent_ToolIsolationDefinitions(t *testing.T) {
 	rt := newAgentTestRuntime(t, &scriptedProvider{turns: [][]providers.StreamEvent{{{Done: true}}}})
-	// general has all 10
-	if len(rt.manager.Definitions()) != 10 {
-		t.Fatalf("general should have 10 tools, got %d", len(rt.manager.Definitions()))
+	// general has all 13
+	if len(rt.manager.Definitions()) != 13 {
+		t.Fatalf("general should have 13 tools, got %d", len(rt.manager.Definitions()))
 	}
 	if err := rt.SetAgent("legal"); err != nil {
 		t.Fatalf("SetAgent legal: %v", err)
 	}
-	// legal should have 7 (no shell, no write_file, no secret_scan)
+	// legal should have 9 (no shell, no write_file, no secret_scan)
 	defs := rt.manager.Definitions()
-	if len(defs) != 7 {
-		t.Fatalf("legal should have 7 tools, got %d: %v", len(defs), defs)
+	if len(defs) != 9 {
+		t.Fatalf("legal should have 9 tools, got %d: %v", len(defs), defs)
 	}
 	for _, d := range defs {
 		if d.Name == "shell" || d.Name == "write_file" {
@@ -116,8 +116,8 @@ func TestAgent_ToolIsolationDefinitions(t *testing.T) {
 	if err := rt.SetAgent("coding"); err != nil {
 		t.Fatalf("SetAgent coding: %v", err)
 	}
-	if len(rt.manager.Definitions()) != 10 {
-		t.Fatalf("coding should have 10, got %d", len(rt.manager.Definitions()))
+	if len(rt.manager.Definitions()) != 13 {
+		t.Fatalf("coding should have 13, got %d", len(rt.manager.Definitions()))
 	}
 }
 
@@ -196,8 +196,8 @@ func TestAgent_ToolSummariesReflectFiltered(t *testing.T) {
 	rt := newAgentTestRuntime(t, &scriptedProvider{turns: [][]providers.StreamEvent{{{Done: true}}}})
 	_ = rt.SetAgent("research")
 	summaries := rt.ToolSummaries()
-	if len(summaries) != 7 {
-		t.Fatalf("research summaries len = %d, want 7", len(summaries))
+	if len(summaries) != 9 {
+		t.Fatalf("research summaries len = %d, want 9", len(summaries))
 	}
 	for _, s := range summaries {
 		if len(s) == 0 {

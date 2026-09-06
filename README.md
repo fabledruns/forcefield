@@ -1,42 +1,38 @@
 # Forcefield (`ff`)
 
-## Overview
+Forcefield is a local-first command line tool for running AI agents.
 
-Forcefield is a local-first command line tool for running AI agents. It uses a local model provider, agent instructions, skills, tools, and sessions.
-Forcefield runs as a single binary.
+It provides the runtime around a model: tools, skills, sessions, memory, permissions, shell execution, and provider communication. Forcefield runs as a single binary.
 
 It does not require:
 
-- A user account
-- A cloud service
-- Remote data processing
-- Telemetry
+* A user account
+* A cloud service
+* Remote data processing
+* Telemetry
 
 Forcefield is under active development. Features and interfaces can change.
 
----
+## Features
 
-# Main Features
+* Local model execution through Ollama and LM Studio
+* Support for remote model providers
+* Interactive terminal interface
+* Streaming responses
+* Agent skills
+* Agent tools
+* Session storage and recovery
+* Model provider abstraction
+* Tool permissions
+* Context management
+* Project search
+* Shell execution
+* Secret redaction
+* Agent memory
 
-Forcefield provides:
+## Requirements
 
-- Local model execution through Ollama
-- Interactive terminal interface
-- Streaming responses
-- Agent skills
-- Agent tools
-- Session storage
-- Session recovery
-- Model provider abstraction
-
----
-
-# Requirements
-
-Before you use Forcefield, make sure that you have:
-
-- Ollama installed (or another supported provider)
-- A local model installed
+For local models, install Ollama or another supported provider and have a model available.
 
 Example:
 
@@ -44,44 +40,71 @@ Example:
 ollama pull ornith:9b
 ```
 
-Go 1.22+ is only needed if you build from source.
+Go 1.22+ is only required when building from source.
 
----
+## Installation
 
-# Installation
-
-### Linux / macOS (shell)
+### Linux / macOS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.sh | sh
 ```
 
-macOS supports both Apple Silicon (`arm64`) and Intel (`amd64`) — the installer detects the correct binary.
+The installer detects `amd64` or `arm64` and installs `ff` to `~/.local/bin`.
 
-### Windows (PowerShell)
+### Windows
 
 ```powershell
 irm https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.ps1 | iex
 ```
 
-Installs to `~/.local/bin` (`$HOME\.local\bin` on Windows) and adds it to your user `PATH` if needed. No Administrator privileges required. Safe to run multiple times (upgrades in place).
+The Windows installer installs `ff.exe` to `$HOME\.local\bin` and adds that directory to the user `PATH` when required.
 
-> **Trust:** `curl | sh` / `irm | iex` downloads the installer from `main` over HTTPS and immediately executes it — convenient, but you are trusting `main` at that moment. For reproducibility or air-gapped review, pin to a tag (`https://raw.githubusercontent.com/fabledruns/forcefield/v1.0.0/scripts/install.sh`) or use the manual download below; either way the binary itself is still verified against `checksums.txt` from the GitHub Release (integrity, not independent authenticity beyond GitHub TLS).
+The installers require no Administrator privileges and can be run again to upgrade an existing installation.
+
+### Trust and verification
+
+The `curl | sh` and `irm | iex` commands download the installer from the `main` branch over HTTPS and execute it immediately. This means you are trusting the installer contents at that point in time.
+
+For reproducible installation, pin the installer to a release tag or download the installer first and inspect it.
+
+Release binaries include `checksums.txt`. The installers verify the downloaded binary against those checksums.
+
+Checksum verification provides integrity against the published checksum file. It does not provide independent authenticity beyond the GitHub release and HTTPS trust chain.
 
 ### Manual installation
 
-1. Download the binary for your OS/arch from [GitHub Releases](https://github.com/fabledruns/forcefield/releases).
-2. Place it on your `PATH` as `ff` (`ff.exe` on Windows).
-3. Ensure it is executable (`chmod +x ff` on Linux/macOS).
+1. Download the appropriate binary from GitHub Releases.
+2. Rename it to `ff` (`ff.exe` on Windows) if necessary.
+3. Place it somewhere on your `PATH`.
+4. On Linux/macOS, make it executable:
 
-Artifacts are named `ff-<os>-<arch>` (`.exe` on Windows), e.g. `ff-linux-amd64`, `ff-darwin-arm64`, `ff-windows-amd64.exe`. Each release includes `checksums.txt`; the installers verify it automatically.
+```bash
+chmod +x ff
+```
+
+Release artifacts use these names:
+
+```text
+ff-linux-amd64
+ff-linux-arm64
+ff-darwin-amd64
+ff-darwin-arm64
+ff-windows-amd64.exe
+ff-windows-arm64.exe
+```
 
 ### Version pinning
 
-Install a specific version:
+Linux/macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.sh | sh -s -- --version v1.0.0
+```
+
+Or, from a checked-out repository:
+
+```bash
 FORCEFIELD_VERSION=v1.0.0 sh scripts/install.sh
 ```
 
@@ -89,46 +112,66 @@ Windows:
 
 ```powershell
 $env:FORCEFIELD_VERSION="v1.0.0"; irm https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/install.ps1 | iex
-# or when saved locally:
+```
+
+Or from a checked-out repository:
+
+```powershell
 powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -Version v1.0.0
 ```
 
 ### Upgrading
 
-Run the same install command again. The installer detects an existing `ff` in the install directory, replaces it in place, and never touches `~/.forcefield` or project sessions.
+Run the installation command again.
 
-### Uninstall
+The installer replaces the existing binary in place. It does not modify `~/.forcefield` or project sessions.
+
+### Uninstalling
+
+Linux/macOS:
 
 ```bash
 sh scripts/uninstall.sh
-# or: curl -fsSL https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/uninstall.sh | sh
+```
+
+Or:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/uninstall.sh | sh
 ```
 
 Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/uninstall.ps1
-# or: irm https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/uninstall.ps1 | iex
 ```
 
-Removes only the binary (`~/.local/bin/ff`). Never removes `~/.forcefield`, sessions, memory, or config — those remain until you delete them manually.
+Or:
+
+```powershell
+irm https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/uninstall.ps1 | iex
+```
+
+Uninstallation removes the Forcefield binary only. Configuration, sessions, memory, and other files under `~/.forcefield` are left untouched.
 
 ### Supported platforms
 
-| OS      | Arch  | Artifact               |
-|---------|-------|------------------------|
-| Linux   | amd64 | `ff-linux-amd64`       |
-| Linux   | arm64 | `ff-linux-arm64`       |
-| macOS   | amd64 | `ff-darwin-amd64`      |
-| macOS   | arm64 | `ff-darwin-arm64`      |
-| Windows | amd64 | `ff-windows-amd64.exe` |
-| Windows | arm64 | `ff-windows-arm64.exe` |
+| OS      | Architecture | Artifact               |
+| ------- | ------------ | ---------------------- |
+| Linux   | amd64        | `ff-linux-amd64`       |
+| Linux   | arm64        | `ff-linux-arm64`       |
+| macOS   | amd64        | `ff-darwin-amd64`      |
+| macOS   | arm64        | `ff-darwin-arm64`      |
+| Windows | amd64        | `ff-windows-amd64.exe` |
+| Windows | arm64        | `ff-windows-arm64.exe` |
 
-All artifacts are statically linked (`CGO_ENABLED=0`) and built with `go build -trimpath -ldflags "-s -w"`.
+Release artifacts are statically linked with `CGO_ENABLED=0` and built using `go build -trimpath -ldflags "-s -w"`.
 
-### Troubleshooting PATH
+### PATH troubleshooting
 
-If `ff` is not found after install, the installer likely added `~/.local/bin` to `~/.bashrc`, `~/.zshrc`, or `~/.profile` (Windows: user `PATH`). Restart your terminal or run:
+If `ff` is not found after installation, restart the terminal so the updated `PATH` is loaded.
+
+You can also check:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -136,129 +179,88 @@ ff --version
 ff doctor
 ```
 
-Check what the installer changed — it never duplicates entries and never overwrites existing config.
+The installer does not duplicate existing `PATH` entries or overwrite existing shell configuration.
 
----
+## Build from source
 
-# Build from source
-
-To build Forcefield, run:
+Clone the repository and run:
 
 ```bash
 go build -o ff .
 ```
 
-The command creates the `ff` executable. On Windows:
+Windows:
 
 ```powershell
 go build -o ff.exe .
 ```
 
----
-
-# Start Forcefield
-
-Run:
+Run the resulting binary:
 
 ```bash
 ./ff
 ```
 
-Forcefield starts the interactive terminal interface.
+## Usage
 
-Example:
+Start the interactive terminal:
+
+```bash
+ff
+```
+
+Then enter a request:
 
 ```text
 > explain this repository
 ```
 
----
+Run a task directly:
 
-# System Operation
-
-Forcefield processes a request in the following order:
-
-```text
-User Input
-    |
-    v
-Command Handler
-    |
-    v
-Agent Runtime
-    |
-    +-- Skills
-    |
-    +-- Memory
-    |
-    +-- Tools
-    |
-    v
-Model Provider
-    |
-    v
-Response
+```bash
+ff run "inspect this repository and explain its structure"
 ```
 
-The runtime separates each function.
-
-This allows each part to be changed without changing the complete system.
-
----
-
-# Commands
-
-Forcefield supports these commands:
-
-```text
-/help
-Shows available commands.
-```
-
-```text
-/sessions
-Shows stored sessions.
-```
-
-```text
-/status
-Shows the active provider, model, session size, and tools.
-```
-
-```text
-/tools
-Lists the tools available to the agent.
-```
-
-```text
-/skills
-Lists and inspects the global skill catalog (/skills list, /skills show <id>).
-```
-
-```text
-/memory
-Manages agent memory (via the ff memory CLI subcommand).
-```
-
----
-
-# Diagnostics
-
-Run `ff doctor` to check common local problems: invalid configuration,
-unreachable providers, missing models, broken session files, and shell
-backend issues. Doctor never prints secret values such as API keys.
+Run diagnostics:
 
 ```bash
 ff doctor
 ```
 
----
+## Commands
 
-# Configuration
+Forcefield provides both CLI commands and interactive slash commands.
 
-Forcefield creates the configuration file during the first run.
+CLI commands include:
 
-Location:
+```text
+ff init
+ff run
+ff chat
+ff tools
+ff sessions
+ff memory
+ff doctor
+```
+
+Inside an interactive session:
+
+```text
+/help
+/sessions
+/status
+/tools
+/skills
+/skills list
+/skills show <id>
+/resume
+```
+
+`/status` shows the active provider, model, session information, and available tools.
+
+## Configuration
+
+Forcefield stores its configuration at:
 
 ```text
 ~/.forcefield/config.yaml
@@ -275,44 +277,90 @@ model:
 agent:
   name: default
   system_prompt: |
-    You are Forcefield, a local-first coding agent. Complete software tasks in real repositories: inspect, change, run, debug, and verify. Prefer a working, minimal result over advice or extra architecture.
+    You are Forcefield, a local-first coding agent.
+    Complete software tasks in real repositories:
+    inspect, change, run, debug, and verify.
 ```
 
-The configuration file defines:
+Configuration controls the model provider, endpoint, model, and agent instructions.
 
-- Model provider
-- Model endpoint
-- Model name
-- Agent instructions
-- Optional shell execution sandbox (see `docs/Sandbox.md`)
+Additional runtime settings are available for context management, permissions, workspace boundaries, and shell execution.
 
----
+## How it works
 
-# Shell Execution Boundary
-
-Shell commands run through a configurable executor:
+Forcefield owns the agent loop:
 
 ```text
-native   no isolation (default; historical behavior)
-wsl      commands run inside a WSL distribution with a pinned working
-         directory, restricted environment, and optional enforced
-         network isolation. Requires Windows; unavailable WSL is an
-         error, never a silent fallback.
+User
+ │
+ ▼
+Command / TUI
+ │
+ ▼
+Agent Runtime
+ ├── Context
+ ├── Permissions
+ ├── Sessions
+ ├── Skills
+ ├── Memory
+ └── Tools
+       │
+       ▼
+   Model Provider
+       │
+       ▼
+    Response
 ```
 
-WSL mode does not confine filesystems (the distribution reaches all
-Windows drives through /mnt); permission prompts and `ff doctor` state
-exactly what is and is not isolated.
+The model proposes operations through tool calls. Forcefield applies permission rules, executes tools, records their results, and continues the conversation.
 
----
+Providers handle communication with individual model APIs. The runtime remains independent of the provider being used.
 
-# Skills
+## Tools
 
-Skills are global, filesystem-first Markdown files.
+Built-in tools include:
 
-Skills provide additional instructions for the agent.
+```text
+read_file
+write_file
+list_files
+search_files
+find_files
+shell
+secret_scan
+load_skill
+memory
+```
 
-Location (global only):
+Tools receive structured input, perform an operation, and return a result to the runtime.
+
+Tool execution is subject to permission rules and runtime limits.
+
+## Shell execution
+
+Shell commands use a configurable executor.
+
+```text
+native
+```
+
+Runs commands directly on the host. This is the default and preserves the historical Forcefield behavior.
+
+```text
+wsl
+```
+
+On Windows, runs commands inside a WSL distribution with a pinned working directory, restricted environment, and optional network isolation.
+
+WSL mode requires an available WSL distribution. Forcefield does not silently fall back to native execution.
+
+WSL does not provide filesystem confinement. A WSL process can access Windows drives through `/mnt`.
+
+For the full shell and sandbox configuration, see `docs/Sandbox.md`.
+
+## Skills
+
+Skills are Markdown files stored globally under:
 
 ```text
 ~/.forcefield/skills/
@@ -321,9 +369,13 @@ Location (global only):
 Supported layouts:
 
 ```text
-~/.forcefield/skills/review.md              # file skill
-~/.forcefield/skills/git-review/SKILL.md    # directory skill (supporting files alongside)
+~/.forcefield/skills/review.md
+~/.forcefield/skills/git-review/SKILL.md
 ```
+
+Forcefield indexes skill metadata into a small catalog. The full skill body is loaded when needed.
+
+Supporting files are not executed automatically.
 
 Example:
 
@@ -337,141 +389,117 @@ Prefer simple designs.
 Use clear error handling.
 ```
 
-At startup Forcefield indexes skill metadata into a short catalog — the model sees only `id`, `name`, and `description`. The full skill body is loaded on demand via the `load_skill` tool or inspected with `/skills show <id>`. Supporting files are never executed automatically.
-
-Slash commands:
+Manage skills with:
 
 ```text
-/skills              list available skills
-/skills list         list available skills
-/skills show <id>    display one skill's full instructions
+/skills
+/skills list
+/skills show <id>
 ```
 
----
+## Sessions and memory
 
-# Tools
-
-Tools allow the agent to perform actions.
-
-Built-in tools include:
-
-```text
-read_file
-write_file
-list_files
-shell
-```
-
-A tool can:
-
-- Receive input from the agent
-- Perform an operation
-- Return a result
-
----
-
-# Sessions
-
-Forcefield saves chat sessions locally.
-
-Session files are stored at:
+Sessions are stored locally under:
 
 ```text
 .forcefield/sessions/
 ```
 
-Example:
+Use `/sessions` to view stored sessions and `/resume` to continue an existing session.
+
+Persistent agent memory is stored at:
 
 ```text
-.forcefield/
-└── sessions/
-    ├── session-a.json
-    └── session-b.json
+~/.forcefield/memory.md
 ```
 
-Use `/sessions` to view saved sessions.
+Session state is written atomically. Interrupted tool execution is recorded so the runtime can identify incomplete work when a session is reopened.
 
-Use `/resume` to continue a previous session.
+## Project search
 
----
+`search_files` and `find_files` provide bounded project search.
 
-# Project Structure
+Generated and dependency directories such as these are excluded from searches:
+
+```text
+.git
+node_modules
+dist
+build
+target
+vendor
+.next
+__pycache__
+```
+
+Search operations also limit the number of files, file sizes, matches, and execution time.
+
+## Permissions and redaction
+
+Tool permissions use three states:
+
+```text
+allow
+ask
+deny
+```
+
+Rules are evaluated before a tool executes.
+
+Forcefield also redacts recognized credentials from runtime output and persisted state. Redaction covers areas such as tool results, shell output, provider errors, session data, tool arguments, memory, and diagnostics.
+
+`ff doctor` does not print secret values such as API keys.
+
+## Project structure
 
 ```text
 forcefield/
 ├── cmd/
 │   └── ff/
 │       └── main.go
-
 ├── internal/
 │   ├── agent/
-│   │   Agent runtime
-│   │
 │   ├── command/
-│   │   Command handling
-│   │
 │   ├── config/
-│   │   Configuration handling
-│   │
 │   ├── providers/
-│   │   Model providers
-│   │
 │   ├── runtime/
-│   │   Agent execution
-│   │
 │   ├── session/
-│   │   Session storage
-│   │
 │   ├── skills/
-│   │   Skill loading
-│   │
 │   ├── tools/
-│   │   Tool system
-│   │
 │   └── tui/
-│       Terminal interface
-│
-└── examples/
-    └── skills/
+├── examples/
+│   └── skills/
+└── scripts/
 ```
 
----
+Package responsibilities are separated by runtime, provider, session, tool, skill, configuration, and terminal-interface concerns.
 
-# Design Rules
+## Development
 
-Forcefield follows these rules:
+Run the test suite:
 
-- Keep the runtime small.
-- Keep components separate.
-- Store user data locally.
-- Allow replacement of models and tools.
-- Avoid unnecessary system requirements.
-
----
-
-# Future Development
-
-Planned features:
-
-- Improved session selection
-- Tool permission control
-- Improved memory system
-- Additional model providers
-- Agent profiles
-- Plugin support
-- Improved agent planning
-
----
-
-# Purpose
-
-Forcefield provides a simple runtime for local AI agents.
-
-The model provides intelligence.
-
-The tools provide actions.
-
-The skills provide instructions.
-
-The runtime connects these components.
+```bash
+go test ./...
 ```
+
+Build:
+
+```bash
+go build ./...
+```
+
+Run static analysis:
+
+```bash
+go vet ./...
+```
+
+Format the repository:
+
+```bash
+gofmt -w .
+```
+
+## License
+
+Apache License 2.0.

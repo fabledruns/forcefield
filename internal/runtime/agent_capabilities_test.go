@@ -69,9 +69,9 @@ func keys(m map[string]bool) []string {
 }
 
 var (
-	fullSet  = []string{"read_file", "write_file", "list_files", "pwd", "shell", "search_files", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
-	cyberSet = []string{"read_file", "list_files", "pwd", "shell", "search_files", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
-	legalSet = []string{"read_file", "list_files", "pwd", "search_files", "load_skill", "update_task_state", "add_project_memory"}
+	fullSet  = []string{"read_file", "write_file", "list_files", "pwd", "shell", "shell_job", "search_files", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
+	cyberSet = []string{"read_file", "list_files", "pwd", "shell", "shell_job", "search_files", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
+	legalSet = []string{"read_file", "list_files", "pwd", "search_files", "find_files", "git", "load_skill", "update_task_state", "add_project_memory"}
 )
 
 // TestCapabilityTransition is the end-to-end capability test:
@@ -105,7 +105,7 @@ func TestCapabilityTransition(t *testing.T) {
 		t.Fatalf("general catalog = %v, want all 3 fixtures", ids)
 	}
 
-	// cyber: 9 tools; catalog = intelligence only (code-review missing).
+	// cyber: 12 tools; catalog = intelligence only (code-review missing).
 	if err := rt.SetAgent("cyber"); err != nil {
 		t.Fatalf("SetAgent cyber: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestCapabilityTransition(t *testing.T) {
 	assertToolRejected(t, rt, "write_file")
 	assertSkillRefused(t, rt, "alpha") // exists, unassigned to cyber
 
-	// coding: full 10 tools; catalog = intelligence only (rest missing).
+	// coding: full 13 tools; catalog = intelligence only (rest missing).
 	if err := rt.SetAgent("coding"); err != nil {
 		t.Fatalf("SetAgent coding: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestCapabilityTransition(t *testing.T) {
 	}
 	assertSkillRefused(t, rt, "beta")
 
-	// legal: 7 tools; empty catalog (no assignment).
+	// legal: 9 tools; empty catalog (no assignment).
 	if err := rt.SetAgent("legal"); err != nil {
 		t.Fatalf("SetAgent legal: %v", err)
 	}

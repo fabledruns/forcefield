@@ -18,10 +18,6 @@ import (
 	"forcefield/internal/tools"
 )
 
-// defaultTimeout bounds how long a shell command may run when the caller
-// doesn't specify one via the "timeout" argument.
-const defaultTimeout = 30 * time.Second
-
 // waitDelay bounds how long cmd.Wait() will wait for stdout/stderr pipes
 // to drain after the process group has been killed (context cancelled or
 // timed out). Without it, a killed process whose children keep a pipe fd
@@ -29,32 +25,35 @@ const defaultTimeout = 30 * time.Second
 // even though the command itself is long dead.
 const waitDelay = time.Second
 
-// maxShellOutputBytes is the hard cap for combined stdout+stderr capture.
-// Once exceeded the pipes are still drained but further bytes are discarded
-// and a truncation marker is added. This prevents OOM from runaway commands
-// while still allowing the process to be reaped.
-const maxShellOutputBytes = 2 << 20 // 2 MiB
-
 // shellOutput holds capped stdout/stderr buffers with a shared byte budget.
 type shellOutput struct {
 	mu        sync.Mutex
 	stdout    strings.Builder
 	stderr    strings.Builder
 	total     int
+	dropped   int
 	truncated bool
+	// max is the shared byte budget; values <= 0 resolve to
+	// tools.DefaultShellMaxBytes on first append.
+	max int
 }
 
 func (o *shellOutput) append(stream, line string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.truncated {
-		return
+	if o.max <= 0 {
+		o.max = tools.DefaultShellMaxBytes
 	}
 	// line is already sanitized, we store it plus a newline
 	n := len(line) + 1
-	if o.total+n > maxShellOutputBytes {
+	if o.truncated {
+		o.dropped += n
+		return
+	}
+	if o.total+n > o.max {
 		// Cap reached: store as much of this line as fits, then mark truncated.
-		remaining := maxShellOutputBytes - o.total
+		remaining := o.max - o.total
+		stored := 0
 		if remaining > 1 {
 			// Reserve 1 byte for newline, store prefix of line.
 			prefix := line
@@ -68,8 +67,10 @@ func (o *shellOutput) append(stream, line string) {
 				o.stderr.WriteString(prefix)
 				o.stderr.WriteByte('\n')
 			}
-			o.total = maxShellOutputBytes
+			stored = len(prefix) + 1
+			o.total = o.max
 		}
+		o.dropped += n - stored
 		o.truncated = true
 		return
 	}
@@ -99,6 +100,20 @@ func (o *shellOutput) isTruncated() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.truncated
+}
+
+// totalBytes returns the capped total for markers and metadata.
+func (o *shellOutput) totalBytes() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.total
+}
+
+// droppedBytes returns bytes discarded after the cap was reached.
+func (o *shellOutput) droppedBytes() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.dropped
 }
 
 // Shell executes shell commands inside the current project directory (or
@@ -133,6 +148,30 @@ type Shell struct {
 	// with backendProbed set means the backend is healthy.
 	backendErr    error
 	backendProbed bool
+
+	// limits overrides the default output/timeout bounds. Zero values
+	// resolve via tools.DefaultLimitsFor("shell"); apply configured
+	// overrides with SetLimits before registering.
+	limits tools.Limits
+}
+
+// SetLimits overrides the shell output/timeout bounds. Only positive
+// fields take effect; the rest resolve to the tool defaults.
+func (s *Shell) SetLimits(l tools.Limits) {
+	s.limits = l
+}
+
+// ToolLimits reports the resolved bounds, letting the scheduler apply
+// the configured timeout end to end.
+func (s *Shell) ToolLimits() tools.Limits {
+	return s.resolveLimits()
+}
+
+func (s *Shell) resolveLimits() tools.Limits {
+	if s == nil {
+		return tools.DefaultLimitsFor("shell")
+	}
+	return s.limits.WithDefaults(tools.DefaultLimitsFor("shell"))
 }
 
 // NewShell returns a ready-to-register Shell tool using native execution.
@@ -228,9 +267,9 @@ func (*Shell) InputSchema() map[string]any {
 
 // Metadata advertises shell's execution characteristics to the scheduler
 // and the model. Shell always requires explicit approval to run.
-func (*Shell) Metadata() tools.Metadata {
+func (s *Shell) Metadata() tools.Metadata {
 	return tools.Metadata{
-		Timeout:              defaultTimeout,
+		Timeout:              s.resolveLimits().Timeout,
 		SupportsStreaming:    true,
 		SupportsCancellation: true,
 		SupportsParallel:     true,
@@ -309,19 +348,21 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	// a clear, retryable message instead of an opaque execution failure.
 
 	// A bad timeout_seconds must be an argument error, not silently ignored:
-	// falling back to the 30s default would kill a long command the caller
+	// falling back to the default would kill a long command the caller
 	// asked to run longer, which looks exactly like "the command never ran".
-	timeout := defaultTimeout
+	bounds := s.resolveLimits()
+	timeout := bounds.Timeout
 	if raw, ok := args["timeout_seconds"]; ok {
 		secs, ok := toFloat(raw)
 		if !ok || secs <= 0 {
 			return tools.Result{}, &tools.ArgumentError{Field: "timeout_seconds", Reason: "must be a positive number of seconds"}
 		}
-		if secs > 300 {
-			return tools.Result{}, &tools.ArgumentError{Field: "timeout_seconds", Reason: "must be at most 300 seconds"}
+		if secs > float64(tools.MaxTimeout/time.Second) {
+			return tools.Result{}, &tools.ArgumentError{Field: "timeout_seconds", Reason: fmt.Sprintf("must be at most %d seconds", int(tools.MaxTimeout/time.Second))}
 		}
 		timeout = time.Duration(secs * float64(time.Second))
 	}
+	timeout = tools.ClampTimeout(timeout, bounds.Timeout)
 
 	envPairs, err := extraEnvArgs(args)
 	if err != nil {
@@ -440,7 +481,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
 
-	output := &shellOutput{}
+	output := &shellOutput{max: bounds.MaxBytes}
 	pipeDone := make(chan struct{}, 2)
 	pipesFinished := make(chan struct{})
 	go func() {
@@ -490,9 +531,14 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	stdoutStr := output.stdoutString()
 	stderrStr := output.stderrString()
 	truncated := output.isTruncated()
+	// Structured truncation record for Result.Metadata, plus the
+	// long-standing model-visible marker (wording preserved).
+	var truncMeta map[string]any
 	truncNote := ""
 	if truncated {
-		truncNote = fmt.Sprintf("\n[...output truncated at %d bytes (2 MiB), further output discarded]", maxShellOutputBytes)
+		kept, dropped, max := output.totalBytes(), output.droppedBytes(), bounds.MaxBytes
+		truncMeta = tools.Truncation{Truncated: true, OriginalBytes: kept + dropped, KeptBytes: kept, Limit: max}.Fields()
+		truncNote = fmt.Sprintf("\n[...output truncated at %d bytes (limit %d bytes), further output discarded]", max, max)
 	}
 
 	if runCtx.Err() == context.DeadlineExceeded {
@@ -509,6 +555,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 			DurationMs: duration.Milliseconds(),
 			Tool:       "shell",
 			Command:    command,
+			Metadata:   truncMeta,
 		}, nil
 	}
 	if runCtx.Err() == context.Canceled {
@@ -525,6 +572,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 			DurationMs: duration.Milliseconds(),
 			Tool:       "shell",
 			Command:    command,
+			Metadata:   truncMeta,
 		}, nil
 	}
 
@@ -543,6 +591,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 				DurationMs: duration.Milliseconds(),
 				Tool:       "shell",
 				Command:    command,
+				Metadata:   truncMeta,
 			}, nil
 		}
 	}
@@ -574,6 +623,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		DurationMs: duration.Milliseconds(),
 		Tool:       "shell",
 		Command:    command,
+		Metadata:   truncMeta,
 	}, nil
 }
 

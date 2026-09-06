@@ -33,7 +33,18 @@ func (n *nativeExecutor) Prepare(ctx context.Context, req Request) (*Prepared, e
 	if err := n.probePolicy(); err != nil {
 		return nil, err
 	}
-	dir, err := resolveExistingDir(req.Dir)
+	// Strict mode cages the working directory to the workspace through
+	// the same boundary pipeline the wsl path uses; permissive mode
+	// keeps the historical existence-only check. The boundary runs
+	// before backend construction so violations fail without needing
+	// Bash present.
+	dir := req.Dir
+	var err error
+	if n.policy.Confines() {
+		dir, err = resolveWithinWorkspace(n.policy.Workspace, req.Dir)
+	} else {
+		dir, err = resolveExistingDir(req.Dir)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -52,9 +63,26 @@ func (n *nativeExecutor) probePolicy() error {
 	return nil
 }
 
-// Describe reports native honestly: nothing is confined or enforced. The
-// full host environment reaches the command and the network is the host's.
+// Describe reports native honestly: nothing is confined or enforced,
+// except the workspace boundary when the policy is strict (pinned
+// working directory plus tool-layer filesystem confinement, same
+// invariant as the wsl path). The full host environment reaches the
+// command and the network is the host's.
 func (n *nativeExecutor) Describe(context.Context) Enforcement {
+	if n.policy.Confines() {
+		return Enforcement{
+			Mode:               ModeNative,
+			Distro:             n.policy.Distro,
+			Network:            NetworkHost,
+			CwdPinned:          true,
+			FilesystemConfined: true,
+			EnvForwarded:       true,
+			NetworkEnforced:    false,
+			Notes: []string{
+				"strict workspace boundary: filesystem tools and the shell working directory are confined to the workspace",
+			},
+		}
+	}
 	return Enforcement{
 		Mode:               ModeNative,
 		Distro:             n.policy.Distro,

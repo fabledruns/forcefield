@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -19,7 +20,7 @@ func TestRunCommand_Success(t *testing.T) {
 	}()
 
 	// Fake runtime that returns a deterministic response.
-	runtimeRun = func(msgs []providers.Message) (providers.Response, error) {
+	runtimeRun = func(_ context.Context, msgs []providers.Message) (providers.Response, error) {
 		if len(msgs) != 1 {
 			t.Errorf("expected 1 message, got %d", len(msgs))
 		}
@@ -54,7 +55,7 @@ func TestRunCommand_JoinsArgs(t *testing.T) {
 	defer func() { runtimeRun = origRun }()
 
 	var gotContent string
-	runtimeRun = func(msgs []providers.Message) (providers.Response, error) {
+	runtimeRun = func(_ context.Context, msgs []providers.Message) (providers.Response, error) {
 		gotContent = msgs[0].Content
 		return providers.Response{Content: "ok"}, nil
 	}
@@ -75,7 +76,7 @@ func TestRunCommand_PropagatesError(t *testing.T) {
 	origRun := runtimeRun
 	defer func() { runtimeRun = origRun }()
 
-	runtimeRun = func([]providers.Message) (providers.Response, error) {
+	runtimeRun = func(context.Context, []providers.Message) (providers.Response, error) {
 		return providers.Response{}, fmt.Errorf("model failure")
 	}
 	err := runCommand([]string{"task"})
@@ -93,7 +94,7 @@ func TestRunCommand_CobraValidation(t *testing.T) {
 	// Use a fake run to avoid real provider.
 	origRun := runtimeRun
 	defer func() { runtimeRun = origRun }()
-	runtimeRun = func([]providers.Message) (providers.Response, error) {
+	runtimeRun = func(context.Context, []providers.Message) (providers.Response, error) {
 		return providers.Response{Content: "ok"}, nil
 	}
 	// Directly test the cobra Args validator.

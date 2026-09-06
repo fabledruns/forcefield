@@ -35,6 +35,31 @@ Old session files containing only `role`/`content`/`time` continue to load becau
 
 Old session files without `agent` continue to load; callers treat `""` as `general`.
 
+### `TurnState` / `PendingCall`
+
+Crash-recovery envelope for the latest tool-calling turn (`turn`, `omitempty` — absent in old files and sessions that never ran a tool):
+
+| Field            | Type            | Description                                                        |
+| ---------------- | --------------- | ------------------------------------------------------------------ |
+| `ID`             | `string`        | Turn ID for correlating the batch.                                 |
+| `Status`         | `TurnStatus`    | `in_progress`, `complete`, `interrupted`, or `cancelled`.          |
+| `ModelCompleted` | `bool`          | True once the deciding model response finished (`omitempty`).      |
+| `StartedAt`      | `time.Time`     | Turn start (`omitempty`).                                          |
+| `EndedAt`        | `time.Time`     | Turn end (`omitempty`).                                            |
+| `Pending`        | `[]PendingCall` | Per-call execution state for the in-flight batch (`omitempty`).    |
+
+Each `PendingCall` carries `id`, `name`, `arguments`, `status` (`pending`, `running`, `done`, `failed`, `denied`, `cancelled`, `interrupted`), timestamps, `attempt`, and `error`. Only `pending`/`running` are non-terminal; every other state is final and never re-queued.
+
+Lifecycle (all additive, all persisted through the existing atomic `Save`):
+
+- Tool start → assistant batch **and** pending record commit under one `Save`.
+- Tool terminal event → pending marked (`done`/`failed`/`denied`/`cancelled`) under the same `Save` as its result message.
+- Run done/error → turn closed as `complete`, `interrupted`, or `cancelled`.
+- Teardown (`/clear`, agent/session switch, quit) → open turns marked `cancelled`.
+- Adopt (startup, resume, session switch) → `in_progress` turns left by a crash/kill are marked `interrupted`, missing results synthesized, and nothing is ever re-executed.
+
+Old session files without `turn` load with a nil envelope; recovery is a no-op and replay is unchanged.
+
 ## Storage Location
 
 Sessions are stored under the current working directory:
@@ -138,5 +163,6 @@ Switching sessions restores the target session's stored agent (fallback to `gene
 - Session data stays on the local machine.
 - Each session file is independent JSON.
 - Saves are atomic, so a crash cannot corrupt the session store.
+- Interrupted turns are marked terminal and paired for replay — never re-executed.
 - Corrupted files are reported and skipped, never silently deleted or rewritten.
 - The package does not talk to the model. It only stores and converts history.

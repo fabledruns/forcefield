@@ -52,6 +52,10 @@ type Capabilities struct {
 	ParallelToolCalls bool
 	// ContextWindow is the model context size in tokens; 0 means unknown.
 	ContextWindow int
+	// MaxOutputTokens is the maximum tokens the model can emit in one
+	// turn; 0 means unknown. The runtime uses it to reserve space for
+	// the next response when the exact limit is not configured.
+	MaxOutputTokens int
 }
 
 // Detail renders capabilities as the compact descriptor shown under each
