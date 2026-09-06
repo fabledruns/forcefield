@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -23,7 +24,16 @@ func TestDoctorWorkspace_ReportsRootAndMode(t *testing.T) {
 	strict.Workspace.Mode = config.WorkspaceStrict
 	doctorWorkspace(strict, report)
 	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, dir) || !strings.Contains(joined, "strict") {
+	// The runtime canonicalizes the explicit root (EvalSymlinks), so on
+	// Windows the report may use the long spelling (...\runneradmin\...)
+	// while t.TempDir() returns the short spelling (...RUNNER~1...).
+	// Compare canonically and case-insensitively, like workspace_test.go.
+	want := dir
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		want = resolved
+	}
+	lower := strings.ToLower(joined)
+	if (!strings.Contains(lower, strings.ToLower(want)) && !strings.Contains(lower, strings.ToLower(dir))) || !strings.Contains(joined, "strict") {
 		t.Errorf("strict report = %q, want root and strict", joined)
 	}
 

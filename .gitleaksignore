@@ -1,0 +1,18 @@
+# Gitleaks false positives — intentional fake fixtures in redaction tests.
+# Each line is a commit-pinned fingerprint (commit:file:rule:line).
+# These are NOT real credentials:
+# - sk-12345678901234567890abcdef and variants are sequential-digit fakes
+#   asserting that centralized redaction scrubs before persist/display.
+# - eyJhbGci... is a JWT header fragment in a curl Auth header fixture.
+# - AKIAIOSFODNN7EXAMPLE is the AWS-documented example key (ends in EXAMPLE).
+# - AIzaSyB-... is a fake Google-key-shaped fixture for pattern coverage.
+# Any NEW leak outside these pinned lines will still fail CI.
+dc4d2e1e8a11c2870a80dff0243a5bf8e1699873:cmd/doctor_redact_test.go:generic-api-key:19
+dc4d2e1e8a11c2870a80dff0243a5bf8e1699873:internal/runtime/redact_boundary_test.go:generic-api-key:55
+dc4d2e1e8a11c2870a80dff0243a5bf8e1699873:internal/session/redact_boundary_test.go:curl-auth-header:24
+dc4d2e1e8a11c2870a80dff0243a5bf8e1699873:internal/tui/permission_redact_test.go:generic-api-key:14
+dc4d2e1e8a11c2870a80dff0243a5bf8e1699873:internal/tui/permission_redact_test.go:curl-auth-header:19
+dc4d2e1e8a11c2870a80dff0243a5bf8e1699873:internal/trace/trace_test.go:generic-api-key:103
+dc4d2e1e8a11c2870a80dff0243a5bf8e1699873:internal/redact/redact_test.go:generic-api-key:29
+dc4d2e1e8a11c2870a80dff0243a5bf8e1699873:internal/redact/redact_test.go:gcp-api-key:25
+dc4d2e1e8a11c2870a80dff0243a5bf8e1699873:internal/redact/redact_test.go:curl-auth-header:86
