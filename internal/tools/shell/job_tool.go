@@ -161,6 +161,18 @@ func (s ShellJob) start(ctx context.Context, args map[string]any) (tools.Result,
 			Tool: "shell_job",
 		}, nil
 	}
+	// Parity with foreground shell: same conservative WSL mitigation.
+	// Documented as mitigation, not a sandbox boundary.
+	if s.isWSLMode(ctx) && isWSLForbiddenPattern(command) {
+		return tools.Result{
+			IsError: true,
+			Content: fmt.Sprintf(
+				"refusing to run %q: WSL shell access to host filesystem is blocked as a conservative mitigation (not a sandbox); use workspace-relative paths instead",
+				command,
+			),
+			Tool: "shell_job",
+		}, nil
+	}
 	cwd, err := tools.OptionalStringArg(args, "cwd", "")
 	if err != nil {
 		return tools.Result{}, err
@@ -190,6 +202,15 @@ func (s ShellJob) start(ctx context.Context, args map[string]any) (tools.Result,
 		Tool:    "shell_job",
 		Command: command,
 	}, nil
+}
+
+// isWSLMode reports whether this job's executor is in WSL mode.
+func (s ShellJob) isWSLMode(ctx context.Context) bool {
+	if s.jobs == nil {
+		return false
+	}
+	enc := s.jobs.executorFor().Describe(ctx)
+	return enc.Mode == sandbox.ModeWSL
 }
 
 // jobStartError maps registry/executor failures to model-actionable

@@ -234,14 +234,18 @@ Forcefield provides both CLI commands and interactive slash commands.
 CLI commands include:
 
 ```text
-ff init
-ff run
+ff
 ff chat
-ff tools
-ff sessions
+ff run
 ff memory
 ff doctor
+ff --resume <session-id>
+ff --agent <name>
 ```
+
+Sessions are project-local (`.forcefield/sessions/` under the current
+working directory): `--resume` only finds sessions created in the same
+directory. Use `/sessions` in the TUI to browse them.
 
 Inside an interactive session:
 
@@ -253,7 +257,8 @@ Inside an interactive session:
 /skills
 /skills list
 /skills show <id>
-/resume
+/new
+/clear
 ```
 
 `/status` shows the active provider, model, session information, and available tools.
@@ -399,21 +404,26 @@ Manage skills with:
 
 ## Sessions and memory
 
-Sessions are stored locally under:
+Sessions are stored project-locally under:
 
 ```text
 .forcefield/sessions/
 ```
 
-Use `/sessions` to view stored sessions and `/resume` to continue an existing session.
+(relative to the current working directory — resume from the same
+directory). Use `/sessions` in the TUI to browse sessions and
+`ff --resume <session-id>` to continue one. Sessions are capped at
+1000 messages with an observable `[compacted N older messages]`
+marker and a persisted compaction count; provider requests additionally
+use a 100-message sliding window.
 
-Persistent agent memory is stored at:
+Persistent project memory is scoped per project under
+`~/.forcefield/memory/` (capped at 200 entries / 8 KiB in prompts).
 
-```text
-~/.forcefield/memory.md
-```
-
-Session state is written atomically. Interrupted tool execution is recorded so the runtime can identify incomplete work when a session is reopened.
+Session state is written atomically (temp + fsync + rename).
+Interrupted tool execution is recorded so the runtime can identify
+incomplete work when a session is reopened; length-truncated or
+incomplete provider turns block instead of reporting success.
 
 ## Project search
 

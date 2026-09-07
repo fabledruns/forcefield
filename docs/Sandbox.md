@@ -138,6 +138,48 @@ If you ever see stronger wording than this table allows, that is a bug.
 
 ---
 
+## Security model (RC6 explicit guarantees)
+
+- **Default posture is permissive history, not isolation.** `native` +
+  `permissive` runs shell with your user's privileges and full host
+  environment, and filesystem tools resolve paths as given. Do not treat
+  defaults as a sandbox.
+- **Reads are allowed by default but sensitive paths escalate.**
+  `read_file`/`list_files`/`search_files`/`find_files`/`git`/`secret_scan`
+  default to `allow` for usability; any call whose `path` (or `cwd` for
+  `shell_job`) matches `IsSensitivePath` (`.env*`, keys, `.ssh/`,
+  cloud credentials, etc.) forces `Ask` even under `Allow` or
+  session-scoped `Always allow`. `search`/`find` additionally skip
+  sensitive files during traversal. Lexical only: a renamed/symlinked
+  sensitive file outside those patterns is not caught — treat as
+  defense-in-depth, not a boundary.
+- **Session `Always allow` is per-tool-name, session-scoped, and never
+  persisted to `config.yaml`.** One `Always allow shell` authorizes any
+  future shell command in that session (still gated by the interactive
+  and WSL lexical refusals). Sensitive-file calls still prompt even
+  under `Always allow`. Cross-agent switches retain session decisions
+  for shared tools — re-prompt on agent switch for high-risk tools.
+- **Shell command text is never confined, in any mode.** Strict/WSL pin
+  the working directory and cage filesystem *tools*; `cat /etc/passwd`
+  or `/mnt/c/...` in command text is gated only by permissions (`ask`)
+  plus conservative lexical refusals (interactive-TTY list, WSL
+  `/mnt/`/drive/`..`/interop patterns applied to both `shell` and
+  `shell_job`). Those patterns are bypassable via shell indirection
+  (`$var`, quoting, `proc/self/root`) by design — documented mitigation,
+  not a boundary. `Enforcement.FilesystemConfined` is always false for
+  shell backends.
+- **Tool output and memory are untrusted data.** Results are fenced
+  (`<tool_result>`, `</tool_result>` in content escaped) and scrubbed;
+  memory facts are scrubbed but injected as plain prompt text (no fence
+  yet) — a malicious memory entry or repository file can attempt
+  instruction override. Treat both as data, never as control plane.
+- **Secrets are scrubbed deep, not shallow.** `redact.ScrubMap` recurses
+  into nested maps/slices (e.g. `shell.env`), and every boundary
+  (tool results, pending args, errors, session files, memory, traces,
+  diagnostics) scrubs via the central `redact` package plus registered
+  env values. Coverage is conservative and explicit, never perfect —
+  add new shapes in `redact` with tests.
+
 ## Design notes
 
 - Policy lives with the executor; tools send requests; the UI renders `Enforcement.SummaryLines()`.

@@ -63,11 +63,12 @@ func (n *nativeExecutor) probePolicy() error {
 	return nil
 }
 
-// Describe reports native honestly: nothing is confined or enforced,
-// except the workspace boundary when the policy is strict (pinned
-// working directory plus tool-layer filesystem confinement, same
-// invariant as the wsl path). The full host environment reaches the
-// command and the network is the host's.
+// Describe reports native honestly: nothing is confined or enforced for
+// shell command text in any mode. Strict pins the working directory and
+// confines filesystem tools to the workspace (same invariant as wsl), but
+// shell command text (e.g. cat /etc/passwd) remains unconfined by design —
+// see Enforcement.FilesystemConfined ("For shell, NO BACKEND SETS THIS
+// TRUE"). The full host environment reaches the command.
 func (n *nativeExecutor) Describe(context.Context) Enforcement {
 	if n.policy.Confines() {
 		return Enforcement{
@@ -75,11 +76,11 @@ func (n *nativeExecutor) Describe(context.Context) Enforcement {
 			Distro:             n.policy.Distro,
 			Network:            NetworkHost,
 			CwdPinned:          true,
-			FilesystemConfined: true,
+			FilesystemConfined: false,
 			EnvForwarded:       true,
 			NetworkEnforced:    false,
 			Notes: []string{
-				"strict workspace boundary: filesystem tools and the shell working directory are confined to the workspace",
+				"strict workspace boundary: filesystem tools and the shell working directory are confined to the workspace; shell command text is not confined",
 			},
 		}
 	}

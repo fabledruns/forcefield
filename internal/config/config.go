@@ -312,7 +312,10 @@ func Load() (*Config, error) {
 		}
 		// Ensure restrictive permissions even if umask is permissive.
 		_ = os.Chmod(path, 0o600)
-		fmt.Printf("Created default config at %s\n", path)
+		// Stderr, not stdout: ff run emits machine-readable response
+		// content on stdout, and a creation notice there would corrupt
+		// scripts piping `ff run`.
+		fmt.Fprintf(os.Stderr, "Created default config at %s\n", path)
 	} else if err != nil {
 		return nil, fmt.Errorf("stat config file %s: %w", path, err)
 	}

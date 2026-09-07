@@ -31,9 +31,20 @@ Old session files containing only `role`/`content`/`time` continue to load becau
 | `CreatedAt` | `time.Time` | Session creation time.                   |
 | `UpdatedAt` | `time.Time` | Last update time.                        |
 | `Agent`     | `string`    | Active specialised agent (`omitempty`).  |
-| `Messages`  | `[]Message` | Ordered message history.                 |
+| `Messages`  | `[]Message` | Ordered message history (capped, see below). |
+| `Compacted` | `int`       | Messages dropped by compaction, lifetime total (`omitempty`). |
+| `Turn`      | `*TurnState`| Crash-recovery envelope (`omitempty`).   |
 
 Old session files without `agent` continue to load; callers treat `""` as `general`.
+
+### Retention
+
+Messages are capped at 1000. Beyond that, the oldest messages (after
+the first user goal) are dropped and replaced with one observable
+`system` marker (`[compacted N older messages ...]`) plus the persisted
+`Compacted` count — never silently. `system` markers are persistence
+observability only and are skipped in `ProviderMessages`; provider
+requests additionally use a 100-message sliding window per turn.
 
 ### `TurnState` / `PendingCall`
 
@@ -135,7 +146,7 @@ Like `List`, but also returns every file that could not be read or parsed, so ca
 func (s *Session) ProviderMessages() []providers.Message
 ```
 
-Converts session messages into provider messages for a model call, preserving `ToolCalls`, `ToolCallID`, and `Name` when present so `/resume` can replay tool history with fidelity. Old files without those fields still convert correctly.
+Converts session messages into provider messages for a model call, preserving `ToolCalls`, `ToolCallID`, and `Name` when present so `--resume` can replay tool history with fidelity. `system` compaction markers are skipped (observability only). Old files without those fields still convert correctly. Tool results are fenced (`<tool_result>`) with `</tool_result>` in content escaped, and secrets are scrubbed before persistence and replay.
 
 ### `AddProviderMessage` / `AddAssistantToolCalls` / `AddToolResult` / `AppendToolCallToLastAssistant`
 

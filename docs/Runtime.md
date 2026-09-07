@@ -168,5 +168,6 @@ start/outcome pairs carry the signal.
 
 ## Design Notes
 
-- The runtime owns the multi-turn tool loop. Providers stream only one turn.- Model and provider switches (`SetModel`/`SetProvider`) take effect on the next request and are in-memory only (temporary) — they do not write `config.yaml` unless `SaveConfig` is called explicitly. See `docs/Config.md`.
+- The runtime owns the multi-turn tool loop. Providers stream only one turn.
+- Programmatic model/provider switches (`SetModel`/`SetProvider`) take effect on the next request and are in-memory only until `SaveConfig` is called. The TUI `/model` and `/provider` commands persist via `SaveConfig`, so interactive picks survive restarts. Length-truncated (`finish_reason=length`) and incomplete turns (stream closed without a terminal marker) block or error instead of reporting success; truncated tool calls are never executed. See `docs/Config.md`.
 - Cancellation through context stops emission and ends the run cleanly when possible.
