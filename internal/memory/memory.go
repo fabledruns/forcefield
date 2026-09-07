@@ -242,7 +242,7 @@ func newID(existing []Entry) string {
 // caps rendered bytes with an observable truncation note so the model
 // knows facts were omitted.
 const (
-	maxMemoryEntries    = 200
+	maxMemoryEntries     = 200
 	maxMemoryPromptBytes = 8 << 10 // 8 KiB
 )
 

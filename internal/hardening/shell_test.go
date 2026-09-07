@@ -12,6 +12,12 @@ import (
 // P1.15 lab: shell boundaries per sandbox mode. Proves caps, not isolation.
 func TestShellOutputBounded(t *testing.T) {
 	tool := shell.NewShell()
+	probe, err := tool.Execute(context.Background(), map[string]any{
+		"command": "python3 --version",
+	})
+	if err != nil || probe.IsError {
+		t.Skipf("python3 unavailable: err=%v content=%q", err, probe.Content)
+	}
 	// yes-style unbounded output must be truncated, not OOM.
 	res, err := tool.Execute(context.Background(), map[string]any{
 		"command":         "python3 -c \"print('x'*10000000)\"",

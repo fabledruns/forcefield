@@ -30,7 +30,7 @@ const (
 // same red family as colorAccent (#FF3B3B) but dark enough to read as
 // background energy on a dark terminal.
 const (
-	loadingDimR, loadingDimG, loadingDimB         = 0x5A, 0x1A, 0x1A
+	loadingDimR, loadingDimG, loadingDimB          = 0x5A, 0x1A, 0x1A
 	loadingBrightR, loadingBrightG, loadingBrightB = 0xFF, 0x3B, 0x3B
 )
 
