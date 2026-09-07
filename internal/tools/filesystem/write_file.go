@@ -56,6 +56,11 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 	if err != nil {
 		return tools.Result{}, err
 	}
+	// Bound input bytes so one call cannot fill disk. Mirrors the read
+	// cap; the model can chunk large writes across calls.
+	if len(content) > tools.DefaultWriteMaxBytes {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: content is %d bytes, limit is %d bytes; split the write into smaller chunks", path, len(content), tools.DefaultWriteMaxBytes)}, nil
+	}
 
 	resolved := path
 	if w.policy.Confines() {

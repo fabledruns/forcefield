@@ -10,16 +10,29 @@ import (
 	"forcefield/internal/providers"
 )
 
-// EstimateTokens approximates the token cost of text at ~4 runes per
-// token. It is deliberately conservative and deterministic: the runtime
-// uses it only to decide what fits, never to bill or to report usage.
-// Empty text costs 0; non-empty text costs at least 1.
+// EstimateTokens approximates the token cost of text. ASCII runs at ~4
+// runes per token; other BMP scripts at ~2 per token; CJK/emoji at ~1 per
+// token. It is deliberately conservative (overestimates) and deterministic:
+// the runtime uses it only to decide what fits, never to bill or report
+// usage. Empty text costs 0; non-empty text costs at least 1. Overcounting
+// CJK is safe (earlier truncation); undercounting would overshoot the
+// provider window.
 func EstimateTokens(text string) int {
 	if text == "" {
 		return 0
 	}
-	n := utf8.RuneCountInString(text)
-	est := (n + 3) / 4
+	var quarters int
+	for _, r := range text {
+		switch {
+		case r < 128:
+			quarters++
+		case r < 0x2E80:
+			quarters += 2
+		default:
+			quarters += 4
+		}
+	}
+	est := (quarters + 3) / 4
 	if est < 1 {
 		return 1
 	}

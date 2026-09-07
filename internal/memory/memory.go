@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -168,6 +169,11 @@ func (s *Store) Add(text string) (entry Entry, added bool, err error) {
 		}
 	}
 
+	// Explicit bound: reject instead of silently evicting user-approved facts.
+	if len(entries) >= maxMemoryEntries {
+		return Entry{}, false, fmt.Errorf("memory full (%d entries); remove an entry with `ff memory remove` before adding", maxMemoryEntries)
+	}
+
 	entry = Entry{
 		ID:        newID(entries),
 		CreatedAt: time.Now(),
@@ -230,12 +236,25 @@ func newID(existing []Entry) string {
 	}
 }
 
+// Retention bounds keep project memory usable in the system prompt
+// across long-horizon runs. Add rejects new facts past the entry cap
+// (explicit error, never silent eviction); FormatForPrompt additionally
+// caps rendered bytes with an observable truncation note so the model
+// knows facts were omitted.
+const (
+	maxMemoryEntries    = 200
+	maxMemoryPromptBytes = 8 << 10 // 8 KiB
+)
+
 // FormatForPrompt renders entries for inclusion in an agent's system
 // prompt. Returns "" for no entries, so callers can skip the section
 // entirely rather than emit an empty header.
 func FormatForPrompt(entries []Entry) string {
 	if len(entries) == 0 {
 		return ""
+	}
+	if len(entries) > maxMemoryEntries {
+		entries = entries[len(entries)-maxMemoryEntries:]
 	}
 
 	var b strings.Builder
@@ -245,5 +264,13 @@ func FormatForPrompt(entries []Entry) string {
 		}
 		fmt.Fprintf(&b, "- %s", e.Text)
 	}
-	return b.String()
+	out := b.String()
+	if len(out) > maxMemoryPromptBytes {
+		cut := maxMemoryPromptBytes
+		for cut > 0 && !utf8.ValidString(out[:cut]) {
+			cut--
+		}
+		out = out[:cut] + "\n- [...memory truncated: showing most recent facts; use `ff memory list` for the full set]"
+	}
+	return out
 }

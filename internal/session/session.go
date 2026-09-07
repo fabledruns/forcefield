@@ -2,9 +2,11 @@
 package session
 
 import (
+	"fmt"
+	"time"
+
 	"forcefield/internal/providers"
 	"forcefield/internal/redact"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -33,6 +35,11 @@ type Session struct {
 	// "" as "general" for backwards compatibility.
 	Agent    string    `json:"agent,omitempty"`
 	Messages []Message `json:"messages"`
+	// Compacted counts messages dropped by size-bound compaction across the
+	// session lifetime. It makes the retention policy observable instead of
+	// silent: UIs and doctor can report how much history was summarized
+	// away, and tests can assert bounded growth without parsing content.
+	Compacted int `json:"compacted,omitempty"`
 	// Turn is the execution envelope for the latest tool-calling turn:
 	// which calls were decided, which are still running, and how the
 	// turn ended. It is what makes a crash between "model responded" and
@@ -128,15 +135,14 @@ func (s *Session) compactIfNeeded() {
 		return
 	}
 	// Keep the first message (often the user's goal) plus the most recent
-	// maxSessionMessages-1. This preserves intent and recent history while
-	// bounding file size. A marker is not inserted to keep JSON simple;
-	// the provider window already handles truncation.
+	// maxSessionMessages-2, reserving one slot for an observable compaction
+	// marker so dropped history is explicit, not silent. The provider
+	// window (100) is smaller; this is the persistence bound.
 	keepFirst := 0
 	if len(s.Messages) > 0 && s.Messages[0].Role == "user" {
 		keepFirst = 1
 	}
-	// Number of recent messages to keep
-	keepRecent := maxSessionMessages - keepFirst
+	keepRecent := maxSessionMessages - keepFirst - 1
 	if keepRecent < 0 {
 		keepRecent = 0
 	}
@@ -144,21 +150,34 @@ func (s *Session) compactIfNeeded() {
 	if recentStart < keepFirst {
 		recentStart = keepFirst
 	}
+	dropped := recentStart - keepFirst
 	newMessages := make([]Message, 0, maxSessionMessages)
 	if keepFirst == 1 {
 		newMessages = append(newMessages, s.Messages[0])
 	}
+	marker := Message{
+		Role:    "system",
+		Content: fmt.Sprintf("[compacted %d older messages to bound session size; use /sessions to review recent history]", dropped),
+		Time:    time.Now(),
+	}
+	newMessages = append(newMessages, marker)
 	newMessages = append(newMessages, s.Messages[recentStart:]...)
 	s.Messages = newMessages
+	s.Compacted += dropped
 }
 
 // ProviderMessages converts session history to provider messages.
 // Tool results are fenced so the model treats them as data, not
-// instructions (prompt-injection mitigation).
+// instructions (prompt-injection mitigation). System compaction markers
+// are persistence observability only and are skipped here; the provider
+// sliding window already bounds what the model sees.
 func (s *Session) ProviderMessages() []providers.Message {
 	messages := make([]providers.Message, 0, len(s.Messages))
 
 	for _, msg := range s.Messages {
+		if msg.Role == "system" {
+			continue
+		}
 		content := msg.Content
 		if msg.Role == string(providers.ToolRole) {
 			content = FenceToolResult(msg.Name, content)

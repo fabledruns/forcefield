@@ -164,6 +164,16 @@ type Patch struct {
 	Status           Status
 }
 
+// Retention caps keep working memory bounded across long-horizon runs.
+// Discoveries/Blockers keep the most recent entries; the plan keeps the
+// first entries (earliest steps anchor the task). Counts are observable
+// via Snapshot lengths; Summary notes when truncation occurred.
+const (
+	maxDiscoveries = 64
+	maxBlockers    = 64
+	maxPlanSteps   = 32
+)
+
 // Apply merges p into the state.
 func (t *State) Apply(p Patch) {
 	t.mu.Lock()
@@ -174,18 +184,27 @@ func (t *State) Apply(p Patch) {
 	}
 	if p.Plan != nil {
 		t.s.Plan = p.Plan
+		if len(t.s.Plan) > maxPlanSteps {
+			t.s.Plan = append([]Step(nil), t.s.Plan[:maxPlanSteps]...)
+		}
 	}
 	if p.CurrentStep != "" {
 		t.s.CurrentStep = p.CurrentStep
 	}
 	if p.Discovery != "" {
 		t.s.Discoveries = append(t.s.Discoveries, p.Discovery)
+		if len(t.s.Discoveries) > maxDiscoveries {
+			t.s.Discoveries = append([]string(nil), t.s.Discoveries[len(t.s.Discoveries)-maxDiscoveries:]...)
+		}
 	}
 	if p.ClearBlockers {
 		t.s.Blockers = nil
 	}
 	if p.Blocker != "" {
 		t.s.Blockers = append(t.s.Blockers, p.Blocker)
+		if len(t.s.Blockers) > maxBlockers {
+			t.s.Blockers = append([]string(nil), t.s.Blockers[len(t.s.Blockers)-maxBlockers:]...)
+		}
 	}
 	if p.Verification != "" {
 		t.s.Verification = p.Verification
@@ -273,19 +292,22 @@ func (t *State) Summary() string {
 	if len(snap.Plan) > 0 {
 		b.WriteString("Plan:\n")
 		for _, step := range snap.Plan {
-			fmt.Fprintf(&b, "  [%s] %s\n", step.Status, step.Text)
+			fmt.Fprintf(&b, "  [%s] %s\n", step.Status, truncateRunes(step.Text, 300))
 		}
 	}
 	if len(snap.Discoveries) > 0 {
 		b.WriteString("Discoveries:\n")
 		for _, d := range lastN(snap.Discoveries, 8) {
-			fmt.Fprintf(&b, "  - %s\n", d)
+			fmt.Fprintf(&b, "  - %s\n", truncateRunes(d, 300))
 		}
 	}
 	if len(snap.Blockers) > 0 {
 		b.WriteString("Open blockers:\n")
-		for _, blk := range snap.Blockers {
-			fmt.Fprintf(&b, "  - %s\n", blk)
+		for _, blk := range lastN(snap.Blockers, 8) {
+			fmt.Fprintf(&b, "  - %s\n", truncateRunes(blk, 300))
+		}
+		if len(snap.Blockers) > 8 {
+			fmt.Fprintf(&b, "  (... %d more blockers retained)\n", len(snap.Blockers)-8)
 		}
 	}
 	fmt.Fprintf(&b, "Verification: %s", snap.Verification)
@@ -302,6 +324,17 @@ func lastN(s []string, n int) []string {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
 }
 
 type ctxKey struct{}

@@ -24,6 +24,9 @@ const (
 	// DefaultReadMaxBytes bounds a single read_file result; larger
 	// files are refused with a note, not read partially.
 	DefaultReadMaxBytes = 5 << 20 // 5 MiB
+	// DefaultWriteMaxBytes bounds a single write_file content payload;
+	// larger writes are refused with a note instead of filling disk.
+	DefaultWriteMaxBytes = 5 << 20 // 5 MiB
 	// DefaultListMaxLines bounds list_files entries reported.
 	DefaultListMaxLines = 500
 	// DefaultSearchMaxLines bounds search_files matches reported.
