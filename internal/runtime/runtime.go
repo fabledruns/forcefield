@@ -1824,14 +1824,16 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 			response.Usage.PromptTokens, response.Usage.CompletionTokens,
 			response.Usage.TotalTokens, len(response.ToolCalls), time.Since(turnStart))
 
+		// Length exhaustion is incomplete, not success — with or without
+		// tool calls. A length-truncated turn may carry partial argument
+		// JSON; executing it would run an operation the model never
+		// completed. Block without executing so partial output is never
+		// confused with successful completion.
+		if response.StopReason == providers.FinishLength {
+			r.emitBlocked(emit, state, "model output truncated due to length limit (finish_reason=length) - response incomplete; retry with narrower tool output, fewer turns in context, or a model with a larger context window")
+			return
+		}
 		if len(response.ToolCalls) == 0 {
-			// Length exhaustion is incomplete, not success. If the model
-			// stopped because it hit its max tokens, the answer is truncated
-			// and the task should be marked blocked rather than done.
-			if response.StopReason == providers.FinishLength {
-				r.emitBlocked(emit, state, "model output truncated due to length limit (finish_reason=length) - response incomplete; retry with narrower tool output, fewer turns in context, or a model with a larger context window")
-				return
-			}
 			status := state.FinalStatus()
 			state.SetStatus(status)
 			emit(Event{Type: EventDone, Response: &response, Status: status, TaskState: snapshotPtr(state)})
@@ -2206,6 +2208,7 @@ func (r *Runtime) streamOneTurn(ctx context.Context, messages []providers.Messag
 
 	var response providers.Response
 	emitted := false
+	sawDone := false
 	// Select on ctx alongside the provider channel so a hung provider
 	// that never closes its stream cannot wedge the run forever: on
 	// cancellation the turn ends promptly, and the provider's own
@@ -2220,7 +2223,16 @@ func (r *Runtime) streamOneTurn(ctx context.Context, messages []providers.Messag
 				if err := ctx.Err(); err != nil {
 					return providers.Response{}, emitted, err
 				}
+				// A stream that closes without a terminal Done marker is
+				// incomplete, not success. Reporting it as a valid turn
+				// would confuse partial output with completion.
+				if !sawDone {
+					return providers.Response{}, emitted, fmt.Errorf("model stream ended without a terminal marker (incomplete response)")
+				}
 				return response, emitted, nil
+			}
+			if event.Done {
+				sawDone = true
 			}
 			if event.Err != nil {
 				return providers.Response{}, emitted, redact.ScrubError(fmt.Errorf("model stream failed: %w", event.Err))

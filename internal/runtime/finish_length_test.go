@@ -46,19 +46,17 @@ func TestFinishLengthIsBlockedNotDone(t *testing.T) {
 	}
 }
 
-func TestFinishLengthWithToolCallsIsNotBlocked(t *testing.T) {
-	// If model returns tool calls together with length, we still execute tools
-	// (length refers to content, not tool calls). This test ensures we don't
-	// block when tool calls are present.
-	tool := &fixedResultTool{name: "echo"}
-	manager := newTestManager(t, tool)
+func TestFinishLengthWithToolCallsIsBlocked(t *testing.T) {
+	// P1.17 hardening (RC6): length-truncated tool calls must Block without
+	// executing. Partial argument JSON is not an operation the model
+	// completed; running it would confuse incomplete output with success.
+	// This replaces the RC5 behavior pinned here previously.
+	counter := &countingTool{}
+	manager := newTestManager(t, counter)
 	p := &scriptedProvider{
 		turns: [][]providers.StreamEvent{
 			{
-				{ToolCalls: []providers.ToolCall{{ID: "c1", Name: "echo", Arguments: map[string]any{"value": "x"}}}, StopReason: providers.FinishLength, Done: true},
-			},
-			{
-				{Text: "done", Done: true},
+				{ToolCalls: []providers.ToolCall{{ID: "c1", Name: "count", Arguments: map[string]any{}}}, StopReason: providers.FinishLength, Done: true},
 			},
 		},
 	}
@@ -72,7 +70,7 @@ func TestFinishLengthWithToolCallsIsNotBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamChat error = %v", err)
 	}
-	var sawDone, sawBlocked bool
+	var sawDone, sawBlocked, sawTool bool
 	for ev := range events {
 		if ev.Type == EventDone {
 			sawDone = true
@@ -80,13 +78,17 @@ func TestFinishLengthWithToolCallsIsNotBlocked(t *testing.T) {
 		if ev.Type == EventBlocked {
 			sawBlocked = true
 		}
+		if ev.Type == EventToolFinish || ev.Type == EventToolFailed {
+			sawTool = true
+		}
 	}
-	// With tool calls, FinishLength should still proceed to tool execution and not immediately block.
-	// The second turn ends with Done, so final should be Done, not Blocked due to first.
-	if sawBlocked {
-		t.Fatal("FinishLength with tool calls should not immediately block")
+	if !sawBlocked {
+		t.Fatal("FinishLength with tool calls must emit EventBlocked")
 	}
-	if !sawDone {
-		t.Fatal("expected eventual EventDone after tool execution")
+	if sawDone {
+		t.Fatal("FinishLength with tool calls must not emit EventDone")
+	}
+	if sawTool || counter.calls.Load() != 0 {
+		t.Fatal("FinishLength with tool calls must not execute tools")
 	}
 }
