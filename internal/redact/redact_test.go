@@ -102,6 +102,28 @@ func TestScrubMap(t *testing.T) {
 	}
 }
 
+func TestScrubMapNested(t *testing.T) {
+	// Regression for RC5 H04: nested env secrets persisted raw.
+	ResetSecrets()
+	defer ResetSecrets()
+	secret := "hf-nested-regression-0123456789"
+	AddSecret(secret)
+	in := map[string]any{
+		"env": map[string]any{"HF_TOKEN": secret, "list": []any{secret}},
+	}
+	out := ScrubMap(in)
+	env := out["env"].(map[string]any)
+	if strings.Contains(env["HF_TOKEN"].(string), secret) {
+		t.Fatalf("nested secret leaked: %q", env["HF_TOKEN"])
+	}
+	if strings.Contains(out["env"].(map[string]any)["list"].([]any)[0].(string), secret) {
+		t.Fatalf("slice secret leaked")
+	}
+	if in["env"].(map[string]any)["HF_TOKEN"] != secret {
+		t.Fatalf("ScrubMap mutated input")
+	}
+}
+
 func TestScrubError(t *testing.T) {
 	if ScrubError(nil) != nil {
 		t.Error("ScrubError(nil) != nil")

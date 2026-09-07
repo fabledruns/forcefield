@@ -141,23 +141,51 @@ func Scrub(content string) string {
 	return out
 }
 
-// ScrubMap returns a copy of args with every string value scrubbed.
-// Use it for persisted argument maps (pending tool calls, audit
-// records) so secrets in file paths, commands, or content never reach
-// disk. Non-string values pass through untouched.
+// ScrubMap returns a copy of args with every string value scrubbed,
+// recursing into nested maps and slices. Use it for persisted argument
+// maps (pending tool calls, audit records) so secrets in file paths,
+// commands, env blocks, or content never reach disk. Non-string scalars
+// pass through untouched. Inputs are never mutated.
 func ScrubMap(args map[string]any) map[string]any {
 	if args == nil {
 		return nil
 	}
 	out := make(map[string]any, len(args))
 	for k, v := range args {
-		if s, ok := v.(string); ok {
-			out[k] = Scrub(s)
-		} else {
-			out[k] = v
-		}
+		out[k] = scrubValue(v)
 	}
 	return out
+}
+
+// ScrubSlice returns a copy of items with every nested string scrubbed.
+func ScrubSlice(items []any) []any {
+	if items == nil {
+		return nil
+	}
+	out := make([]any, len(items))
+	for i, v := range items {
+		out[i] = scrubValue(v)
+	}
+	return out
+}
+
+func scrubValue(v any) any {
+	switch t := v.(type) {
+	case string:
+		return Scrub(t)
+	case map[string]any:
+		return ScrubMap(t)
+	case []any:
+		return ScrubSlice(t)
+	case []string:
+		out := make([]string, len(t))
+		for i, s := range t {
+			out[i] = Scrub(s)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // scrubError is an error with secrets scrubbed from its message. It
