@@ -69,6 +69,10 @@ type Job struct {
 	accessed time.Time
 	kill     func()
 	done     chan struct{}
+	// reaped closes only after cmd.Wait has returned and both output pipes
+	// have been drained/closed. It is stricter than done, which records the
+	// user-visible terminal state as soon as cancellation claims it.
+	reaped   chan struct{}
 	timer    *time.Timer
 	cleanups []func()
 }
@@ -185,12 +189,23 @@ func (r *JobRegistry) Start(ctx context.Context, command, cwd string, env []stri
 
 	r.sweep()
 
+	var completeRunCleanup func()
+	if control := tools.RunControlFromContext(ctx); control != nil {
+		completeRunCleanup = control.Add()
+	}
+	cleanupRegistration := func() {
+		if completeRunCleanup != nil {
+			completeRunCleanup()
+		}
+	}
+
 	prepared, err := r.executorFor().Prepare(ctx, sandbox.Request{
 		Command:  command,
 		Dir:      cwd,
 		ExtraEnv: env,
 	})
 	if err != nil {
+		cleanupRegistration()
 		return nil, err
 	}
 	cmd := prepared.Cmd
@@ -201,12 +216,14 @@ func (r *JobRegistry) Start(ctx context.Context, command, cwd string, env []stri
 
 	stdoutReader, stdoutWriter, err := os.Pipe()
 	if err != nil {
+		cleanupRegistration()
 		return nil, fmt.Errorf("shell job: create stdout pipe: %w", err)
 	}
 	stderrReader, stderrWriter, err := os.Pipe()
 	if err != nil {
 		_ = stdoutReader.Close()
 		_ = stdoutWriter.Close()
+		cleanupRegistration()
 		return nil, fmt.Errorf("shell job: create stderr pipe: %w", err)
 	}
 	cmd.Stdout = stdoutWriter
@@ -220,6 +237,7 @@ func (r *JobRegistry) Start(ctx context.Context, command, cwd string, env []stri
 		if prepared.Cleanup != nil {
 			prepared.Cleanup()
 		}
+		cleanupRegistration()
 		return nil, fmt.Errorf("shell job: start command: %w", err)
 	}
 	_ = stdoutWriter.Close()
@@ -235,6 +253,7 @@ func (r *JobRegistry) Start(ctx context.Context, command, cwd string, env []stri
 		output:    &shellOutput{max: r.outputCap()},
 		accessed:  now,
 		done:      make(chan struct{}),
+		reaped:    make(chan struct{}),
 		kill:      func() { _ = killProcessGroup(cmd) },
 	}
 	if prepared.Cleanup != nil {
@@ -264,6 +283,7 @@ func (r *JobRegistry) Start(ctx context.Context, command, cwd string, env []stri
 	})
 
 	go func() {
+		defer close(job.reaped)
 		waitErr := cmd.Wait()
 		// Bounded drain so an inherited pipe handle cannot wedge the
 		// reaper; then close readers to unblock the streamers.
@@ -287,6 +307,22 @@ func (r *JobRegistry) Start(ctx context.Context, command, cwd string, env []stri
 		}
 		job.finish(state, code, "")
 	}()
+
+	if control := tools.RunControlFromContext(ctx); control != nil {
+		go func() {
+			defer cleanupRegistration()
+			select {
+			case <-control.Done():
+				job.terminate(JobCancelled, -1, "cancelled with agent run")
+				<-job.reaped
+			case <-job.reaped:
+			}
+		}()
+	} else {
+		// No agent-run owner (for example a direct tool test): there is no
+		// cancellation coordinator to wait on.
+		cleanupRegistration()
+	}
 
 	snap := job.snapshot()
 	return &snap, nil

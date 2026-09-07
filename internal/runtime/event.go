@@ -20,6 +20,10 @@ const (
 	EventToolCancelled
 	EventToolDenied
 	EventDone
+	// EventCancelled reports caller-requested run cancellation. It is a
+	// terminal state distinct from EventError so consumers can return to an
+	// idle UI without presenting a user cancellation as a provider failure.
+	EventCancelled
 	EventError
 	// EventBlocked is emitted instead of EventDone when the runtime stops
 	// a task itself - an iteration/tool-call/failure limit was hit - as

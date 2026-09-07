@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -304,4 +305,78 @@ func TestRun_ContextCancellationStopsTheLoop(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("RunContext() error = %v, want context.Canceled", err)
 	}
+}
+
+func TestRun_RepeatedIdenticalToolExecutionStops(t *testing.T) {
+	turns := make([][]providers.StreamEvent, 4)
+	for i := range turns {
+		turns[i] = toolCallTurn(fmt.Sprintf("call-%d", i), "count")
+	}
+	provider := &scriptedProvider{turns: turns}
+	counter := &countingTool{}
+	rt := newTestRuntimeWithLimits(provider, Limits{MaxIterations: 10, MaxConsecutiveFailures: 10}, counter)
+
+	events, err := rt.StreamChat(context.Background(), []providers.Message{{Role: providers.UserRole, Content: "do it"}})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	_, done, blocked := collect(events)
+	if done != nil {
+		t.Fatal("repeated tool execution completed instead of stopping")
+	}
+	if blocked == nil || blocked.Err == nil || blocked.Err.Error() != "Agent stopped: repeated tool execution detected without meaningful progress." {
+		t.Fatalf("blocked = %+v, want repeated-execution reason", blocked)
+	}
+	if got := counter.calls.Load(); got != repeatedToolExecutionLimit {
+		t.Errorf("tool calls = %d, want %d before stop", got, repeatedToolExecutionLimit)
+	}
+}
+
+func TestRun_RepeatedFailedOperationStopsBeforeGenericFailureLimit(t *testing.T) {
+	turns := make([][]providers.StreamEvent, 4)
+	for i := range turns {
+		turns[i] = toolCallTurn(fmt.Sprintf("failed-%d", i), "failing")
+	}
+	provider := &scriptedProvider{turns: turns}
+	rt := newTestRuntimeWithLimits(provider, Limits{MaxIterations: 10, MaxConsecutiveFailures: 10}, failingTool{})
+
+	events, err := rt.StreamChat(context.Background(), []providers.Message{{Role: providers.UserRole, Content: "do it"}})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	_, _, blocked := collect(events)
+	if blocked == nil || blocked.Err == nil || blocked.Err.Error() != "Agent stopped: repeated tool execution detected without meaningful progress." {
+		t.Fatalf("blocked = %+v, want repeated-execution reason", blocked)
+	}
+	if got := provider.calls; got != repeatedToolExecutionLimit {
+		t.Errorf("provider calls = %d, want %d", got, repeatedToolExecutionLimit)
+	}
+}
+
+func TestRun_DifferentToolArgumentsRemainLegitimate(t *testing.T) {
+	turns := [][]providers.StreamEvent{
+		toolCallWithArgsTurn("one", "count", map[string]any{"path": "one"}),
+		toolCallWithArgsTurn("two", "count", map[string]any{"path": "two"}),
+		toolCallWithArgsTurn("three", "count", map[string]any{"path": "three"}),
+		{{Text: "done"}, {Done: true}},
+	}
+	provider := &scriptedProvider{turns: turns}
+	counter := &countingTool{}
+	rt := newTestRuntimeWithLimits(provider, Limits{MaxIterations: 10}, counter)
+
+	events, err := rt.StreamChat(context.Background(), []providers.Message{{Role: providers.UserRole, Content: "do it"}})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	_, done, blocked := collect(events)
+	if blocked != nil || done == nil {
+		t.Fatalf("done = %+v blocked = %+v, want normal completion", done, blocked)
+	}
+	if got := counter.calls.Load(); got != 3 {
+		t.Errorf("tool calls = %d, want 3", got)
+	}
+}
+
+func toolCallWithArgsTurn(id, name string, args map[string]any) []providers.StreamEvent {
+	return []providers.StreamEvent{{ToolCalls: []providers.ToolCall{{ID: id, Name: name, Arguments: args}}}, {Done: true}}
 }

@@ -106,9 +106,6 @@ var (
 				BorderForeground(colorBorder).
 				Padding(0, 1)
 
-	spinnerStyle = lipgloss.NewStyle().
-			Foreground(colorAccent)
-
 	// hoverEmphasisStyle marks the transcript block currently under the
 	// pointer: an underline on the block's summary line, nothing more.
 	hoverEmphasisStyle = lipgloss.NewStyle().

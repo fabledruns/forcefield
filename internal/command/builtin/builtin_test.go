@@ -16,6 +16,7 @@ import (
 type fakeContext struct {
 	lines    []string
 	cleared  bool
+	newed    bool
 	quit     bool
 	model    string
 	provider string
@@ -44,10 +45,11 @@ type fakeContext struct {
 func (f *fakeContext) Println(format string, args ...any) {
 	f.lines = append(f.lines, fmt.Sprintf(format, args...))
 }
-func (f *fakeContext) Clear()           { f.cleared = true }
-func (f *fakeContext) Quit()            { f.quit = true }
-func (f *fakeContext) Model() string    { return f.model }
-func (f *fakeContext) Provider() string { return f.provider }
+func (f *fakeContext) Clear()            { f.cleared = true }
+func (f *fakeContext) NewSession() error { f.newed = true; return nil }
+func (f *fakeContext) Quit()             { f.quit = true }
+func (f *fakeContext) Model() string     { return f.model }
+func (f *fakeContext) Provider() string  { return f.provider }
 
 func (f *fakeContext) SetModel(name string) error {
 	if f.setModelErr != nil {
@@ -204,6 +206,16 @@ func TestClear(t *testing.T) {
 	}
 	if !ctx.cleared {
 		t.Fatal("Clear.Execute did not call ctx.Clear()")
+	}
+}
+
+func TestNewSession(t *testing.T) {
+	ctx := &fakeContext{}
+	if err := NewNewSession().Execute(ctx, nil); err != nil {
+		t.Fatalf("NewSession.Execute returned an error: %v", err)
+	}
+	if !ctx.newed {
+		t.Fatal("NewSession.Execute did not call ctx.NewSession")
 	}
 }
 

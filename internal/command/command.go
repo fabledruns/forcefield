@@ -33,6 +33,8 @@ type AgentSummary struct {
 type Context interface {
 	Println(format string, args ...any)
 	Clear()
+	// NewSession persists and replaces the active conversation.
+	NewSession() error
 	Quit()
 	Model() string
 	Provider() string

@@ -19,6 +19,14 @@ type streamErrMsg struct {
 	err error
 	gen uint64
 }
+type streamCancelledMsg struct {
+	err error
+	gen uint64
+}
+type streamBlockedMsg struct {
+	err error
+	gen uint64
+}
 
 func waitForChunk(stream <-chan runtime.Event, gen uint64) tea.Cmd {
 	return func() tea.Msg {
@@ -27,6 +35,12 @@ func waitForChunk(stream <-chan runtime.Event, gen uint64) tea.Cmd {
 			return streamDoneMsg{gen: gen}
 		}
 
+		if event.Type == runtime.EventCancelled {
+			return streamCancelledMsg{err: event.Err, gen: gen}
+		}
+		if event.Type == runtime.EventBlocked {
+			return streamBlockedMsg{err: event.Err, gen: gen}
+		}
 		if event.Type == runtime.EventError || event.Err != nil {
 			return streamErrMsg{err: event.Err, gen: gen}
 		}

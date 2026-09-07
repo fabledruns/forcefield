@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -109,7 +108,13 @@ type model struct {
 	entries  []chatEntry
 	viewport viewport.Model
 	input    textarea.Model
-	spinner  spinner.Model
+
+	// loadingFrame is the current frame of the compact block loading
+	// indicator in the footer (see loading.go). It advances only on
+	// loadingTickMsg while waiting is true, so the animation runs solely
+	// during an active model/tool operation and never touches the
+	// transcript.
+	loadingFrame int
 
 	// activeTools maps a running tool call's ID to the index of its live
 	// status line in entries, so concurrent tool calls (the scheduler may
@@ -299,10 +304,6 @@ func newModel(cfg *config.Config, sess *session.Session, asker permissions.Asker
 func newModelWithConfig(cfg *config.Config, sess *session.Session, asker permissions.Asker) (model, error) {
 	input := newInput()
 
-	spin := spinner.New()
-	spin.Spinner = spinner.Dot
-	spin.Style = spinnerStyle
-
 	r, err := runtime.NewFromConfig(cfg)
 	if err != nil {
 		return model{}, fmt.Errorf("initialize runtime: %w", err)
@@ -338,7 +339,6 @@ func newModelWithConfig(cfg *config.Config, sess *session.Session, asker permiss
 		providerName: r.CurrentProvider(),
 		modelName:    r.CurrentModel(),
 		input:        input,
-		spinner:      spin,
 		viewport:     viewport.New(0, 0),
 		runtime:      r,
 		entries:      entries,
@@ -426,6 +426,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Ctrl+C is run control while anything belonging to an agent turn is
+		// active, even if a permission modal currently owns keyboard focus.
+		// Once idle it falls through to the existing quit behavior below.
+		if msg.Type == tea.KeyCtrlC && m.runActive() {
+			m.cancelActiveRun()
+			return m, nil
+		}
 		if m.permissionPrompt != nil {
 			if next, handled := m.handlePermissionKey(msg.String()); handled {
 				return next, nil
@@ -589,13 +596,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, nil
 
-	case spinner.TickMsg:
+	case streamCancelledMsg:
+		if msg.gen != m.streamGen {
+			return m, nil // stale
+		}
+		if m.session != nil && m.session.EndTurn(session.TurnCancelled, false) {
+			_ = m.session.Save()
+		}
+		m.stopStream(true)
+		m.entries = append(m.entries, chatEntry{Role: roleSystem, Content: "Run cancelled."})
+		m.refreshTranscript()
+		return m, nil
+
+	case streamBlockedMsg:
+		if msg.gen != m.streamGen {
+			return m, nil // stale
+		}
+		// The tool batch finished cleanly; the runtime stopped before asking
+		// for another model turn. Record that batch as complete, then show
+		// the user-facing safety reason as a system entry.
+		if m.session != nil && m.session.EndTurn(session.TurnComplete, true) {
+			_ = m.session.Save()
+		}
+		m.stopStream(true)
+		reason := "Agent stopped."
+		if msg.err != nil && strings.TrimSpace(msg.err.Error()) != "" {
+			reason = msg.err.Error()
+		}
+		m.entries = append(m.entries, chatEntry{Role: roleSystem, Content: reason})
+		m.refreshTranscript()
+		return m, nil
+
+	case loadingTickMsg:
+		// The block wave advances only while a run is in flight. Dropping
+		// the tick when waiting is false stops the chain cleanly on
+		// completion, error, or cancellation, and avoids re-rendering the
+		// transcript: only the footer reads loadingFrame.
 		if !m.waiting {
 			return m, nil
 		}
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+		m.loadingFrame++
+		// When degraded to static blocks there is no animation to advance,
+		// so don't schedule another tick and keep CPU at zero.
+		if !loadingSupportsGradient() {
+			return m, nil
+		}
+		return m, loadingTickCmd()
 	}
 
 	// Anything not handled above (mouse events, cursor-blink ticks, etc.)
@@ -638,10 +684,11 @@ func (m *model) stopStream(savePartial bool) {
 	m.stream = nil
 	m.waiting = false
 	m.status = ""
+	m.loadingFrame = 0
 	m.activeTools = make(map[string]int)
 	m.finishAssistantStream()
 	m.finishThinkingStream()
-	if savePartial {
+	if savePartial && m.session != nil {
 		if text := strings.TrimSpace(m.assistantBuffer); text != "" {
 			m.session.AddMessage("assistant", text)
 			_ = m.session.Save()
@@ -657,6 +704,30 @@ func (m *model) stopStream(savePartial bool) {
 		}
 	}
 	m.assistantBuffer = ""
+}
+
+// runActive reports whether the TUI still owns a context, stream, tool, or
+// permission prompt for an agent turn. It intentionally uses the runtime
+// stream lifecycle as the single source of truth instead of maintaining a
+// second agent state machine in the presentation layer.
+func (m *model) runActive() bool {
+	return m.waiting || m.stream != nil || m.cancelStream != nil || m.permissionPrompt != nil
+}
+
+// cancelActiveRun retires the current event generation before starting any
+// future work. Runtime serializes runs while the cancelled provider/tool
+// chain finishes cleanup, and the generation check prevents its late events
+// from touching this transcript or a newly-created session.
+func (m *model) cancelActiveRun() {
+	if !m.runActive() {
+		return
+	}
+	m.stopStream(true)
+	m.permissionPrompt = nil
+	m.picker = nil
+	m.selectPicker = nil
+	m.entries = append(m.entries, chatEntry{Role: roleSystem, Content: "Run cancelled."})
+	m.refreshTranscript()
 }
 
 // healSession recovers a session that may have been left mid-turn by a
@@ -929,8 +1000,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 
 	case tea.KeyCtrlC:
-		// Cancel the in-flight run (stopping tools and the producer
-		// goroutine) and persist any partial reply before quitting.
+		// Active runs are handled before modal/input dispatch in Update. At
+		// idle, preserve Ctrl+C as the explicit application quit shortcut.
 		m.stopStream(true)
 		m.quitting = true
 		return m, tea.Quit
@@ -980,9 +1051,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.layout()
 			return m, nil
 		}
-		if m.waiting {
+		if m.waiting && !isNewCommand(m.input.Value()) {
 			// A response is already in flight; ignore extra submits
-			// instead of queuing or dropping the in-progress request.
+			// instead of queuing or dropping the in-progress request. /new is
+			// deliberately allowed through so it can safely cancel and replace
+			// a live session.
 			return m, nil
 		}
 		started, quit := m.acceptInput()
@@ -1009,11 +1082,15 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.stream = stream
 		m.cancelStream = cancel
 		m.streamGen++
+		m.loadingFrame = 0
 
-		return m, tea.Batch(
-			m.spinner.Tick,
-			waitForChunk(stream, m.streamGen),
-		)
+		if loadingSupportsGradient() {
+			return m, tea.Batch(
+				loadingTickCmd(),
+				waitForChunk(stream, m.streamGen),
+			)
+		}
+		return m, waitForChunk(stream, m.streamGen)
 	case tea.KeyTab:
 		return m.handleTabComplete()
 	}
@@ -1027,6 +1104,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// is, so re-derive the viewport size from the current content.
 	m.layout()
 	return m, cmd
+}
+
+func isNewCommand(value string) bool {
+	parsed, ok := command.Parse(value)
+	return ok && parsed.Name == "new"
 }
 
 // acceptInput consumes the current input as a submitted prompt: it resets
@@ -1646,10 +1728,14 @@ func (m model) renderFooter() string {
 		if activity == "" && m.showActivity {
 			activity = "Working"
 		}
+		// The loading indicator is a fixed-width row of blocks at the
+		// start of the status line (bottom-left). It carries its own red
+		// gradient, so only the activity phrase takes statusBusyStyle;
+		// wrapping the blocks would flatten their per-block colors.
 		if activity != "" {
-			status = statusBusyStyle.Render(fmt.Sprintf("%s %s", m.spinner.View(), activity))
+			status = fmt.Sprintf("%s %s", m.renderLoading(), statusBusyStyle.Render(activity))
 		} else {
-			status = statusBusyStyle.Render(m.spinner.View())
+			status = m.renderLoading()
 		}
 	}
 

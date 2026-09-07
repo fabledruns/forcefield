@@ -18,6 +18,7 @@ func newRegistry() *command.Registry {
 	reg := command.NewRegistry()
 	reg.Register(builtin.NewExit())
 	reg.Register(builtin.NewClear())
+	reg.Register(builtin.NewNewSession())
 	reg.Register(builtin.NewModel())
 	reg.Register(builtin.NewProvider())
 	reg.Register(builtin.NewAgent())
@@ -71,6 +72,44 @@ func (m *model) Clear() {
 	m.assistantBuffer = ""
 	m.status = ""
 	m.permissionPrompt = nil
+}
+
+// NewSession persists the current conversation, cancels any active turn,
+// and adopts a freshly-created session. It intentionally uses session.New
+// (the same session-layer constructor as the CLI) rather than manufacturing
+// IDs or storage paths in the TUI.
+func (m *model) NewSession() error {
+	m.stopStream(true)
+	if m.session != nil {
+		if err := m.session.Save(); err != nil {
+			return fmt.Errorf("persist current session before creating a new one: %w", err)
+		}
+	}
+
+	next := session.New()
+	if m.runtime != nil {
+		next.Agent = m.runtime.CurrentAgent()
+	}
+	if err := next.Save(); err != nil {
+		return fmt.Errorf("persist new session: %w", err)
+	}
+
+	m.session = next
+	m.entries = nil
+	m.assistantBuffer = ""
+	m.activeTools = make(map[string]int)
+	m.permissionPrompt = nil
+	m.picker = nil
+	m.selectPicker = nil
+	m.waiting = false
+	m.status = ""
+	m.loadingFrame = 0
+	m.following = true
+	m.input.Reset()
+	m.suggestions = nil
+	m.tabMatches = nil
+	m.refreshTranscript()
+	return nil
 }
 
 // Quit marks the session to end; handleKey turns this into a tea.Quit.

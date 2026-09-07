@@ -58,6 +58,12 @@ const maxContextMessages = 100
 
 // Runtime is the main execution point for Forcefield.
 type Runtime struct {
+	// runMu serializes agent loops for this Runtime. A cancelled run can
+	// still be waiting for a provider or process to acknowledge context
+	// cancellation; starting the next prompt only after that cleanup avoids
+	// overlapping tool executions against the same session/runtime state.
+	runMu sync.Mutex
+
 	// mu guards the switchable run state below (agent, manager, provider,
 	// cfg, auth state, activeAgent). StreamChat snapshots this state under
 	// RLock so a background run never observes a mid-run SetAgent /
@@ -1619,13 +1625,30 @@ func (r *Runtime) StreamChat(ctx context.Context, messages []providers.Message) 
 			MessageCount: len(messages),
 		})
 	}
-	events := make(chan Event)
+	// One terminal event can remain buffered after an interactive consumer
+	// has detached on Ctrl+C. That lets the run goroutine finish cleanup
+	// instead of blocking forever trying to report cancellation.
+	events := make(chan Event, 1)
 	go func() {
 		defer close(events)
 		if tr != nil {
 			defer tr.Close()
 		}
+		r.runMu.Lock()
+		defer r.runMu.Unlock()
 		r.run(ctx, initial, func(event Event) bool {
+			if event.Type == EventCancelled {
+				// Cancellation is terminal and should not block teardown if the
+				// TUI retired this stream already. Normal events retain strict
+				// backpressure so consumers observe them in order.
+				select {
+				case events <- event:
+					traceEvent(tr, event)
+					return true
+				default:
+					return false
+				}
+			}
 			select {
 			case events <- event:
 				// Record what the consumer observed: dropped
@@ -1677,6 +1700,8 @@ func traceEvent(tr *trace.Run, e Event) {
 		tr.RunDone(string(e.Status), finalLen)
 	case EventError:
 		tr.RunError(e.Err)
+	case EventCancelled:
+		tr.RunError(e.Err)
 	case EventBlocked:
 		tr.RunBlocked(e.Err)
 	}
@@ -1723,6 +1748,11 @@ func (r *Runtime) RunContext(ctx context.Context, messages []providers.Message) 
 			return *event.Response, nil
 		case EventError:
 			return providers.Response{}, event.Err
+		case EventCancelled:
+			if event.Err != nil {
+				return providers.Response{}, event.Err
+			}
+			return providers.Response{}, context.Canceled
 		case EventBlocked:
 			return providers.Response{}, fmt.Errorf("task blocked: %w", event.Err)
 		}
@@ -1741,6 +1771,16 @@ const maxToolResultChars = 6000
 func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit func(Event) bool, snap runSnapshot, tr *trace.Run) {
 	state := task.New(goalFrom(messages))
 	ctx = task.WithState(ctx, state)
+	cleanup := tools.NewRunControl(ctx)
+	ctx = tools.WithRunControl(ctx, cleanup)
+	cancelled := func(err error) {
+		cleanup.Wait()
+		r.emitCancelled(emit, state, err)
+	}
+	if err := ctx.Err(); err != nil {
+		cancelled(err)
+		return
+	}
 
 	limits := snap.limits
 	// executed records every tool call ID that ran in this run, with
@@ -1748,8 +1788,13 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 	// instead of executing again, so a provider retry or a model echo
 	// can never duplicate a side-effecting tool call.
 	executed := make(map[string]executedCall)
+	loops := newLoopDetector()
 
 	for {
+		if err := ctx.Err(); err != nil {
+			cancelled(err)
+			return
+		}
 		iteration := state.BeginIteration()
 		if limits.MaxIterations > 0 && iteration > limits.MaxIterations {
 			r.emitBlocked(emit, state, fmt.Sprintf("stopped after %d iterations (maximum reached)", limits.MaxIterations))
@@ -1768,6 +1813,10 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 		response, err := r.runModelTurn(ctx, windowed, emit, snap)
 		if err != nil {
 			tr.TurnError(int64(iteration), err, time.Since(turnStart))
+			if cancellationErr(ctx, err) {
+				cancelled(cancellationCause(ctx, err))
+				return
+			}
 			emit(Event{Type: EventError, Err: err, TaskState: snapshotPtr(state)})
 			return
 		}
@@ -1804,10 +1853,11 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 			emit(Event{Type: EventError, Err: fmt.Errorf("tool system not initialized"), TaskState: snapshotPtr(state)})
 			return
 		}
+		loopCalls, loopIndexes := freshCallsForLoopDetection(response.ToolCalls, executed)
 		results := r.executeCalls(ctx, response.ToolCalls, emit, snap, executed)
 
 		if ctx.Err() != nil {
-			emit(Event{Type: EventError, Err: ctx.Err(), TaskState: snapshotPtr(state)})
+			cancelled(ctx.Err())
 			return
 		}
 
@@ -1825,12 +1875,40 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 			})
 		}
 
+		loopResults := make([]ToolResult, len(loopIndexes))
+		for i, index := range loopIndexes {
+			loopResults[i] = results[index]
+		}
+		if loops.Observe(loopCalls, loopResults) {
+			r.emitBlocked(emit, state, "Agent stopped: repeated tool execution detected without meaningful progress.")
+			return
+		}
+
 		if limits.MaxConsecutiveFailures > 0 && state.ConsecutiveFailures() >= limits.MaxConsecutiveFailures {
 			r.emitBlocked(emit, state, fmt.Sprintf(
 				"stopped after %d consecutive tool failures - the agent appears stuck", state.ConsecutiveFailures()))
 			return
 		}
 	}
+}
+
+// freshCallsForLoopDetection excludes a provider replay of an already-seen
+// call ID. executeCalls reuses that result without invoking a tool, so it is
+// not repeated execution and cannot cause side effects. Fresh IDs (and calls
+// without IDs) remain visible to the progress guard.
+func freshCallsForLoopDetection(calls []providers.ToolCall, executed map[string]executedCall) ([]providers.ToolCall, []int) {
+	fresh := make([]providers.ToolCall, 0, len(calls))
+	indexes := make([]int, 0, len(calls))
+	for i, call := range calls {
+		if call.ID != "" {
+			if _, exists := executed[call.ID]; exists {
+				continue
+			}
+		}
+		fresh = append(fresh, call)
+		indexes = append(indexes, i)
+	}
+	return fresh, indexes
 }
 
 // executedCall is the recorded outcome of one tool call ID within a
@@ -1934,6 +2012,32 @@ func (r *Runtime) emitBlocked(emit func(Event) bool, state *task.State, reason s
 		TaskState: snapshotPtr(state),
 		Err:       fmt.Errorf("%s", reason),
 	})
+}
+
+// emitCancelled preserves cancellation as a first-class terminal result.
+// Providers may return context.Canceled directly or the caller's context
+// may have already been cancelled; both are a user/run-control outcome, not
+// a model-provider failure.
+func (r *Runtime) emitCancelled(emit func(Event) bool, state *task.State, err error) {
+	if err == nil {
+		err = context.Canceled
+	}
+	emit(Event{
+		Type:      EventCancelled,
+		TaskState: snapshotPtr(state),
+		Err:       err,
+	})
+}
+
+func cancellationErr(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, context.Canceled)
+}
+
+func cancellationCause(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
 }
 
 func snapshotPtr(state *task.State) *task.Snapshot {
