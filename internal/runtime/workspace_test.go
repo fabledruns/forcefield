@@ -100,7 +100,18 @@ func TestResolveWorkspace_EmptyRootGitFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveWorkspace: %v", err)
 	}
-	if root != plain {
+	// Compare canonical paths: on macOS t.TempDir() keeps the /var/...
+	// spelling while os.Getwd() returns /private/var/... for the same
+	// directory (/var is a symlink). Same normalization as the git branch.
+	wantPlain, _ := filepath.EvalSymlinks(plain)
+	gotRoot, _ := filepath.EvalSymlinks(root)
+	if wantPlain == "" {
+		wantPlain = plain
+	}
+	if gotRoot == "" {
+		gotRoot = root
+	}
+	if !strings.EqualFold(wantPlain, gotRoot) {
 		t.Errorf("root = %q, want cwd %q", root, plain)
 	}
 }
