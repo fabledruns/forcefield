@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -422,6 +423,41 @@ func (s *scheduler) setSessionDecision(tool string, d permissions.Decision) {
 	s.sessionAllow[tool] = d
 }
 
+// sessionAllowKey returns the session-scoped Always-allow lookup key for a
+// call. Command-oriented tools (shell, shell_job) scope by normalized
+// command text; all other tools have no meaningful operation identifier
+// and preserve the historical per-tool-name behavior.
+func sessionAllowKey(call providers.ToolCall) string {
+	switch call.Name {
+	case "shell", "shell_job":
+		if cmd, ok := normalizedCommand(call.Arguments); ok {
+			return call.Name + "\x00" + cmd
+		}
+	}
+	return call.Name
+}
+
+// normalizedCommand extracts the trimmed command text so semantically
+// identical approvals (e.g. extra surrounding whitespace) share one key.
+func normalizedCommand(args map[string]any) (string, bool) {
+	if args == nil {
+		return "", false
+	}
+	raw, ok := args["command"]
+	if !ok {
+		return "", false
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false
+	}
+	return s, true
+}
+
 // checkPermission resolves a tool call's permission before execution.
 func (s *scheduler) checkPermission(ctx context.Context, call providers.ToolCall, emit func(Event) bool) (denied bool, result *ToolResult) {
 	return s.checkPermissionWithManager(ctx, call, emit, s.getManager())
@@ -435,20 +471,22 @@ func (s *scheduler) checkPermissionWithManager(ctx context.Context, call provide
 	}
 
 	// Session-scoped Always allow/deny takes precedence over persisted rules.
-	if d, ok := s.getSessionDecision(call.Name); ok {
-		if d == permissions.Allow {
-			// Even session-allowed tools still require explicit approval for
-			// sensitive files; otherwise a single Always allow would bypass
-			// the sensitive-file guard.
-			if isSensitiveCall(call) {
-				// Fall through to Ask path
-			} else {
-				return false, nil
-			}
-		} else if d == permissions.Deny {
-			result = s.deniedResult(call, fmt.Sprintf("permission denied for tool %q", call.Name))
-			emit(Event{Type: EventToolDenied, ToolResult: result})
-			return true, result
+	// Deny stays per-tool-name (fail-closed); Allow is operation-scoped
+	// via sessionAllowKey so one "Always allow shell" authorizes only the
+	// approved command, not every future command in the session.
+	if d, ok := s.getSessionDecision(call.Name); ok && d == permissions.Deny {
+		result = s.deniedResult(call, fmt.Sprintf("permission denied for tool %q", call.Name))
+		emit(Event{Type: EventToolDenied, ToolResult: result})
+		return true, result
+	}
+	if d, ok := s.getSessionDecision(sessionAllowKey(call)); ok && d == permissions.Allow {
+		// Even session-allowed operations still require explicit approval
+		// for sensitive files; otherwise a single Always allow would bypass
+		// the sensitive-file guard.
+		if isSensitiveCall(call) {
+			// Fall through to Ask path
+		} else {
+			return false, nil
 		}
 	}
 
@@ -537,8 +575,13 @@ func (s *scheduler) resolveAskWithManager(ctx context.Context, call providers.To
 	if prompt.Persist() {
 		// Session-scoped: do not persist globally to config.yaml. This
 		// prevents a single "Always allow shell" from permanently widening
-		// the tool's scope for all future sessions.
-		s.setSessionDecision(call.Name, prompt.Decision())
+		// the tool's scope for all future sessions. Allow is stored under
+		// the operation-scoped key; Deny stays per-tool-name (fail-closed).
+		if prompt.Decision() == permissions.Allow {
+			s.setSessionDecision(sessionAllowKey(call), permissions.Allow)
+		} else {
+			s.setSessionDecision(call.Name, permissions.Deny)
+		}
 	}
 
 	return prompt.Decision(), nil

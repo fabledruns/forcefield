@@ -153,12 +153,15 @@ If you ever see stronger wording than this table allows, that is a bug.
   sensitive files during traversal. Lexical only: a renamed/symlinked
   sensitive file outside those patterns is not caught — treat as
   defense-in-depth, not a boundary.
-- **Session `Always allow` is per-tool-name, session-scoped, and never
-  persisted to `config.yaml`.** One `Always allow shell` authorizes any
-  future shell command in that session (still gated by the interactive
-  and WSL lexical refusals). Sensitive-file calls still prompt even
-  under `Always allow`. Cross-agent switches retain session decisions
-  for shared tools — re-prompt on agent switch for high-risk tools.
+- **Session `Always allow` is session-scoped and never persisted to
+  `config.yaml`.** For `shell`/`shell_job`, `Always allow` is scoped to
+  the normalized command text: approving one command does not authorize
+  a different command (still gated by the interactive and WSL lexical
+  refusals). Other tools without a meaningful operation identifier keep
+  per-tool-name scope; `Always deny` stays per-tool-name (fail-closed).
+  Sensitive-file calls still prompt even under `Always allow`.
+  Cross-agent switches retain session decisions for shared tools —
+  re-prompt on agent switch for high-risk tools.
 - **Shell command text is never confined, in any mode.** Strict/WSL pin
   the working directory and cage filesystem *tools*; `cat /etc/passwd`
   or `/mnt/c/...` in command text is gated only by permissions (`ask`)

@@ -320,3 +320,14 @@ remain accepted/deferred per §6). The system now fails safely, recovers
 correctly, remains bounded on every hot path, and — critically — no
 longer lies about what it enforces. That is what this milestone set out
 to prove.
+
+---
+
+## Post-RC6 changes (added 2026-09-08, reconciliation pass)
+
+Two RC6 statements are superseded by later work; the milestone conclusions stand otherwise:
+
+- RC6 §6 listed FF-SEC-003 per-command scoping as deferred. It has since landed (working tree, uncommitted at reconciliation time): Always allow for shell/shell_job is now scoped by tool + normalized command text, AlwaysDeny stays broad per-tool, sensitive escalation unchanged. Status: FIXED WITH LIMITATIONS (TrimSpace-only normalization; cwd/env/timeout not in key; non-command tools stay per-tool; no expiry). Proof: internal/runtime/scheduler_always_scope_test.go (5 new tests) + full suite/vet/build/gofmt + race on runtime/session. See audit/RECONCILIATION.md §1.
+- RC6 §6 listed the Strict FilesystemConfined overclaim as fixed, and §8/§12 as honest. Re-verified current: internal/sandbox/native.go:72-99 reports FilesystemConfined:false with an explicit shell-text note (+ honesty test). No other RC6 accepted/deferred item was found mislabeled.
+
+Current score and verdict live in audit/RECONCILIATION.md (§§4-5), not here.

@@ -828,3 +828,9 @@ P0 set (§36 immediate): (1) sliding window + `FinishLength` blocked, (2) `read_
 
 *Report saved as `AUDIT_REPORT.md` per spec §41-43. No repository files were modified except this report.*
 
+
+---
+
+## Historical snapshot note (added 2026-09-08, reconciliation pass)
+
+This report is a historical snapshot of target 10e62a+dirty (score 38/100 in §1, 40/100 in §30; verdict NOT YET). Do not read its scores, verdicts, or file:line references as current. See audit/RECONCILIATION.md for the finding-by-finding reconciliation against current HEAD, the current score (68/100), and the current verdict. Original IDs and conclusions are preserved above for traceability.

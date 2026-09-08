@@ -216,3 +216,9 @@ What Commit 100 accomplished: committed P0-P1.14 real — header-only timeouts, 
 What still prevents prod-grade: native/permissive + auto-allow (zero-click exfil); shell text unconfined every mode (lexical WSL not cage, job lacks it, Strict overclaims); per-name Always; unescaped fence + unfenced memory + shallow nested scrub; FinishLength-with-calls exec; system bypassing budget + unbounded task/memory/file-count + silent-drop + no rotation/GC/delete/log/restart; mid-stream + slow-TTFB fatal; last-wins sessions; Windows/WSL pgroup gaps; D1-D4 + cwd traps + stdout pollution; dirty-tree irreproducibility. Fix those, add soak+chaos+red-team, pin CUE/signing/version, then CONDITIONAL GO long-horizon under strict + tmux + monitored billing + manual resume — not yet unattended 5-day or adversarial production.
 
 *Audit only. No source modified. Dirty files (loop_detector.go, run_control.go, loading.go, new.go, modified runtime.go/event.go/jobs.go/model.go/messages.go/commands.go/styles.go/go.mod) mean HEAD alone does not reproduce this report — commit or stash before hardening.*
+
+---
+
+## Historical snapshot note (added 2026-09-08, reconciliation pass)
+
+This report is a historical snapshot of target 136c0b4+dirty (Engineering 68 / Security 52 / Reliability 64 / UX 70 / Long-Horizon 48 / Production 55). Do not read its scores, verdicts, or file:line references as current. See udit/RECONCILIATION.md for the finding-by-finding reconciliation against current HEAD. Original IDs and conclusions are preserved above for traceability.
