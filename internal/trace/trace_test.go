@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -261,5 +262,230 @@ func TestNilTracer(t *testing.T) {
 	}
 	if r := tr.StartRun("x", RunMeta{}); r != nil {
 		t.Error("nil tracer StartRun returned a run")
+	}
+}
+
+// seedTraceFile writes one aged trace file directly, bypassing the
+// tracer, so retention tests control exact modtimes.
+func seedTraceFile(t *testing.T, dir, name string, age time.Duration) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("{\"type\":\"run_start\",\"run\":"+"\""+name+"\"}\n"), 0o600); err != nil {
+		t.Fatalf("seed %s: %v", name, err)
+	}
+	stale := time.Now().Add(-age)
+	if err := os.Chtimes(path, stale, stale); err != nil {
+		t.Fatalf("chtimes %s: %v", name, err)
+	}
+}
+
+func countTraceFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".jsonl" {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
+func TestRetentionPrunesOldestBeyondCap(t *testing.T) {
+	dir := t.TempDir()
+	// Fill past the cap with old files: run-00 oldest, run-69 newest.
+	for i := 0; i < maxTraceFiles+6; i++ {
+		seedTraceFile(t, dir, fmt.Sprintf("%02d", i)+".jsonl", 2*time.Hour)
+	}
+	tr := New(true, dir)
+	r := tr.StartRun("fresh", RunMeta{})
+	if r == nil {
+		t.Fatal("StartRun returned nil")
+	}
+	defer r.Close()
+
+	// Newest 63 old files plus the fresh one: total exactly the cap,
+	// oldest 7 evicted.
+	names := countTraceFiles(t, dir)
+	if len(names) != maxTraceFiles {
+		t.Fatalf("files = %d, want exactly the %d-file cap", len(names), maxTraceFiles)
+	}
+	present := make(map[string]bool, len(names))
+	for _, n := range names {
+		present[n] = true
+	}
+	for i := 0; i < 7; i++ {
+		if present[fmt.Sprintf("%02d", i)+".jsonl"] {
+			t.Errorf("%d.jsonl should have been pruned as oldest", i)
+		}
+	}
+	if !present["fresh.jsonl"] {
+		t.Error("the just-created run must never be pruned")
+	}
+	// Survivors stay complete and parseable.
+	for _, n := range names {
+		readLines(t, filepath.Join(dir, n))
+	}
+}
+
+func TestRetentionKeepsFreshFiles(t *testing.T) {
+	dir := t.TempDir()
+	// Over the cap, but all recently written: a sibling run may still be
+	// appending, so nothing may go even though the count exceeds the cap.
+	for i := 0; i < maxTraceFiles+4; i++ {
+		seedTraceFile(t, dir, fmt.Sprintf("%02d", i)+".jsonl", time.Minute)
+	}
+	tr := New(true, dir)
+	r := tr.StartRun("fresh", RunMeta{})
+	if r == nil {
+		t.Fatal("StartRun returned nil")
+	}
+	defer r.Close()
+
+	names := countTraceFiles(t, dir)
+	if len(names) != maxTraceFiles+5 {
+		t.Errorf("files = %d, want all %d fresh files kept", len(names), maxTraceFiles+5)
+	}
+}
+
+func TestRetentionNeverDeletesOpenRun(t *testing.T) {
+	dir := t.TempDir()
+	tr := New(true, dir)
+	// An open run whose file LOOKS ancient (clock skew, restored backup)
+	// must still survive its own tracer's retention.
+	r := tr.StartRun("ancient", RunMeta{})
+	if r == nil {
+		t.Fatal("StartRun returned nil")
+	}
+	path := filepath.Join(dir, "ancient.jsonl")
+	stale := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(path, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxTraceFiles+3; i++ {
+		seedTraceFile(t, dir, fmt.Sprintf("%02d", i)+".jsonl", 2*time.Hour)
+	}
+	second := tr.StartRun("second", RunMeta{})
+	if second == nil {
+		t.Fatal("second StartRun returned nil")
+	}
+	defer r.Close()
+	defer second.Close()
+
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("open run file was pruned: %v", err)
+	}
+	// The open run stays writable after retention ran around it.
+	r.TurnStart(1, 2, 3)
+	lines := readLines(t, path)
+	if len(lines) != 2 || lines[1]["type"] != "turn_start" {
+		t.Errorf("open run not appendable after prune: %+v", lines)
+	}
+}
+
+func TestRetentionIgnoresForeignFiles(t *testing.T) {
+	dir := t.TempDir()
+	// Only .jsonl files are retention candidates; everything else —
+	// notes, lockfiles, subdirectories — is left alone.
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "sub.jsonl"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxTraceFiles+2; i++ {
+		seedTraceFile(t, dir, fmt.Sprintf("%02d", i)+".jsonl", 2*time.Hour)
+	}
+	tr := New(true, dir)
+	r := tr.StartRun("fresh", RunMeta{})
+	if r == nil {
+		t.Fatal("StartRun returned nil")
+	}
+	defer r.Close()
+
+	if _, err := os.Stat(filepath.Join(dir, "notes.md")); err != nil {
+		t.Errorf("non-trace file removed: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(dir, "sub.jsonl")); err != nil || !info.IsDir() {
+		t.Errorf("directory removed or mangled: %v", err)
+	}
+	if len(countTraceFiles(t, dir)) != maxTraceFiles {
+		t.Errorf("trace files not pruned to the cap")
+	}
+}
+
+func TestRetentionRepeatedStartsStayBounded(t *testing.T) {
+	dir := t.TempDir()
+	tr := New(true, dir)
+	// Long-running operation: many sequential runs, each closed.
+	for i := 0; i < maxTraceFiles+20; i++ {
+		r := tr.StartRun(fmt.Sprintf("%02d", i), RunMeta{})
+		if r == nil {
+			t.Fatalf("StartRun %d returned nil", i)
+		}
+		r.TurnStart(1, 1, 1)
+		r.Close()
+		// Age files out of the freshness window as the run goes so the
+		// steady state (not just fresh-file overshoot) is exercised.
+		stale := time.Now().Add(-2 * time.Hour)
+		_ = os.Chtimes(filepath.Join(dir, fmt.Sprintf("%02d", i)+".jsonl"), stale, stale)
+	}
+	if names := countTraceFiles(t, dir); len(names) != maxTraceFiles {
+		t.Errorf("files = %d, want steady state at the %d-file cap", len(names), maxTraceFiles)
+	}
+}
+
+func TestRetentionConcurrentStarts(t *testing.T) {
+	dir := t.TempDir()
+	tr := New(true, dir)
+	// Concurrent runs from scheduler-adjacent goroutines: every StartRun
+	// must succeed and no file may be half-pruned (prune only unlinks).
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r := tr.StartRun("c"+fmt.Sprintf("%02d", i), RunMeta{})
+			if r == nil {
+				t.Errorf("concurrent StartRun %d returned nil", i)
+				return
+			}
+			r.TurnStart(1, 1, 1)
+			r.Close()
+		}(i)
+	}
+	wg.Wait()
+	for _, n := range countTraceFiles(t, dir) {
+		readLines(t, filepath.Join(dir, n)) // every survivor parses
+	}
+}
+
+func TestRetentionCrashAbandonedFileSurvives(t *testing.T) {
+	dir := t.TempDir()
+	tr := New(true, dir)
+	// Simulate a killed process: run abandoned without Close.
+	abandoned := tr.StartRun("crashed", RunMeta{})
+	if abandoned == nil {
+		t.Fatal("StartRun returned nil")
+	}
+	abandoned.TurnStart(7, 3, 100)
+	// No Close during the test: a fresh tracer (new process) must still
+	// read it, and its own retention must not reap another process's
+	// recent file. (Closed in cleanup only so TempDir removal succeeds
+	// on Windows, where open files cannot be deleted.)
+	t.Cleanup(abandoned.Close)
+	tr2 := New(true, dir)
+	next := tr2.StartRun("next", RunMeta{})
+	if next == nil {
+		t.Fatal("second StartRun returned nil")
+	}
+	defer next.Close()
+
+	lines := readLines(t, filepath.Join(dir, "crashed.jsonl"))
+	if len(lines) != 2 || lines[1]["type"] != "turn_start" {
+		t.Errorf("abandoned run unreadable: %+v", lines)
 	}
 }

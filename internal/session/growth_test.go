@@ -35,3 +35,43 @@ func TestSessionCompaction_ProviderMessagesStillFenced(t *testing.T) {
 		t.Fatalf("ProviderMessages should be bounded, got %d", len(msgs))
 	}
 }
+
+// TestSessionCompaction_ResumeAfterCompaction pins the resume path for a
+// long-running session: after compaction, save/load round-trips and the
+// replayed history keeps the original goal plus recent turns, with the
+// observability marker skipped (never sent to the provider).
+func TestSessionCompaction_ResumeAfterCompaction(t *testing.T) {
+	_ = chdirTemp(t)
+	s := New()
+	s.AddMessage("user", "original goal")
+	for i := 0; i < maxSessionMessages+100; i++ {
+		s.AddMessage("user", fmt.Sprintf("turn %d", i))
+		s.AddMessage("assistant", fmt.Sprintf("reply %d", i))
+	}
+	if s.Compacted == 0 {
+		t.Fatal("expected compaction to drop messages")
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	resumed, err := Load(s.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if resumed.Compacted != s.Compacted {
+		t.Errorf("Compacted = %d after reload, want %d", resumed.Compacted, s.Compacted)
+	}
+	replay := resumed.ProviderMessages()
+	if len(replay) == 0 || replay[0].Content != "original goal" {
+		t.Errorf("replay lost the original goal: %+v", replay[:1])
+	}
+	last := replay[len(replay)-1]
+	if last.Content != fmt.Sprintf("reply %d", maxSessionMessages+99) {
+		t.Errorf("replay lost the most recent turn: %q", last.Content)
+	}
+	for _, m := range replay {
+		if string(m.Role) == "system" {
+			t.Errorf("replay leaked a system marker to the provider: %+v", m)
+		}
+	}
+}

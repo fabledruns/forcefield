@@ -175,6 +175,14 @@ byte-capped. Crash-abandoned files stay on disk for post-mortem use.
 Text/thinking deltas are not recorded — turn boundaries plus tool
 start/outcome pairs carry the signal.
 
+Trace directory retention is deterministic and automatic: at most 64
+trace files are kept per directory (worst case 64 × 4 MiB), oldest
+first, enforced once per run start — never on the event hot path.
+Files the tracer has open and files written within the last hour are
+never deleted, so an active or sibling run cannot lose its trace; every
+retention failure is skipped silently. Retention only unlinks closed
+old files, so a crash can only leave fewer complete files behind.
+
 ## Design Notes
 
 - The runtime owns the multi-turn tool loop. Providers stream only one turn.

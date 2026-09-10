@@ -88,6 +88,11 @@ Example:
     └── e5f6g7h8-....json
 ```
 
+Session files accumulate — one per created session — and are never
+deleted automatically: every file may be needed for a future resume, so
+retention is manual (delete files you no longer need). Each individual
+file stays bounded through the message cap above.
+
 ## Functions
 
 ### `New`

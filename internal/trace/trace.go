@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -28,6 +29,27 @@ const snippetCap = 1024
 // maxFileBytes bounds one run's trace file; past it the tracer writes
 // a single truncation line and drops the rest.
 const maxFileBytes = 4 << 20
+
+// maxTraceFiles bounds how many trace files one directory may hold
+// (worst case maxTraceFiles × maxFileBytes on disk). The per-file cap
+// alone cannot bound disk use over long unattended runs: every run
+// opens its own file, so without retention the directory grows without
+// bound. Retention runs once per StartRun — never on the per-event hot
+// path — and deletes oldest-first down to the cap. It never deletes a
+// file this process has open, never deletes files newer than
+// minTraceFileAge (a sibling process may still be appending to an old
+// file), and ignores every error: tracing must never fail the run it
+// observes, and a crash mid-prune only ever leaves a valid subset of
+// complete files behind.
+const maxTraceFiles = 64
+
+// minTraceFileAge protects recently-written files from retention. New
+// files are always younger, and any live run appends at least every few
+// minutes (turn boundaries), so an hour of quiet means no local run is
+// still writing that file. Files younger than this stay even when the
+// directory is over the cap; the next StartRun past the hour prunes
+// them, so the overshoot is bounded by one hour of file creation.
+const minTraceFileAge = time.Hour
 
 // defaultDir is used when no directory is configured. It is resolved
 // against the process working directory at first use, next to sessions.
@@ -102,11 +124,77 @@ func (t *Tracer) StartRun(runID string, meta RunMeta) *Run {
 	t.mu.Lock()
 	t.runs[runID] = r
 	t.mu.Unlock()
+	pruneOldRuns(t, dir, runID+".jsonl")
 	r.emit("run_start", 0, "", "", "", nil, 0, 0, nil, "", "", map[string]any{
 		"provider": meta.Provider, "model": meta.Model,
 		"agent": meta.Agent, "messages": meta.MessageCount,
 	})
 	return r
+}
+
+// pruneOldRuns enforces maxTraceFiles on dir, oldest-first. keep is the
+// just-created file, always preserved. Files this tracer currently has
+// open are preserved too (a run must never lose its own active trace),
+// as are files newer than minTraceFileAge (a sibling process may still
+// be appending). Only deletions happen here — file contents are never
+// modified — so a crash can only leave fewer complete files, never a
+// damaged active trace. Every failure is skipped silently: retention is
+// best-effort diagnostics hygiene, never load-bearing.
+func pruneOldRuns(t *Tracer, dir, keep string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	open := make(map[string]struct{})
+	if t != nil {
+		t.mu.Lock()
+		for id := range t.runs {
+			open[id+".jsonl"] = struct{}{}
+		}
+		t.mu.Unlock()
+	}
+	open[keep] = struct{}{}
+
+	type candidate struct {
+		name string
+		mod  time.Time
+	}
+	var candidates []candidate
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
+			continue
+		}
+		if _, ok := open[entry.Name()]; ok {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, candidate{name: entry.Name(), mod: info.ModTime()})
+	}
+	// Oldest first; name tie-break keeps the choice deterministic when
+	// timestamps tie (coarse filesystems, same-second creation bursts).
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].mod.Equal(candidates[j].mod) {
+			return candidates[i].name < candidates[j].name
+		}
+		return candidates[i].mod.Before(candidates[j].mod)
+	})
+	// Reserve one slot for the just-created file.
+	over := len(candidates) - (maxTraceFiles - 1)
+	if over <= 0 {
+		return
+	}
+	now := time.Now()
+	for i := 0; i < over && i < len(candidates); i++ {
+		if now.Sub(candidates[i].mod) < minTraceFileAge {
+			continue
+		}
+		// Best-effort: a sibling holding the file open (Windows sharing
+		// violation) or a concurrent pruner just means "try next run".
+		_ = os.Remove(filepath.Join(dir, candidates[i].name))
+	}
 }
 
 // Run is one run's append handle. All methods are nil-safe no-ops so
