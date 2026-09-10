@@ -387,3 +387,60 @@ func TestValidatePermissionValues(t *testing.T) {
 		t.Error("validatePermissionValue(\"maybe\") = nil, want error")
 	}
 }
+
+// TestDefaultRuntimeToolsResolveToAsk pins the N16 contract: the shipped
+// default config has no explicit allow entry for the runtime-registered
+// load_skill/update_task_state tools, so they resolve through
+// permissions.default ("ask") and stay fail-closed. cue/tools.cue
+// documents the same effective default; all three sides must agree.
+func TestDefaultRuntimeToolsResolveToAsk(t *testing.T) {
+	isolateHome(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Permissions.Default != "ask" {
+		t.Fatalf("default permissions = %q, want ask (the fail-closed fallback)", cfg.Permissions.Default)
+	}
+	for _, tool := range []string{"load_skill", "update_task_state"} {
+		if got, ok := cfg.Permissions.Tools[tool]; ok && got == "allow" {
+			t.Errorf("default permissions.tools.%s = allow, want unset (ask via default)", tool)
+		}
+	}
+}
+
+func TestLoadRejectsNegativeAgentLimits(t *testing.T) {
+	for name, body := range map[string]string{
+		"global max_iterations":     "agent:\n  max_iterations: -5\n",
+		"global max_tool_calls":     "agent:\n  max_tool_calls: -1\n",
+		"global max_failures":       "agent:\n  max_consecutive_failures: -2\n",
+		"global context_window":     "agent:\n  context_window: -100\n",
+		"global context_reserve":    "agent:\n  context_reserve: -10\n",
+		"global context_messages":   "agent:\n  max_context_messages: -3\n",
+		"per-agent max_iterations":  "agents:\n  coding:\n    max_iterations: -5\n",
+		"per-agent context_window":  "agents:\n  coding:\n    context_window: -100\n",
+		"per-agent max_tool_calls":  "agents:\n  legal:\n    max_tool_calls: -1\n",
+		"per-agent context_reserve": "agents:\n  docs:\n    context_reserve: -4\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			isolateHome(t)
+			writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n"+body)
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() accepted negative limit (%s): silently defaulting would hide a typo", name)
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsZeroAgentLimits(t *testing.T) {
+	// Zero keeps its documented meaning (fall back to the default) and
+	// must load; only negatives are rejected.
+	isolateHome(t)
+	writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n"+
+		"agent:\n  max_iterations: 0\n  max_tool_calls: 0\n  context_window: 0\n"+
+		"agents:\n  coding:\n    max_iterations: 0\n    context_window: 0\n")
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load() rejected zero limits, want them valid: %v", err)
+	}
+}

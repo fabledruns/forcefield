@@ -99,3 +99,41 @@ func TestSave_HandlesDiskFullSimulatedViaReadOnlyDir(t *testing.T) {
 		t.Errorf("original file should still be loadable after failed save: %v", err)
 	}
 }
+
+func TestSave_FailureRestoresCompactedCount(t *testing.T) {
+	_ = chdirTemp(t)
+	s := New()
+	s.AddMessage("user", "goal")
+	if err := s.Save(); err != nil {
+		t.Fatalf("initial Save failed: %v", err)
+	}
+	baseCompacted := s.Compacted
+	baseLen := len(s.Messages)
+
+	// Push past the compaction bound by direct append (bypassing
+	// AddMessage's own compaction) so Save itself performs the drop.
+	for i := 0; i < maxSessionMessages; i++ {
+		s.Messages = append(s.Messages, Message{Role: "user", Content: "filler"})
+	}
+	if len(s.Messages) <= maxSessionMessages {
+		t.Fatalf("setup failed: %d messages within bound %d", len(s.Messages), maxSessionMessages)
+	}
+
+	// Break the destination so Save compacts in memory, then fails.
+	path := filepath.Join(".forcefield", "sessions", s.ID+".json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(); err == nil {
+		t.Fatal("expected Save to fail when destination is a directory")
+	}
+	if s.Compacted != baseCompacted {
+		t.Errorf("Compacted = %d after failed save, want rolled-back %d", s.Compacted, baseCompacted)
+	}
+	if len(s.Messages) != baseLen+maxSessionMessages {
+		t.Errorf("messages = %d after failed save, want rolled-back %d", len(s.Messages), baseLen+maxSessionMessages)
+	}
+}

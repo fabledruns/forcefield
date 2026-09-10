@@ -400,6 +400,19 @@ func sessionEntries(sess *session.Session) []chatEntry {
 				Content: summary,
 				Tool:    rec,
 			})
+		case "system":
+			// Session compaction persists an observable "[compacted …]"
+			// system marker so dropped history is explicit in the file.
+			// Surface it as a quiet System entry so resumed transcripts
+			// show the gap instead of silently jumping. Any other system
+			// content stays dropped, as before.
+			if !strings.HasPrefix(msg.Content, "[compacted") {
+				continue
+			}
+			entries = append(entries, chatEntry{
+				Role:    roleSystem,
+				Content: msg.Content,
+			})
 		default:
 			continue
 		}

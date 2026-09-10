@@ -22,7 +22,20 @@ scrollable, persistent session instead of one command per question.`,
 	Args: cobra.NoArgs,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess := newChatSession()
+		var sess *session.Session
+
+		// Mirror the root command's --resume path: without this, the
+		// flag parses but is silently ignored and the user loses the
+		// session they asked to resume.
+		if resumeID != "" {
+			loaded, err := loadSession(resumeID)
+			if err != nil {
+				return err
+			}
+			sess = loaded
+		} else {
+			sess = newChatSession()
+		}
 		if agentFlag != "" {
 			sess.Agent = agentFlag
 			_ = sess.Save()
@@ -32,5 +45,16 @@ scrollable, persistent session instead of one command per question.`,
 }
 
 func init() {
+	// Register --resume on the shared resumeID var so `ff chat --resume
+	// <id>` enters the same resume path as `ff --resume <id>`. The root
+	// flag is command-local (not persistent), so without this the flag
+	// would be rejected here; binding the same var keeps one source of
+	// truth for which session to resume.
+	chatCmd.Flags().StringVar(
+		&resumeID,
+		"resume",
+		"",
+		"resume an existing session",
+	)
 	rootCmd.AddCommand(chatCmd)
 }

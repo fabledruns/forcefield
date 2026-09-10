@@ -120,6 +120,40 @@ func TestValidateAgents_UnknownSkillAllowedLenient(t *testing.T) {
 	}
 }
 
+func TestValidateAgents_NegativeLimitsRejected(t *testing.T) {
+	cases := map[string]AgentConfig{
+		"max_iterations":           {MaxIterations: -1},
+		"max_tool_calls":           {MaxToolCalls: -5},
+		"max_consecutive_failures": {MaxConsecutiveFailures: -2},
+		"context_window":           {ContextWindow: -100},
+		"context_reserve":          {ContextReserve: -10},
+		"max_context_messages":     {MaxContextMessages: -3},
+	}
+	for name, profile := range cases {
+		t.Run(name, func(t *testing.T) {
+			agents := map[string]AgentConfig{"coding": profile}
+			if err := validateAgents(agents); err == nil {
+				t.Fatalf("validateAgents accepted negative agents.coding.%s", name)
+			}
+		})
+	}
+}
+
+func TestValidateAgents_ZeroLimitsKeepDefaults(t *testing.T) {
+	// Zero is legitimate: it means "fall back to the default" at every
+	// resolution layer, so validation must let it through.
+	agents := map[string]AgentConfig{
+		"coding": {MaxIterations: 0, MaxToolCalls: 0, MaxConsecutiveFailures: 0},
+		"legal":  {ContextWindow: 0, ContextReserve: 0, MaxContextMessages: 0},
+	}
+	if err := validateAgents(agents); err != nil {
+		t.Fatalf("zero limits must stay valid (default fallback), got: %v", err)
+	}
+	if err := validateRunLimits("agent", 0, 0, 0, 0, 0, 0); err != nil {
+		t.Fatalf("zero global limits must stay valid, got: %v", err)
+	}
+}
+
 func TestConfig_LoadWithAgents(t *testing.T) {
 	dir := t.TempDir()
 	// Mock home by setting HOME env

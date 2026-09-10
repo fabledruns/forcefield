@@ -111,6 +111,12 @@ var quotaPhrases = []string{
 	"payment required",
 	"upgrade your",
 	"subscription",
+	// Provider-specific exhaustion codes that would otherwise read as a
+	// transient 429: Google's RESOURCE_EXHAUSTED and OpenAI-style
+	// insufficient_quota. Matching is case-insensitive (see
+	// quotaExhausted), so one lowercase form covers every casing.
+	"resource_exhausted",
+	"insufficient_quota",
 }
 
 // quotaExhausted reports whether a 429 body indicates quota/billing

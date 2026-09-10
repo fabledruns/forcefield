@@ -70,11 +70,13 @@ func (s *Session) Save() error {
 	// to that same version on failure.
 	origMessages := s.Messages
 	origUpdatedAt := s.UpdatedAt
+	origCompacted := s.Compacted
 	success := false
 	defer func() {
 		if !success {
 			s.Messages = origMessages
 			s.UpdatedAt = origUpdatedAt
+			s.Compacted = origCompacted
 		}
 	}()
 	s.compactIfNeeded()

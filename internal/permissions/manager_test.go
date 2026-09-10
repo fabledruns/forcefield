@@ -40,6 +40,31 @@ func TestCheckFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestRuntimeToolsDefaultToAsk pins the N16 contract at the enforcement
+// layer: under shipped-default rules (default ask, no per-tool entry),
+// load_skill and update_task_state must require approval, never
+// auto-allow. An explicit operator override still wins.
+func TestRuntimeToolsDefaultToAsk(t *testing.T) {
+	store := &memStore{rules: Rules{Default: Ask, Tools: map[string]Decision{}}}
+	m, err := NewManager(store)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	for _, tool := range []string{"load_skill", "update_task_state"} {
+		if got := m.Check(tool); got != Ask {
+			t.Errorf("Check(%s) = %v, want Ask (fail-closed default)", tool, got)
+		}
+	}
+
+	if err := m.Update("load_skill", Allow); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got := m.Check("load_skill"); got != Allow {
+		t.Errorf("Check(load_skill) after explicit allow = %v, want Allow", got)
+	}
+}
+
 func TestUpdatePersists(t *testing.T) {
 	store := &memStore{rules: Rules{Default: Ask, Tools: map[string]Decision{}}}
 	m, err := NewManager(store)

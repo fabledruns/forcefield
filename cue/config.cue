@@ -94,7 +94,7 @@ package config
 
 		// Long-horizon run limits. Zero/omitted values fall back to
 		// runtime.DefaultLimits; negative values are meaningless and are
-		// rejected here even though the runtime merely ignores them.
+		// rejected here and by Go config validation (validateRunLimits).
 		max_iterations?:           int & > 0
 		max_tool_calls?:           int & > 0
 		max_consecutive_failures?: int & > 0

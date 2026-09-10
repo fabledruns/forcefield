@@ -16,7 +16,6 @@
 package git
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -315,29 +314,6 @@ func resolveInScope(policy sandbox.Policy, path string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(wd, filepath.Clean(path)), nil
-}
-
-// runGit executes one fixed git argv with root as cwd, combining
-// stdout and stderr (git writes progress and errors to stderr, and the
-// model needs both). Cancellation aborts the process via the context.
-func runGit(ctx context.Context, git, root string, argv ...string) (string, int, error) {
-	cmd := exec.CommandContext(ctx, git, append([]string{"-C", root}, argv...)...)
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	// Never inherit surprising fds; the environment passes through (git
-	// needs HOME/SystemRoot for config lookups).
-	cmd.Stdin = nil
-	err := cmd.Run()
-	out := strings.TrimRight(buf.String(), "\n")
-	if err == nil {
-		return out, 0, nil
-	}
-	code := 1
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		code = exitErr.ExitCode()
-	}
-	return out, code, err
 }
 
 // boundOutput turns captured command output into model content: empty

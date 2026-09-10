@@ -3,6 +3,7 @@ package shell
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -331,5 +332,49 @@ func TestJobTool_StartPollCancelRoundTrip(t *testing.T) {
 	cres, err := tool.Execute(ctx, map[string]any{"action": "cancel", "job_id": id})
 	if err != nil || cres.IsError {
 		t.Fatalf("cancel terminal: %+v err=%v", cres, err)
+	}
+}
+
+func TestJob_RetentionEvictsOldestTerminal(t *testing.T) {
+	// No shell backend needed: seed terminal records directly, then drive
+	// the public List path (which sweeps). accessed=now keeps every
+	// record inside the idle TTL so only the 32-job retention bound acts.
+	r := NewJobRegistry(nil)
+	now := time.Now()
+	const extra = 8
+	r.mu.Lock()
+	for i := 0; i < maxRetainedJobs+extra; i++ {
+		id := fmt.Sprintf("job-%03d", i)
+		r.jobs[id] = &Job{
+			ID:        id,
+			Command:   "echo seeded",
+			StartedAt: now.Add(time.Duration(i) * time.Second),
+			state:     JobDone,
+			hasExit:   true,
+			output:    &shellOutput{},
+			accessed:  now,
+			done:      make(chan struct{}),
+		}
+		close(r.jobs[id].done)
+	}
+	r.mu.Unlock()
+
+	if listed := r.List(); len(listed) != maxRetainedJobs {
+		t.Fatalf("retained = %d, want exactly the %d-job bound", len(listed), maxRetainedJobs)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.jobs) != maxRetainedJobs {
+		t.Fatalf("registry holds %d jobs, want at most %d", len(r.jobs), maxRetainedJobs)
+	}
+	for i := 0; i < extra; i++ {
+		if _, ok := r.jobs[fmt.Sprintf("job-%03d", i)]; ok {
+			t.Errorf("job-%03d should have been evicted as an oldest terminal record", i)
+		}
+	}
+	for i := extra; i < maxRetainedJobs+extra; i++ {
+		if _, ok := r.jobs[fmt.Sprintf("job-%03d", i)]; !ok {
+			t.Errorf("job-%03d (newest window) should have been retained, but is missing", i)
+		}
 	}
 }

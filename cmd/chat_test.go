@@ -65,6 +65,71 @@ func TestChatCommand_PropagatesError(t *testing.T) {
 	}
 }
 
+func TestChatCommand_ResumeLoadsSession(t *testing.T) {
+	origStarter := chatStarter
+	origNew := newChatSession
+	origLoad := loadSession
+	defer func() {
+		chatStarter = origStarter
+		newChatSession = origNew
+		loadSession = origLoad
+	}()
+
+	fake := session.New()
+	loadSession = func(id string) (*session.Session, error) {
+		if id != "chat-resume-id" {
+			t.Errorf("loadSession id = %q, want chat-resume-id", id)
+		}
+		return fake, nil
+	}
+	newChatSession = func() *session.Session {
+		t.Error("newChatSession should not be called when --resume is set")
+		return nil
+	}
+	called := false
+	chatStarter = func(s *session.Session) error {
+		called = true
+		if s != fake {
+			t.Error("session mismatch on chat resume")
+		}
+		return nil
+	}
+
+	resumeID = "chat-resume-id"
+	t.Cleanup(func() { resumeID = "" })
+	if err := chatCmd.RunE(chatCmd, []string{}); err != nil {
+		t.Fatalf("chat RunE resume error = %v", err)
+	}
+	if !called {
+		t.Error("chatStarter not called on resume")
+	}
+}
+
+func TestChatCommand_ResumePropagatesLoadError(t *testing.T) {
+	origStarter := chatStarter
+	origNew := newChatSession
+	origLoad := loadSession
+	defer func() {
+		chatStarter = origStarter
+		newChatSession = origNew
+		loadSession = origLoad
+	}()
+
+	loadSession = func(id string) (*session.Session, error) {
+		return nil, fmt.Errorf("no saved session with id %s", id)
+	}
+	chatStarter = func(*session.Session) error {
+		t.Error("chatStarter should not be called when resume fails")
+		return nil
+	}
+
+	resumeID = "missing-id"
+	t.Cleanup(func() { resumeID = "" })
+	if err := chatCmd.RunE(chatCmd, []string{}); err == nil {
+		t.Fatal("expected error for unresolvable --resume id")
+	}
+}
+
 func TestRootCommand_StartsChatViaInjection(t *testing.T) {
 	origRootStarter := rootTuiStarter
 	origNewSession := newSession

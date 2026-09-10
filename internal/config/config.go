@@ -573,6 +573,12 @@ func (c *Config) validate() error {
 		return err
 	}
 
+	if err := validateRunLimits("agent",
+		c.Agent.MaxIterations, c.Agent.MaxToolCalls, c.Agent.MaxConsecutiveFailures,
+		c.Agent.ContextWindow, c.Agent.ContextReserve, c.Agent.MaxContextMessages); err != nil {
+		return err
+	}
+
 	if err := validateTools(c.Tools); err != nil {
 		return err
 	}
@@ -601,6 +607,11 @@ func validateAgents(agents map[string]AgentConfig) error {
 	for name, cfg := range agents {
 		if _, ok := knownAgents[name]; !ok {
 			return fmt.Errorf("agents.%s: unknown agent %q (available: coding, cyber, docs, devops, general, legal, research)", name, name)
+		}
+		if err := validateRunLimits("agents."+name,
+			cfg.MaxIterations, cfg.MaxToolCalls, cfg.MaxConsecutiveFailures,
+			cfg.ContextWindow, cfg.ContextReserve, cfg.MaxContextMessages); err != nil {
+			return err
 		}
 		if cfg.Tools != nil {
 			seen := make(map[string]struct{}, len(cfg.Tools))
@@ -650,6 +661,34 @@ var knownTools = map[string]struct{}{
 	"read_file": {}, "write_file": {}, "list_files": {}, "pwd": {},
 	"shell": {}, "shell_job": {}, "search_files": {}, "find_files": {}, "git": {}, "secret_scan": {},
 	"load_skill": {}, "update_task_state": {}, "add_project_memory": {},
+}
+
+// validateRunLimits rejects negative run/context bounds. Zero stays valid:
+// it means "fall back to the default" at every resolution layer
+// (limitsFromConfig, limitsForAgent, contextBudgetFromConfig all treat
+// non-positive as unset), so only negatives are meaningless. CUE rejects
+// them too; failing fast here keeps Go and CUE consistent instead of
+// silently defaulting a typo into a bound the user never asked for.
+func validateRunLimits(prefix string, maxIter, maxCalls, maxFail, ctxWindow, ctxReserve, ctxMsgs int) error {
+	if maxIter < 0 {
+		return fmt.Errorf("%s.max_iterations must not be negative (got %d)", prefix, maxIter)
+	}
+	if maxCalls < 0 {
+		return fmt.Errorf("%s.max_tool_calls must not be negative (got %d)", prefix, maxCalls)
+	}
+	if maxFail < 0 {
+		return fmt.Errorf("%s.max_consecutive_failures must not be negative (got %d)", prefix, maxFail)
+	}
+	if ctxWindow < 0 {
+		return fmt.Errorf("%s.context_window must not be negative (got %d)", prefix, ctxWindow)
+	}
+	if ctxReserve < 0 {
+		return fmt.Errorf("%s.context_reserve must not be negative (got %d)", prefix, ctxReserve)
+	}
+	if ctxMsgs < 0 {
+		return fmt.Errorf("%s.max_context_messages must not be negative (got %d)", prefix, ctxMsgs)
+	}
+	return nil
 }
 
 func validateTools(entries map[string]ToolLimits) error {

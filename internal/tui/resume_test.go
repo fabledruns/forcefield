@@ -56,3 +56,45 @@ func TestSessionEntries_EmptyAssistantSkipped(t *testing.T) {
 		t.Fatalf("empty assistant should produce no entry, got %d", len(entries))
 	}
 }
+
+func TestSessionEntries_RendersCompactedMarker(t *testing.T) {
+	sess := session.New()
+	sess.AddMessage("user", "hello")
+	sess.Messages = append(sess.Messages, session.Message{
+		Role:    "system",
+		Content: "[compacted 5 older messages to bound session size; use /sessions to review recent history]",
+	})
+	sess.AddMessage("assistant", "still here")
+
+	entries := sessionEntries(sess)
+	if len(entries) != 3 {
+		t.Fatalf("entries len %d, want 3 (user, marker, assistant)", len(entries))
+	}
+	marker := entries[1]
+	if marker.Role != roleSystem {
+		t.Errorf("marker role = %v, want roleSystem", marker.Role)
+	}
+	if !strings.Contains(marker.Content, "[compacted") {
+		t.Errorf("marker content = %q, want the compaction text preserved", marker.Content)
+	}
+	if marker.Tool != nil || marker.Thinking != nil {
+		t.Errorf("marker should be a plain system entry, got %+v", marker)
+	}
+	// The marker must render without crashing and stay visible.
+	rendered := renderTranscript(entries, 80)
+	if !strings.Contains(rendered, "[compacted") {
+		t.Errorf("rendered transcript drops the compaction marker:\n%s", rendered)
+	}
+}
+
+func TestSessionEntries_OtherSystemMessagesStayDropped(t *testing.T) {
+	sess := session.New()
+	sess.Messages = append(sess.Messages, session.Message{
+		Role:    "system",
+		Content: "some internal note",
+	})
+	entries := sessionEntries(sess)
+	if len(entries) != 0 {
+		t.Fatalf("non-marker system messages should stay dropped, got %+v", entries)
+	}
+}

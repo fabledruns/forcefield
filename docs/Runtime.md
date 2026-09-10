@@ -61,9 +61,18 @@ If the active provider requires an API key that is missing, startup still succee
 | `EventThinking`   | The model is thinking or a turn has started.         |
 | `EventText`       | Incremental assistant text.                          |
 | `EventToolStart`  | A tool call is about to run.                         |
+| `EventToolProgress` | Live output chunk from a running tool.             |
 | `EventToolFinish` | A tool call finished with a result or error.         |
+| `EventToolFailed` | A tool call failed.                                  |
+| `EventToolCancelled` | A tool call was cancelled.                        |
+| `EventToolDenied` | A tool call was denied by permissions.               |
 | `EventDone`       | The run completed with a final response.             |
+| `EventCancelled`  | The run was cancelled by the caller (terminal, not an error). |
 | `EventError`      | The run stopped because of an error.                 |
+| `EventBlocked`    | The runtime stopped the run itself (a limit was hit). |
+
+`EventToolCall` and `EventToolResult` are backwards-compatible aliases
+for `EventToolStart` and `EventToolFinish`.
 
 ## Agent Loop
 

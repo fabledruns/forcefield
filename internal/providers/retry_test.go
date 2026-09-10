@@ -253,6 +253,42 @@ func TestQuotaExhaustion429IsNotRetried(t *testing.T) {
 	}
 }
 
+func TestQuotaExhaustionCodesAreNotRetried(t *testing.T) {
+	for _, body := range []string{
+		`{"error":{"code":429,"message":"Quota exceeded for quota metric","status":"RESOURCE_EXHAUSTED"}}`,
+		`{"error":{"message":"You exceeded your current quota, please check your plan and billing details","code":"insufficient_quota"}}`,
+	} {
+		t.Run(body[:32], func(t *testing.T) {
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Retry-After", "0")
+				w.WriteHeader(http.StatusTooManyRequests)
+				fmt.Fprint(w, body)
+			}))
+			defer server.Close()
+
+			p := NewNvidiaProvider(server.URL, "test-model", "", nil)
+			p.retry = fastRetry
+
+			_, err := p.StreamChat(context.Background(), []Message{{Role: UserRole, Content: "hi"}}, nil)
+			if err == nil {
+				t.Fatal("StreamChat() succeeded, want quota error")
+			}
+			var statusErr *statusError
+			if !errors.As(err, &statusErr) {
+				t.Fatalf("error type = %T, want *statusError", err)
+			}
+			if !statusErr.NonRetryable {
+				t.Errorf("NonRetryable = false, want true for %q", body)
+			}
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("requests = %d, want 1 (quota 429 must not be retried)", got)
+			}
+		})
+	}
+}
+
 func TestSustained429FailsAfterBoundedRetries(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -363,6 +399,12 @@ func TestQuotaExhaustedClassification(t *testing.T) {
 		"insufficient credits",
 		"Please upgrade your plan",
 		"402: payment required",
+		// Provider-specific exhaustion codes (N14 quick-win: these used
+		// to read as transient 429s and burn the retry budget).
+		`{"error":{"code":429,"message":"Quota exceeded for quota metric","status":"RESOURCE_EXHAUSTED"}}`,
+		`{"error":{"message":"You exceeded your current quota, please check your plan and billing details. insufficient_quota"}}`,
+		"RESOURCE_EXHAUSTED: quota exhausted for project",
+		"insufficient_quota",
 	}
 	for _, body := range exhausted {
 		if !quotaExhausted(body) {

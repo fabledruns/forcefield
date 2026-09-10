@@ -51,12 +51,85 @@ $ErrorActionPreference = "Stop"
 $Repo = "fabledruns/forcefield"
 $BinaryName = "ff.exe"
 
-function Write-Info($msg) { Write-Host "[INFO] $msg" }
-function Write-Warn($msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
+# ─────────────────────────────────────────────────────────────────────────────
+# Terminal UI (presentation only)
+# Installer behavior, errors, paths, downloads and checks remain unchanged.
+# Normal output stays compact; full diagnostics go to -Verbose.
+# Symbols: ◈ section · ◇ active · ✦ done · ✳ warning · × failure
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Keep geometric symbols intact on modern Windows terminals (best effort only).
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+
+$script:UiQuiet = $false
+
+function Write-Brand {
+  Write-Host ""
+  Write-Host "forcefield" -ForegroundColor Red
+}
+
+function Write-Section($name) {
+  Write-Host ""
+  Write-Host "◈ $name"
+}
+
+function Write-Active($msg) {
+  Write-Host "◇ $msg"
+}
+
+function Write-Done($msg) {
+  Write-Host "✦ $msg" -ForegroundColor Green
+}
+
+function Write-Row($label, $value) {
+  $padded = "$label".PadRight(12)
+  Write-Host "✦ $padded$value" -ForegroundColor Green
+}
+
+function Write-WarnUi($msg) {
+  Write-Host "✳ $msg" -ForegroundColor Yellow
+}
+
+function Write-Detail($msg) {
+  Write-Host "  $msg" -ForegroundColor DarkGray
+}
+
+function Write-Info($msg) {
+  Write-Host "  $msg" -ForegroundColor DarkGray
+}
+
+function Write-Warn($msg) {
+  Write-Host "✳ $msg" -ForegroundColor Yellow
+}
+
+function Write-Step($label) {
+  Write-Host "◇ $label"
+}
+
+function Write-Ok($label) {
+  Write-Host "✦ $label" -ForegroundColor Green
+}
+
+function Write-Dim($msg) {
+  Write-Host "  $msg" -ForegroundColor DarkGray
+}
+
 function Fail($msg) {
-  Write-Host "[ERROR] $msg" -ForegroundColor Red
+  Write-Host ""
+  $text = "$msg"
+  $lines = $text -split "`n"
+  Write-Host "× $($lines[0])" -ForegroundColor Red
+  for ($i = 1; $i -lt $lines.Count; $i++) {
+    Write-Host "  $($lines[$i])"
+  }
   throw $msg
 }
+
+function Write-Rule {
+  Write-Host "────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+}
+
+Write-Brand
 
 if ($Help) {
   Get-Help $PSCommandPath -Detailed
@@ -162,8 +235,10 @@ function Get-Arch {
   Fail "Could not detect architecture (OSArchitecture=$riArch, PROCESSOR_ARCHITECTURE=$procArch). Supported: amd64, arm64."
 }
 
+Write-Section "environment"
 $Arch = Get-Arch
-Write-Info "Detected: windows/$Arch"
+Write-Row "platform" "windows/$Arch"
+Write-Verbose "platform: windows/$Arch"
 
 # Resolve latest version if not specified
 function Get-LatestVersion {
@@ -200,24 +275,28 @@ function Get-LatestVersion {
 }
 
 if (-not $Version -or $Version.Trim() -eq "") {
-  Write-Info "Resolving latest release from GitHub..."
+  Write-Active "resolving release"
+  Write-Verbose "resolving latest release via GitHub API"
   $Version = Get-LatestVersion
   if (-not $Version) {
     Fail "Could not determine latest release. GitHub API may be rate-limited or offline. Try: install.ps1 -Version v1.0.0 or set `$env:FORCEFIELD_VERSION='v1.0.0'. Manual: https://github.com/$Repo/releases"
   }
-  Write-Info "Latest release: $Version"
+  Write-Row "release" "$Version"
 } else {
   if ($Version -notmatch '^[vV]') { $Version = "v$Version" }
-  Write-Info "Requested version: $Version"
+  Write-Row "release" "$Version"
 }
 Test-VersionFormat $Version
+Write-Verbose "release: $Version"
 
 $Artifact = "ff-windows-$Arch.exe"
 $DownloadUrl = "https://github.com/$Repo/releases/download/$Version/$Artifact"
 $ChecksumUrl = "https://github.com/$Repo/releases/download/$Version/checksums.txt"
 
-Write-Info "Artifact: $Artifact"
-Write-Info "URL: $DownloadUrl"
+Write-Row "artifact" "$Artifact"
+Write-Verbose "artifact: $Artifact"
+Write-Verbose "download: $DownloadUrl"
+Write-Verbose "checksums: $ChecksumUrl"
 
 # Create temp dir
 $tmpRoot = [System.IO.Path]::GetTempPath()
@@ -229,9 +308,11 @@ $cleanup = {
 }
 # Use try/finally for main logic; also register engine exit
 try {
+  Write-Section "installation"
   # Download artifact
   $dest = Join-Path $tmp $Artifact
-  Write-Info "Downloading $DownloadUrl ..."
+  Write-Active "fetching release"
+  Write-Verbose "downloading $DownloadUrl to $dest"
   try {
     # Use Invoke-WebRequest with UseBasicParsing for PS5 compatibility
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $dest -UseBasicParsing -Headers @{"User-Agent"="forcefield-installer"} -ErrorAction Stop
@@ -247,9 +328,10 @@ try {
   if (-not (Test-Path $dest) -or (Get-Item $dest).Length -eq 0) {
     Fail "Downloaded file is empty: $dest (check $DownloadUrl)"
   }
+  Write-Done "release fetched"
 
   # Verify checksum
-  Write-Info "Verifying checksum..."
+  Write-Active "verifying integrity"
   $checksumFile = Join-Path $tmp "checksums.txt"
   $checksumOk = $false
   $foundChecksumUrl = $null
@@ -258,7 +340,7 @@ try {
       Invoke-WebRequest -Uri $url -OutFile $checksumFile -UseBasicParsing -Headers @{"User-Agent"="forcefield-installer"} -ErrorAction Stop
       if ((Test-Path $checksumFile) -and (Get-Item $checksumFile).Length -gt 0) {
         $foundChecksumUrl = $url
-        Write-Info "Found checksums at $url"
+        Write-Verbose "checksum source: $url"
         break
       }
     } catch {
@@ -288,30 +370,36 @@ try {
       break
     }
     if (-not $expected) {
-      Write-Warn "checksums.txt does not contain $Artifact; skipping verification (this should not happen for new releases)"
+      Write-WarnUi "checksum verification unavailable"
+      Write-Detail "Continuing without verification."
+      Write-Detail "Prefer a release with checksums.txt."
+      Write-Verbose "checksums.txt does not contain $Artifact; skipping verification"
     } else {
       $actualHash = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
       if ($expected -ne $actualHash) {
         Fail "Checksum mismatch for $Artifact`n  expected: $expected`n  actual:   $actualHash`nRefusing to install. The download may be corrupted or tampered with."
       }
-      Write-Info "Checksum OK: $actualHash"
+      Write-Done "checksum verified"
       $checksumOk = $true
     }
   } else {
-    Write-Warn "No checksums file at $ChecksumUrl"
-    Write-Warn "Skipping verification (old releases before v1.2 may not have checksums)"
-    Write-Warn "For security, prefer a release with checksums.txt or verify manually"
+    Write-WarnUi "checksum verification unavailable"
+    Write-Detail "Continuing without verification."
+    Write-Detail "Prefer a release with checksums.txt."
+    Write-Verbose "No checksums file at $ChecksumUrl (old releases may not have checksums)"
   }
 
   # Install
-  Write-Info "Installing to $InstallDir ..."
+  Write-Active "installing runtime"
+  Write-Verbose "installing to $InstallDir"
   New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
   $target = Join-Path $InstallDir $BinaryName
-  if (Test-Path $target) {
-    Write-Info "Existing installation found at $target (upgrading in place)"
+  $isUpgrade = Test-Path $target
+  if ($isUpgrade) {
+    Write-Verbose "existing installation found, upgrading in place"
   } else {
-    Write-Info "No existing installation at $target"
+    Write-Verbose "new installation"
   }
 
   # Copy atomically: copy to temp name then move (same directory = atomic on same volume)
@@ -324,22 +412,30 @@ try {
   } catch {
     # Move failed (e.g., file in use) - clean up staging file and rethrow
     try { if (Test-Path $tmpTarget) { Remove-Item $tmpTarget -Force -ErrorAction SilentlyContinue } } catch {}
+    Write-Host ""
+    Write-Host "× failed to install runtime" -ForegroundColor Red
+    Write-Host "  $_"
     throw
   }
-  Write-Info "Installed $target"
+  Write-Verbose "installed $target"
+  if ($isUpgrade) {
+    Write-Done "runtime upgraded"
+  } else {
+    Write-Done "runtime installed"
+  }
 
   # Verify
   $installedVer = $null
   try {
     $out = & $target --version 2>&1 | Out-String
     $installedVer = $out.Trim().Split("`n")[0].Trim()
-    if ($installedVer) { Write-Info "Verified: $installedVer" }
+    if ($installedVer) { Write-Verbose "binary: $installedVer" }
     # Reset exit code: external --version on older binaries returns 1, but installer should not fail
     $global:LASTEXITCODE = 0
   } catch {
-    Write-Warn "Installed binary does not support --version; checking --help instead"
+    Write-WarnUi "Installed binary does not support --version; checking --help instead"
     try { & $target --help 2>&1 | Out-Null; $global:LASTEXITCODE = 0 } catch {
-      Write-Warn "Installed binary failed to run --help; it may be the wrong architecture"
+      Write-WarnUi "Installed binary failed to run --help; it may be the wrong architecture"
       $global:LASTEXITCODE = 0
     }
     $installedVer = "(unknown, use ff --version after fixing PATH)"
@@ -363,14 +459,17 @@ try {
     $procAlreadyInPath = $true
   }
 
+  Write-Verbose "install dir: $InstallDir"
   if ($alreadyInPath) {
-    Write-Info "PATH already contains $InstallDir (user PATH)"
+    Write-Done "PATH ready"
   } else {
+    Write-Active "configuring PATH"
     $needsPathUpdate = $true
     if ($NoModifyPath) {
-      Write-Warn "PATH does not contain $InstallDir (path modification disabled via -NoModifyPath)"
+      Write-WarnUi "PATH update required"
+      Write-Detail "PATH does not contain $InstallDir (path modification disabled via -NoModifyPath)"
     } else {
-      Write-Info "PATH does not contain $InstallDir; adding to user PATH..."
+      Write-Verbose "updating user PATH"
       if ($userPath -and $userPath.Trim() -ne "") {
         $newPath = "$userPath;$InstallDir"
       } else {
@@ -378,51 +477,52 @@ try {
       }
       # Avoid duplicate: ensure not already present (case-insensitive)
       [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-      Write-Info "Updated user PATH. Added $InstallDir"
+      Write-Done "PATH ready"
       # Also update current session
       if (-not $procAlreadyInPath) {
         $env:Path = "$env:Path;$InstallDir"
       }
-      Write-Info "Updated current session PATH for this terminal."
+      Write-Verbose "current terminal PATH updated"
     }
   }
 
   # Final output
+  Write-Verbose "binary: $target"
+  Write-Verbose "install dir: $InstallDir"
+  if ($installedVer) { Write-Verbose "version output: $installedVer" }
+  Write-Verbose "github.com/$Repo"
   Write-Host ""
-  Write-Host "Forcefield installed successfully!" -ForegroundColor Green
-  Write-Host "  Binary:     $target"
-  if ($installedVer) { Write-Host "  Version:    $installedVer" } else { Write-Host "  Version:    $Version (run ff --version)" }
-  Write-Host "  Install dir: $InstallDir"
-
+  Write-Rule
+  Write-Host ""
+  Write-Host "✦ Forcefield $Version" -ForegroundColor Green
+  Write-Host ""
+  Write-Host "ready."
+  Write-Host ""
   if ($needsPathUpdate) {
-    Write-Host ""
-    Write-Host "PATH update needed:" -ForegroundColor Yellow
-    Write-Host "  $InstallDir is not in your current PATH for new terminals."
     if (-not $NoModifyPath) {
-      Write-Host "  The installer added it to your user PATH."
-      Write-Host "  Restart your terminal (or VS Code) or run:"
-      Write-Host "    `$env:Path += `";$InstallDir`""
+      Write-Host "Added to user PATH. Restart your terminal, or run:"
+      Write-Host "  `$env:Path += `";$InstallDir`""
+      Write-Host ""
     } else {
-      Write-Host "  Add it manually (user PATH, not system):"
-      Write-Host "    [Environment]::SetEnvironmentVariable('Path', `"`$env:Path;$InstallDir`", 'User')"
+      Write-Host "Add it to your user PATH (not system):"
+      Write-Host "  [Environment]::SetEnvironmentVariable('Path', `"`$env:Path;$InstallDir`", 'User')"
+      Write-Host ""
     }
-    Write-Host ""
-    Write-Host "  After updating PATH, verify with:"
-    Write-Host "    ff --version"
-    Write-Host "    ff doctor"
+    Write-Detail "verify:"
+    Write-Host "  ff --version"
+    Write-Host "  ff doctor"
   } else {
-    Write-Host "  Run: ff --version"
-    Write-Host "       ff doctor"
+    Write-Detail "try:"
+    Write-Host "  ff --version"
+    Write-Host "  ff doctor"
   }
 
   if (-not $checksumOk) {
     Write-Host ""
-    Write-Host "Note: checksum verification was skipped or unavailable. For production, use a release with checksums.txt." -ForegroundColor Yellow
+    Write-WarnUi "checksum verification unavailable"
+    Write-Detail "Installed without verification. Prefer a release with checksums.txt."
   }
 
-  Write-Host ""
-  Write-Host "Documentation: https://github.com/$Repo"
-  Write-Host "Releases:      https://github.com/$Repo/releases"
   Write-Host ""
   $global:LASTEXITCODE = 0
 } finally {

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func readLines(t *testing.T, path string) []map[string]any {
@@ -162,6 +163,50 @@ func TestFileCapTruncatesRun(t *testing.T) {
 	}
 	if len(lines) >= 60001 {
 		t.Errorf("lines = %d, want the run capped", len(lines))
+	}
+}
+
+func TestScrubArgsTruncationIsRuneSafe(t *testing.T) {
+	// CJK text where a byte cut at snippetCap would land mid-rune: the
+	// old s[:snippetCap] split multi-byte sequences into invalid UTF-8.
+	cjk := strings.Repeat("日本語テスト漢字", 200) // 8 runes each, 1600 runes
+	got := scrubArgs(map[string]any{"command": cjk, "path": "src/日本語"})
+	if !strings.Contains(got, "truncated") {
+		t.Fatalf("oversized CJK args lack truncation marker: %.60q…", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("scrubArgs produced invalid UTF-8 (split multi-byte sequence)")
+	}
+	if n := len([]rune(got)); n > snippetCap+len("…[truncated]") {
+		t.Errorf("truncated args = %d runes, want at most %d", n, snippetCap+len("…[truncated]"))
+	}
+	// End-to-end through ToolCall: the JSONL line itself must stay valid.
+	dir := t.TempDir()
+	tr := New(true, dir)
+	r := tr.StartRun("run-cjk", RunMeta{})
+	r.ToolCall("c1", "shell", map[string]any{"command": cjk})
+	r.Close()
+	raw, err := os.ReadFile(filepath.Join(dir, "run-cjk.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.Valid(raw) {
+		t.Errorf("trace file holds invalid UTF-8 after CJK truncation")
+	}
+	lines := readLines(t, filepath.Join(dir, "run-cjk.jsonl"))
+	var tool map[string]any
+	for _, l := range lines {
+		if l["type"] == "tool_start" {
+			tool = l
+		}
+	}
+	if tool == nil {
+		t.Fatal("no tool_start line")
+	}
+	detail, _ := tool["detail"].(string)
+	if !strings.Contains(detail, "truncated") || !utf8.ValidString(detail) {
+		t.Errorf("tool_start detail not rune-safe: valid=%v marker=%v",
+			utf8.ValidString(detail), strings.Contains(detail, "truncated"))
 	}
 }
 

@@ -169,9 +169,12 @@ func scrubArgs(args map[string]any) string {
 	if err != nil {
 		return ""
 	}
+	// Truncate on rune boundaries like snippet(): the JSON routinely
+	// carries CJK/non-ASCII tool arguments, and a byte cut can split a
+	// multi-byte sequence into invalid UTF-8. Same cap, counted in runes.
 	s := string(raw)
-	if len(s) > snippetCap {
-		s = s[:snippetCap] + "…[truncated]"
+	if runes := []rune(s); len(runes) > snippetCap {
+		s = string(runes[:snippetCap]) + "…[truncated]"
 	}
 	return s
 }
