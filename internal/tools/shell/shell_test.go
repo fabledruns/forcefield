@@ -45,11 +45,14 @@ func requireShellBackend(t *testing.T) {
 }
 
 func cancellableCommand() string {
-	// On Windows, process group cleanup is best-effort (setProcessGroup is
-	// a no-op, taskkill /T may miss bash-launched grandchildren). Use a
-	// single long-running process so the test proves the cancellation
-	// mechanism itself still works. On Unix, use a backgrounded child to
-	// prove the POSIX process-group kill reaches grandchildren.
+	// On Windows the shell runs through the WSL relay, so a host-side
+	// heartbeat file is not addressable from Bash and Linux-side
+	// grandchildren outlive the relay (no Windows primitive reaches
+	// inside the distribution). Use a single long-running process so the
+	// test proves the cancellation mechanism itself still works: the
+	// relay is tree-killed and job-tracked (see internal/process). On
+	// Unix, use a backgrounded child to prove the POSIX process-group
+	// kill reaches grandchildren.
 	if runtime.GOOS == "windows" {
 		return "sleep 30"
 	}
@@ -141,7 +144,9 @@ func TestShell_ContextCancellationStopsTheCommandAndItsChildren(t *testing.T) {
 	done := make(chan tools.Result, 1)
 	go func() {
 		// Spawn a detached grandchild that would otherwise outlive `sh`
-		// itself, to prove killProcessGroup reaches it too.
+		// itself, to prove the process-tree kill reaches it too
+		// (internal/process: group kill on Unix, tree kill plus job
+		// backstop on Windows).
 		result, _ := s.Execute(ctx, map[string]any{
 			"command": cancellableCommand(),
 		})

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"forcefield/internal/process"
 	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 )
@@ -433,11 +434,13 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	//     terminal outside of Bubble Tea's control.
 	cmd.Stdin = nil
 
-	// Put the child in its own process group and take over Cancel so that
+	// Put the child in its own process tree and take over Cancel so that
 	// when runCtx is done (parent cancellation or our own timeout), we
 	// kill the whole subtree - not just the immediate `sh` process.
-	setProcessGroup(cmd)
-	cmd.Cancel = func() error { return killProcessGroup(cmd) }
+	// (Unix process group via Configure, Windows job object via Track
+	// below; see internal/process for how the two cover each other.)
+	process.Configure(cmd)
+	cmd.Cancel = func() error { return process.Kill(cmd) }
 	cmd.WaitDelay = waitDelay
 
 	// Own the pipes instead of using StdoutPipe/StderrPipe. The latter are
@@ -480,6 +483,12 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	// parent's copies open would prevent EOF when the command exits.
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
+
+	// Track the tree for the command's lifetime: the job backstop reaps
+	// anything the synchronous Kill misses and anything that would
+	// otherwise outlive us.
+	release := process.Track(cmd)
+	defer release()
 
 	output := &shellOutput{max: bounds.MaxBytes}
 	pipeDone := make(chan struct{}, 2)

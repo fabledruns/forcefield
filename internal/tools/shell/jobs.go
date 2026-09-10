@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"forcefield/internal/process"
 	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 )
@@ -210,8 +211,8 @@ func (r *JobRegistry) Start(ctx context.Context, command, cwd string, env []stri
 	}
 	cmd := prepared.Cmd
 	cmd.Stdin = nil
-	setProcessGroup(cmd)
-	cmd.Cancel = func() error { return killProcessGroup(cmd) }
+	process.Configure(cmd)
+	cmd.Cancel = func() error { return process.Kill(cmd) }
 	cmd.WaitDelay = waitDelay
 
 	stdoutReader, stdoutWriter, err := os.Pipe()
@@ -243,6 +244,10 @@ func (r *JobRegistry) Start(ctx context.Context, command, cwd string, env []stri
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
 
+	// Track the tree for the job's lifetime; released exactly once by
+	// the finish path alongside the other cleanups below.
+	release := process.Track(cmd)
+
 	now := time.Now()
 	job := &Job{
 		ID:        id,
@@ -254,8 +259,9 @@ func (r *JobRegistry) Start(ctx context.Context, command, cwd string, env []stri
 		accessed:  now,
 		done:      make(chan struct{}),
 		reaped:    make(chan struct{}),
-		kill:      func() { _ = killProcessGroup(cmd) },
+		kill:      func() { _ = process.Kill(cmd) },
 	}
+	job.cleanups = append(job.cleanups, func() { release() })
 	if prepared.Cleanup != nil {
 		job.cleanups = append(job.cleanups, prepared.Cleanup)
 	}

@@ -3,10 +3,12 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -38,7 +40,42 @@ func TestHelperProcess(t *testing.T) {
 		os.Exit(7)
 	case "block":
 		time.Sleep(time.Hour) // killed by the caller's context
+	case "tree":
+		spawnHeartbeatGrandchild()
+		time.Sleep(time.Hour) // killed with the whole tree
 	}
+}
+
+// spawnHeartbeatGrandchild starts a real detached descendant ticking
+// HELPER_LOG, then returns: the caller blocks so both stay alive until
+// the tree kill. Windows uses PowerShell (script file, no quoting
+// layers); Unix uses sh. A start failure exits loudly (9) so the test
+// fails visibly instead of asserting against a tree that never existed.
+func spawnHeartbeatGrandchild() {
+	log := os.Getenv("HELPER_LOG")
+	if log == "" {
+		fmt.Fprintln(os.Stderr, "tree helper needs HELPER_LOG")
+		os.Exit(9)
+	}
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		script := "while($true){ Add-Content '" + log + "' 'tick'; Start-Sleep -Milliseconds 200 }\n"
+		child := filepath.Join(filepath.Dir(log), "grandchild.ps1")
+		if err := os.WriteFile(child, []byte(script), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, "write grandchild script:", err)
+			os.Exit(9)
+		}
+		cmd = exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-File", child)
+	} else {
+		cmd = exec.Command("sh", "-c", "( while true; do echo tick >> "+log+"; sleep 0.2; done & ) ; sleep 3600")
+	}
+	cmd.Stdout, cmd.Stderr = nil, nil
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, "start grandchild:", err)
+		os.Exit(9)
+	}
+	// Deliberately never waited on: it must outlive this helper until
+	// the tree kill reaps it.
 }
 
 func helperCommand(t *testing.T, mode string) (string, []string) {
@@ -64,10 +101,59 @@ func TestRunChildCommandCancelledContext(t *testing.T) {
 	exe, args := helperCommand(t, "block")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	// The helper blocks until CommandContext kills it; the supervisor
-	// must read that as cancellation (4), not a retryable failure.
+	// The helper blocks until the tree lifecycle kills it; the
+	// supervisor must read that as cancellation (4), not a retryable
+	// failure.
 	if code, err := runChildCommand(ctx, exe, args, io.Discard, io.Discard, nil); code != recovery.ExitNeedsHuman || err != nil {
 		t.Errorf("killed helper = (%d, %v), want (4, nil)", code, err)
+	}
+}
+
+func TestRunChildCommandCancelKillsDescendants(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "heartbeat.log")
+	t.Setenv("HELPER_LOG", log)
+	exe, args := helperCommand(t, "tree")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	done := make(chan [2]any, 1)
+	go func() {
+		code, err := runChildCommand(ctx, exe, args, io.Discard, io.Discard, nil)
+		done <- [2]any{code, err}
+	}()
+
+	// Let the detached grandchild prove it is alive first.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if fi, err := os.Stat(log); err == nil && fi.Size() > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("grandchild wrote no heartbeats; test setup failed")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case got := <-done:
+		if got[0] != recovery.ExitNeedsHuman || got[1] != nil {
+			t.Errorf("cancelled tree = (%v, %v), want (4, nil)", got[0], got[1])
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("runChildCommand did not return after cancellation")
+	}
+	before, err := os.Stat(log)
+	if err != nil {
+		t.Fatalf("stat heartbeat: %v", err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	after, err := os.Stat(log)
+	if err != nil {
+		t.Fatalf("stat heartbeat: %v", err)
+	}
+	if after.Size() != before.Size() {
+		t.Errorf("heartbeat grew after supervisor cancellation (%d -> %d bytes): descendant orphaned", before.Size(), after.Size())
 	}
 }
 

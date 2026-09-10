@@ -19,6 +19,17 @@
 //	         NOT isolated; the short version is that WSL alone does not
 //	         confine filesystems, and this package refuses to pretend it
 //	         does.
+//
+// Process-lifecycle note (Windows): every shell command here runs as a
+// Linux process inside the distribution, reached through a wsl.exe
+// relay. Killing the relay (taskkill, job objects — see
+// internal/process) stops the Windows side promptly, but Linux-side
+// descendants outlive it by platform design: no Windows primitive, and
+// no host-side kill strategy of any kind, can reach inside the
+// distribution. Terminating those requires distro cooperation (PID
+// tracking plus re-kill), which this package deliberately does not do:
+// PID reuse across the shared, long-lived distro makes blind re-kill
+// unsafe, and the bookkeeping would dwarf the executor itself.
 package sandbox
 
 import (

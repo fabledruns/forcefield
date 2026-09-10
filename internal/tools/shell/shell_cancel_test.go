@@ -46,11 +46,14 @@ func TestShell_CancelReportsCancellation(t *testing.T) {
 // protection: a backgrounded grandchild writing heartbeats must stop
 // after cancellation (POSIX process-group kill). Unix-only: on Windows
 // the shell runs through the WSL relay, where a host temp path is not
-// addressable from Bash, and grandchild reaping is best-effort
-// (taskkill /T) rather than a group kill.
+// addressable from Bash — and Linux-side grandchildren outlive the
+// relay by platform design (documented in internal/process), so no
+// host-side kill primitive can assert on them. Windows-side tree
+// coverage (relay promptness, job backstop, supervisor children) is
+// pinned in internal/process with real Windows processes instead.
 func TestShell_CancelLeavesNoOrphanedDescendants(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("orphan reaping is best-effort on Windows (taskkill /T); Unix asserts no orphans")
+		t.Skip("orphan reaping inside the WSL distribution is not reachable from the host; Unix asserts no orphans")
 	}
 	requireShellBackend(t)
 	s := NewShell()

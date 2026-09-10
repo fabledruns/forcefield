@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"forcefield/internal/process"
 	"forcefield/internal/recovery"
 	"forcefield/internal/session"
 
@@ -115,23 +116,23 @@ func childArgs(sessionID string, maxTurns int) []string {
 	return args
 }
 
-// runChildCommand executes one child process portably (os/exec only, no
-// shell, no Unix-specific APIs) and maps its fate to the recovery
-// contract. See classifyChildWait for the mapping.
+// runChildCommand executes one child process with full tree lifecycle
+// (internal/process): the child is isolated before start, tracked for
+// its lifetime, and on cancellation its whole tree is terminated —
+// gracefully first on Unix, forcefully on Windows — instead of only the
+// direct child that exec.CommandContext would kill. The wait outcome
+// maps to the recovery contract via classifyChildWait, unchanged.
 func runChildCommand(ctx context.Context, exe string, args []string, stdout, stderr io.Writer, stdin io.Reader) (int, error) {
-	cmd := exec.CommandContext(ctx, exe, args...)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	cmd.Stdin = stdin
-	return classifyChildWait(ctx, cmd.Run())
+	_, err := process.Run(ctx, exe, args, stdout, stderr, stdin)
+	return classifyChildWait(ctx, err)
 }
 
 // classifyChildWait maps a child wait outcome to (exit code, error):
 //   - clean wait → the child's code (0/2/3/4 flow into the loop;
 //     anything else fails closed in Supervise).
 //   - wait failed but our context is done → the death is fallout from
-//     cancelling supervision itself (CommandContext kills the child),
-//     so report NeedsHuman rather than a mysterious failure.
+//     cancelling supervision itself (the tree lifecycle terminates the
+//     child), so report NeedsHuman rather than a mysterious failure.
 //   - any other wait failure (spawn error, signaled without a code as
 //     from OOM or an external kill) → error: unprovable, never retried.
 func classifyChildWait(ctx context.Context, err error) (int, error) {
