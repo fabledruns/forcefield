@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"forcefield/internal/providers"
+	"forcefield/internal/recovery"
 	"forcefield/internal/session"
 )
 
@@ -64,7 +65,7 @@ func TestStopStreamKeepsConsistentSessionsUnchanged(t *testing.T) {
 // TestHealSessionNilSafe pins the nil guard used by tests and teardown
 // paths that run without an adopted session.
 func TestHealSessionNilSafe(t *testing.T) {
-	healSession(nil) // must not panic
+	recovery.Heal(nil) // must not panic
 	m := newTestModel()
 	m.session = nil
 	m.stopStream(false) // must not panic

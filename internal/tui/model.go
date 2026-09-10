@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"forcefield/internal/config"
 	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
+	"forcefield/internal/recovery"
 	"forcefield/internal/runtime"
 	"forcefield/internal/session"
 )
@@ -310,27 +310,12 @@ func newModelWithConfig(cfg *config.Config, sess *session.Session, asker permiss
 	}
 	r.SetPermissionAsker(asker)
 
-	// Align runtime's active agent with the session's persisted agent.
-	if sess != nil {
-		// Heal turns stranded by an earlier quit/crash before the first
-		// replay, so resuming can never send dangling tool calls.
-		healSession(sess)
-		if strings.TrimSpace(sess.Agent) != "" {
-			if err := r.SetAgent(sess.Agent); err != nil {
-				// Unknown agent (e.g. removed built-in): fall back to general.
-				_ = r.SetAgent("general")
-				sess.Agent = r.CurrentAgent()
-				_ = sess.Save()
-			} else {
-				// Provider/model hints may have updated the config.
-				sess.Agent = r.CurrentAgent()
-				_ = sess.Save()
-			}
-		} else {
-			sess.Agent = r.CurrentAgent()
-			_ = sess.Save()
-		}
-	}
+	// Align runtime's active agent with the session's persisted agent,
+	// healing turns stranded by an earlier quit/crash before the first
+	// replay so resuming can never send dangling tool calls. Shared with
+	// the headless resume driver (internal/recovery).
+	recovery.Heal(sess)
+	recovery.AlignAgent(r, sess)
 
 	entries := sessionEntries(sess)
 
@@ -528,37 +513,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the in-memory run loop.
 			if msg.Event.ToolCall != nil {
 				content := strings.TrimSpace(m.assistantBuffer)
-				m.session.AppendToolCallToLastAssistant(*msg.Event.ToolCall, content)
-				// Record the call as running in the same atomic Save:
-				// intent (batch) and execution state commit together, so
-				// a crash from here on is recoverable, never ambiguous.
-				m.session.AddPendingCall(*msg.Event.ToolCall)
+				// Shared record path (internal/recovery): intent and
+				// execution state commit in one Save before tools run.
+				recovery.RecordToolStart(m.session, *msg.Event.ToolCall, content)
 				// The buffer now belongs to the persisted assistant turn;
 				// start fresh for the next model turn's answer.
 				if content != "" {
 					m.assistantBuffer = ""
 				}
-				_ = m.session.Save()
 			}
 		case runtime.EventToolProgress:
 			m.updateToolActivity(msg.Event.ToolProgress)
 		case runtime.EventToolFinish, runtime.EventToolFailed, runtime.EventToolCancelled, runtime.EventToolDenied:
 			m.finishToolActivity(msg.Event.ToolResult, msg.Event.Type)
 			if msg.Event.ToolResult != nil {
-				// Mark the pending call terminal under the same Save as
-				// its result message: status and outcome commit together.
-				m.session.ResolvePendingCall(
-					msg.Event.ToolResult.ToolCallID,
-					toolResultCallStatus(msg.Event.Type),
-					toolResultErrString(msg.Event.ToolResult),
-				)
-				// Persist the tool result so ProviderMessages can replay it.
-				content := msg.Event.ToolResult.Content
-				// Truncation for provider replay is handled by runtime; store
-				// the content as presented to the model (already truncated
-				// when produced by scheduler).
-				m.session.AddToolResult(msg.Event.ToolResult.ToolCallID, msg.Event.ToolResult.Name, content)
-				_ = m.session.Save()
+				// Shared record path (internal/recovery): status and
+				// outcome commit in one Save so replay always pairs
+				// calls with results.
+				recovery.RecordToolResult(m.session, msg.Event.Type, msg.Event.ToolResult)
 			}
 		}
 
@@ -572,9 +544,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The run finished normally: close the turn before teardown so
 		// the persisted record says complete even if the process dies
 		// before the next save.
-		if m.session.EndTurn(session.TurnComplete, true) {
-			_ = m.session.Save()
-		}
+		recovery.NoteTerminal(m.session, runtime.EventDone, nil)
 		m.stopStream(true)
 		m.refreshTranscript()
 		return m, nil
@@ -587,15 +557,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// anything else (provider failure, timeout, crash-adjacent
 		// errors) is an interruption. Either way the pending calls are
 		// terminal and will never be re-executed.
-		if errors.Is(msg.err, context.Canceled) {
-			if m.session.EndTurn(session.TurnCancelled, false) {
-				_ = m.session.Save()
-			}
-		} else {
-			if m.session.EndTurn(session.TurnInterrupted, false) {
-				_ = m.session.Save()
-			}
-		}
+		recovery.NoteTerminal(m.session, runtime.EventError, msg.err)
 		// Keep whatever streamed before the error: losing a half-finished
 		// answer is indistinguishable from the model having said nothing.
 		m.stopStream(true)
@@ -613,9 +575,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.streamGen {
 			return m, nil // stale
 		}
-		if m.session != nil && m.session.EndTurn(session.TurnCancelled, false) {
-			_ = m.session.Save()
-		}
+		recovery.NoteTerminal(m.session, runtime.EventCancelled, msg.err)
 		m.stopStream(true)
 		m.entries = append(m.entries, chatEntry{Role: roleSystem, Content: "Run cancelled."})
 		m.refreshTranscript()
@@ -628,9 +588,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The tool batch finished cleanly; the runtime stopped before asking
 		// for another model turn. Record that batch as complete, then show
 		// the user-facing safety reason as a system entry.
-		if m.session != nil && m.session.EndTurn(session.TurnComplete, true) {
-			_ = m.session.Save()
-		}
+		recovery.NoteTerminal(m.session, runtime.EventBlocked, msg.err)
 		m.stopStream(true)
 		reason := "Agent stopped."
 		if msg.err != nil && strings.TrimSpace(msg.err.Error()) != "" {
@@ -701,21 +659,16 @@ func (m *model) stopStream(savePartial bool) {
 	m.activeTools = make(map[string]int)
 	m.finishAssistantStream()
 	m.finishThinkingStream()
-	if savePartial && m.session != nil {
-		if text := strings.TrimSpace(m.assistantBuffer); text != "" {
-			m.session.AddMessage("assistant", text)
-			_ = m.session.Save()
-		}
+	// Shared record path (internal/recovery): keep a reply that streamed
+	// before the stream ended rather than discarding it — unless the
+	// caller asked to drop it (e.g. /clear, agent switch).
+	if savePartial {
+		recovery.PersistAssistantText(m.session, m.assistantBuffer)
 	}
-	if m.session != nil {
-		changed := m.session.CancelTurn()
-		if n := m.session.RepairInterruptedTurn(); n > 0 {
-			changed = true
-		}
-		if changed {
-			_ = m.session.Save()
-		}
-	}
+	// Shared teardown path: settle the turn and synthesize results for
+	// calls whose terminal events arrive after the generation was
+	// retired (and are therefore dropped).
+	recovery.CancelAndRepair(m.session)
 	m.assistantBuffer = ""
 }
 
@@ -741,24 +694,6 @@ func (m *model) cancelActiveRun() {
 	m.selectPicker = nil
 	m.entries = append(m.entries, chatEntry{Role: roleSystem, Content: "Run cancelled."})
 	m.refreshTranscript()
-}
-
-// healSession recovers a session that may have been left mid-turn by a
-// crash or kill: interrupted turns and calls are marked terminal (never
-// re-executed), missing tool results are synthesized, and the session is
-// persisted when anything changed. Call it wherever a session is adopted
-// or about to be replayed.
-func healSession(sess *session.Session) {
-	if sess == nil {
-		return
-	}
-	changed := sess.RecoverInterruptedTurn()
-	if n := sess.RepairInterruptedTurn(); n > 0 {
-		changed = true
-	}
-	if changed {
-		_ = sess.Save()
-	}
 }
 
 func (m *model) appendAssistantText(text string) {
@@ -881,32 +816,6 @@ func (m *model) finishToolActivity(result *runtime.ToolResult, eventType runtime
 		m.appendToolActivity(text, record)
 	}
 	delete(m.activeTools, result.ToolCallID)
-}
-
-// toolResultCallStatus maps a terminal tool event to the persisted call
-// status. Denied is its own state (never conflated with failure or
-// cancellation) so recovery and replay describe what actually happened.
-func toolResultCallStatus(t runtime.EventType) session.CallStatus {
-	switch t {
-	case runtime.EventToolFinish:
-		return session.CallDone
-	case runtime.EventToolDenied:
-		return session.CallDenied
-	case runtime.EventToolCancelled:
-		return session.CallCancelled
-	default:
-		return session.CallFailed
-	}
-}
-
-// toolResultErrString extracts the Go-level error for the pending-call
-// record. Tool-reported failures (IsError with nil Err) record no error:
-// they ran fine and said no.
-func toolResultErrString(result *runtime.ToolResult) string {
-	if result == nil || result.Err == nil {
-		return ""
-	}
-	return result.Err.Error()
 }
 
 // fillToolRecord copies a finished tool call's structured outcome into its
@@ -1152,7 +1061,7 @@ func (m *model) acceptInput() (startedStream bool, quit bool) {
 	// A previous turn may have been cancelled after its tool_calls batch
 	// was persisted but before results arrived; heal before the new turn
 	// is replayed so every call the provider sees has a result.
-	healSession(m.session)
+	recovery.Heal(m.session)
 
 	if err := m.session.Save(); err != nil {
 		m.entries = append(m.entries, chatEntry{
@@ -1290,7 +1199,7 @@ func (m model) switchToSession(id string) (tea.Model, tea.Cmd) {
 	// Heal turns interrupted by an earlier quit/crash before adopting:
 	// otherwise the first replay of this session would carry dangling
 	// tool calls that strict provider APIs reject.
-	healSession(sess)
+	recovery.Heal(sess)
 
 	// A stream from the previous session is no longer relevant once we've
 	// switched conversations: cancel it (its events would otherwise keep
