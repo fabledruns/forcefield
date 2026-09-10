@@ -12,17 +12,20 @@ import (
 	"time"
 
 	"forcefield/internal/recovery"
+	"forcefield/internal/session"
 
 	"github.com/spf13/cobra"
 )
 
-// superviseMaxRestarts, superviseBackoff, superviseMaxBackoff and
-// superviseMaxTurns back the ff supervise flags. Package vars (like
-// agentFlag) so Args validation and tests observe them.
+// superviseMaxRestarts, superviseBackoff, superviseMaxBackoff,
+// superviseMaxTurns and superviseResetBudget back the ff supervise
+// flags. Package vars (like agentFlag) so Args validation and tests
+// observe them.
 var superviseMaxRestarts int
 var superviseBackoff time.Duration
 var superviseMaxBackoff time.Duration
 var superviseMaxTurns int
+var superviseResetBudget bool
 
 // superviseSpawn runs one supervised child attempt. It is a package var
 // so tests can stub the child process without spawning anything.
@@ -51,7 +54,13 @@ Exit 0 (done), 2 (terminal failure, including quota/billing and auth), and
 4 (cancelled or waiting on approvals) stop immediately, as does any child
 the supervisor cannot prove retryable: setup failures, unknown exit codes,
 and processes killed without an exit code (OOM, external kill) fail closed
-with exit 1 and are never retried.`,
+with exit 1 and are never retried.
+
+Restart lifecycle persists in the session file (see session.SupervisorState):
+a killed supervisor resumes with its remaining budget, and an exhausted
+episode refuses further supervised restarts until a terminal child outcome,
+a successful manual run, or --reset-budget starts a new episode. Manual
+ff run --resume and the TUI never consult this state.`,
 	Args: cobra.ExactArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -68,7 +77,7 @@ with exit 1 and are never retried.`,
 			BaseBackoff: superviseBackoff,
 			MaxBackoff:  superviseMaxBackoff,
 		}
-		code := superviseCommand(ctx, args[0], superviseMaxTurns, budget)
+		code := superviseSessionCommand(ctx, args[0], superviseMaxTurns, budget, superviseResetBudget)
 		if code != 0 {
 			osExit(code)
 		}
@@ -143,17 +152,96 @@ func classifyChildWait(ctx context.Context, err error) (int, error) {
 
 // superviseCommand drives supervised restarts for one session and
 // returns the supervisor exit code: the last meaningful child code
-// (0/2/3/4), or 1 for supervisor-level failure. It never touches the
-// session itself — only the child does, through the Phase 1 path.
+// (0/2/3/4), or 1 for supervisor-level failure. It keeps the Phase 2
+// contract exactly: no session IO, in-memory budget from zero. New code
+// should prefer superviseSessionCommand, which adds persisted lifecycle.
 func superviseCommand(ctx context.Context, sessionID string, maxTurns int, budget recovery.Budget) int {
 	fmt.Fprintf(os.Stderr, "ff supervise %s: running ff run --resume %s (max %d restarts)\n",
 		sessionID, sessionID, budget.MaxRestarts)
+	return driveSupervision(ctx, sessionID, maxTurns, budget, 0, func(e recovery.SuperviseEvent) {
+		reportSuperviseEvent(sessionID, budget, e)
+	})
+}
+
+// superviseSessionCommand is superviseCommand with persisted restart
+// lifecycle: the session file carries the episode's spent restarts and
+// exhaustion latch across supervisor kills and external restarts (see
+// internal/recovery supervisor_state.go and session.SupervisorState).
+// When the session cannot be loaded, it degrades explicitly to
+// superviseCommand (Phase 2 in-memory budget, still bounded) instead of
+// refusing to run: without the file there is no lifecycle to consult,
+// and the child will fail closed on its own if the id is bad.
+func superviseSessionCommand(ctx context.Context, sessionID string, maxTurns int, budget recovery.Budget, resetBudget bool) int {
+	sess, err := session.Load(sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ff supervise %s: cannot load session (%v); running with in-memory budget only\n",
+			sessionID, err)
+		return superviseCommand(ctx, sessionID, maxTurns, budget)
+	}
+	if resetBudget {
+		recovery.ClearSupervisor(sess)
+	} else if sess.Supervisor != nil && sess.Supervisor.ExhaustedAt != 0 {
+		fmt.Fprintf(os.Stderr, "ff supervise %s: restart budget previously exhausted (%s); run `ff run --resume %s` to continue manually or pass --reset-budget to start a new episode\n",
+			sessionID,
+			time.Unix(sess.Supervisor.ExhaustedAt, 0).UTC().Format(time.RFC3339),
+			sessionID)
+		return recovery.ExitRetryable
+	}
+	used := 0
+	if sess.Supervisor != nil {
+		used = sess.Supervisor.Restarts
+	}
+	fmt.Fprintf(os.Stderr, "ff supervise %s: running ff run --resume %s (max %d restarts)\n",
+		sessionID, sessionID, budget.MaxRestarts)
+	return driveSupervision(ctx, sessionID, maxTurns, budget, used, func(e recovery.SuperviseEvent) {
+		reportSuperviseEvent(sessionID, budget, e)
+		persistSuperviseEvent(sessionID, used, e)
+	})
+}
+
+// driveSupervision is the shared spawn loop: one child closure over the
+// superviseSpawn seam driven by the recovery policy from a used-restart
+// offset. It performs no session IO itself; callers layer reporting and
+// persistence through emit.
+func driveSupervision(ctx context.Context, sessionID string, maxTurns int, budget recovery.Budget, used int, emit func(recovery.SuperviseEvent)) int {
 	child := func(ctx context.Context) (int, error) {
 		return superviseSpawn(ctx, sessionID, maxTurns)
 	}
-	return recovery.Supervise(ctx, budget, child, recovery.SleepContext, func(e recovery.SuperviseEvent) {
-		reportSuperviseEvent(sessionID, budget, e)
-	})
+	return recovery.SuperviseFrom(ctx, budget, used, child, recovery.SleepContext, emit)
+}
+
+// persistSuperviseEvent mirrors the loop's counter into the session file
+// (fresh load per event, best-effort) so the budget survives supervisor
+// restarts:
+//
+//   - Retry committed → record the spent total (starting offset plus the
+//     1-based attempt number, set absolutely so replay converges) before
+//     the backoff wait, so a kill during backoff resumes with remaining
+//     budget.
+//   - Budget exhausted → latch the episode.
+//   - Terminal child outcome (0/2/4) → drop episode lifecycle so a later
+//     episode starts clean. Terminal failures — including quota/auth and
+//     denials — therefore never accumulate retry state.
+//
+// Spawn failures and unknown codes record nothing (nothing ran) and fail
+// closed. Load failures are skipped silently: the in-memory budget still
+// bounds the invocation, and the startup line already warned when the
+// session was unloadable.
+func persistSuperviseEvent(sessionID string, startUsed int, e recovery.SuperviseEvent) {
+	switch {
+	case e.Retry:
+		if sess, err := session.Load(sessionID); err == nil {
+			recovery.NoteSupervisorRestart(sess, startUsed+e.Attempt)
+		}
+	case e.Exhausted:
+		if sess, err := session.Load(sessionID); err == nil {
+			recovery.NoteSupervisorExhausted(sess)
+		}
+	case e.Final && (e.Code == recovery.ExitOK || e.Code == recovery.ExitTerminal || e.Code == recovery.ExitNeedsHuman):
+		if sess, err := session.Load(sessionID); err == nil {
+			recovery.ClearSupervisor(sess)
+		}
+	}
 }
 
 // reportSuperviseEvent prints one terse lifecycle line to stderr. Retry
@@ -203,6 +291,12 @@ func init() {
 		"max-turns",
 		0,
 		"forwarded to each ff run --resume child (0 keeps the configured bound)",
+	)
+	superviseCmd.Flags().BoolVar(
+		&superviseResetBudget,
+		"reset-budget",
+		false,
+		"clear supervised-restart lifecycle and start a new episode",
 	)
 	rootCmd.AddCommand(superviseCmd)
 }

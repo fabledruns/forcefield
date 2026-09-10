@@ -195,10 +195,19 @@ func runResumeSession(ctx context.Context, resumeID string, maxTurns int) (int, 
 
 	code := driver.ExitCode(ctx.Err())
 	if code == recovery.ExitOK {
+		// Episode over successfully: drop any supervised-restart
+		// lifecycle so a later episode starts clean.
+		recovery.ClearSupervisor(sess)
 		if response, ok := driver.FinalResponse(); ok {
 			fmt.Println(response.Content)
 		}
 		return code, nil
+	}
+	if code == recovery.ExitTerminal || code == recovery.ExitNeedsHuman {
+		// Episode over for a non-retryable reason (including quota/auth
+		// and denials, which classify here): terminal outcomes never
+		// accumulate retry state. Retryable outcomes keep it.
+		recovery.ClearSupervisor(sess)
 	}
 	return code, resumeOutcomeError(resumeID, driver)
 }

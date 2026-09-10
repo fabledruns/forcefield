@@ -47,6 +47,30 @@ type Session struct {
 	// old session files (which predate it) and for sessions that never
 	// ran a tool; every field is additive and omitempty.
 	Turn *TurnState `json:"turn,omitempty"`
+	// Supervisor tracks supervised-restart lifecycle for `ff supervise`
+	// so a restart budget survives the supervisor process itself being
+	// killed and restarted: how many restarts the current episode spent,
+	// and when its budget last exhausted. Nil means no supervised
+	// episode is in flight (old files, manual runs, or a cleared
+	// episode); the pointer plus omitempty keeps clean sessions
+	// serialized exactly as before. It is run-management metadata like
+	// Turn, never conversation: replay and the transcript ignore it.
+	// Writes are whole-file atomic like everything else, but there is
+	// no locking — concurrent supervisors race read-modify-write and
+	// may spend extra bounded restarts (see internal/recovery).
+	Supervisor *SupervisorState `json:"supervisor,omitempty"`
+}
+
+// SupervisorState is the persisted half of one supervised-restart
+// episode. Restarts counts attempts spent (seeding the next supervisor
+// so a kill during backoff continues with remaining budget instead of
+// a fresh one). ExhaustedAt is Unix UTC seconds of the last budget
+// exhaustion, 0 when the episode may still spend restarts. A set
+// ExhaustedAt latches the episode: only an observed terminal child
+// outcome, a successful manual run, or an explicit reset clears it.
+type SupervisorState struct {
+	Restarts    int   `json:"restarts,omitempty"`
+	ExhaustedAt int64 `json:"exhausted_at,omitempty"`
 }
 
 // TurnStatus is the lifecycle state of one tool-calling turn.

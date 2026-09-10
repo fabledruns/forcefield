@@ -68,6 +68,15 @@ type SuperviseEvent struct {
 // unknown child code, cancelled wait). Code 1 is never a run outcome
 // and must never be interpreted as retryable.
 func Supervise(ctx context.Context, budget Budget, child ChildFunc, sleep SleepFunc, emit func(SuperviseEvent)) int {
+	return SuperviseFrom(ctx, budget, 0, child, sleep, emit)
+}
+
+// SuperviseFrom is Supervise resuming with used restarts already spent
+// in the current episode (read from persisted supervisor lifecycle
+// state). Backoff indexing continues from used, so a supervisor killed
+// during backoff resumes with its remaining budget instead of a fresh
+// one. A negative used counts as zero.
+func SuperviseFrom(ctx context.Context, budget Budget, used int, child ChildFunc, sleep SleepFunc, emit func(SuperviseEvent)) int {
 	if child == nil {
 		return 1
 	}
@@ -77,7 +86,10 @@ func Supervise(ctx context.Context, budget Budget, child ChildFunc, sleep SleepF
 	if emit == nil {
 		emit = func(SuperviseEvent) {}
 	}
-	restarts := 0
+	restarts := used
+	if restarts < 0 {
+		restarts = 0
+	}
 	for attempt := 1; ; attempt++ {
 		code, err := child(ctx)
 		if err != nil {
