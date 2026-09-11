@@ -12,8 +12,9 @@ import (
 
 // TestRun_RepeatCallIDExecutesOnce pins run-scoped idempotency: when a
 // later turn repeats an already-executed call ID, the tool does not run
-// again. The recorded result is reused with an explicit note, and the
-// normal Start/terminal event pair keeps transcript and session paired.
+// again. The recorded result is reused with an explicit note on the
+// transcript events, while provider history keeps a single
+// assistant/result pair (no second pair with the same ID).
 func TestRun_RepeatCallIDExecutesOnce(t *testing.T) {
 	counter := &countingTool{}
 	p := &scriptedProvider{turns: [][]providers.StreamEvent{
@@ -24,6 +25,7 @@ func TestRun_RepeatCallIDExecutesOnce(t *testing.T) {
 	rt := newTestRuntimeWithLimits(p, DefaultLimits, counter)
 
 	var types []EventType
+	var finishContents []string
 	events, err := rt.StreamChat(context.Background(), []providers.Message{{Role: providers.UserRole, Content: "hi"}})
 	if err != nil {
 		t.Fatalf("StreamChat: %v", err)
@@ -34,6 +36,9 @@ func TestRun_RepeatCallIDExecutesOnce(t *testing.T) {
 		if ev.Type == EventDone {
 			done = true
 		}
+		if ev.Type == EventToolFinish && ev.ToolResult != nil {
+			finishContents = append(finishContents, ev.ToolResult.Content)
+		}
 	}
 	if !done {
 		t.Fatal("run did not finish")
@@ -41,8 +46,9 @@ func TestRun_RepeatCallIDExecutesOnce(t *testing.T) {
 	if got := counter.calls.Load(); got != 1 {
 		t.Errorf("tool executed %d times, want exactly 1", got)
 	}
-	// The repeat still surfaces explicitly: two Start events, two
-	// finishes, no silent skip.
+	// The repeat still surfaces explicitly on the transcript: two Start
+	// events, two finishes, no silent skip. The second finish carries
+	// the recorded result plus the cached-reuse note.
 	var starts, finishes int
 	for _, ty := range types {
 		switch ty {
@@ -55,27 +61,30 @@ func TestRun_RepeatCallIDExecutesOnce(t *testing.T) {
 	if starts != 2 || finishes != 2 {
 		t.Errorf("starts=%d finishes=%d, want 2/2 explicit pairs", starts, finishes)
 	}
-	// The second tool message carries the recorded result plus the
-	// cached-reuse note.
+	if len(finishContents) != 2 {
+		t.Fatalf("finish events = %d, want 2", len(finishContents))
+	}
+	if !strings.Contains(finishContents[1], "not executed again") {
+		t.Errorf("replayed finish lacks the explicit cached note: %.300q", finishContents[1])
+	}
+	// Provider history keeps a single pair: no second assistant or
+	// tool-result record with the same ID.
 	if len(p.messages) != 3 {
 		t.Fatalf("provider turns = %d, want 3", len(p.messages))
 	}
-	var seconds []providers.Message
+	assistants, results := 0, 0
 	for _, m := range p.messages[2] {
-		if m.Role == providers.ToolRole {
-			seconds = append(seconds, m)
+		for _, tc := range m.ToolCalls {
+			if tc.ID == "c1" {
+				assistants++
+			}
+		}
+		if m.Role == providers.ToolRole && m.ToolCallID == "c1" {
+			results++
 		}
 	}
-	if len(seconds) == 0 {
-		t.Fatal("no tool messages in second turn")
-	}
-	// The last tool message is the repeat; earlier ones are history.
-	last := seconds[len(seconds)-1]
-	if !strings.Contains(last.Content, "count") && !strings.Contains(last.Content, "ok") {
-		t.Errorf("reused result lost original content: %.200q", last.Content)
-	}
-	if !strings.Contains(last.Content, "not executed again") {
-		t.Errorf("reused result lacks the explicit cached note: %.300q", last.Content)
+	if assistants != 1 || results != 1 {
+		t.Errorf("history has %d assistant + %d results for c1, want 1+1", assistants, results)
 	}
 }
 

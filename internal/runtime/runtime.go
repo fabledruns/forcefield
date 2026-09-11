@@ -1895,11 +1895,37 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 			return
 		}
 
-		messages = append(messages, providers.Message{
-			Role:      providers.AssistantRole,
-			Content:   response.Content,
-			ToolCalls: response.ToolCalls,
-		})
+		// Duplicate IDs reuse the recorded result without re-executing
+		// (see executeCalls): they must not append a second
+		// assistant/tool-result pair with the same ID to history,
+		// which would bloat replay and risk strict-provider
+		// rejection. Filter to not-yet-seen IDs for history; the
+		// full batch still goes to executeCalls so idempotency and
+		// transcript events are unchanged.
+		dup := make(map[string]struct{}, len(response.ToolCalls))
+		for _, tc := range response.ToolCalls {
+			if tc.ID != "" {
+				if _, ok := executed[tc.ID]; ok {
+					dup[tc.ID] = struct{}{}
+				}
+			}
+		}
+		newCalls := make([]providers.ToolCall, 0, len(response.ToolCalls))
+		for _, tc := range response.ToolCalls {
+			if tc.ID != "" {
+				if _, isDup := dup[tc.ID]; isDup {
+					continue
+				}
+			}
+			newCalls = append(newCalls, tc)
+		}
+		if len(newCalls) > 0 {
+			messages = append(messages, providers.Message{
+				Role:      providers.AssistantRole,
+				Content:   response.Content,
+				ToolCalls: newCalls,
+			})
+		}
 
 		if snap.scheduler == nil || snap.manager == nil {
 			emit(Event{Type: EventError, Err: fmt.Errorf("tool system not initialized"), TaskState: snapshotPtr(state)})
@@ -1916,6 +1942,11 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 		for i, tc := range response.ToolCalls {
 			result := results[i]
 			state.RecordTool(tc.Name, result.Success)
+			if tc.ID != "" {
+				if _, isDup := dup[tc.ID]; isDup {
+					continue
+				}
+			}
 			content := truncateToolResult(result.Content)
 			content = session.ScrubContent(content)
 			content = session.FenceToolResult(tc.Name, content)

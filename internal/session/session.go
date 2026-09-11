@@ -4,6 +4,7 @@ package session
 import (
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"forcefield/internal/providers"
 	"forcefield/internal/redact"
@@ -59,6 +60,14 @@ type Session struct {
 	// no locking — concurrent supervisors race read-modify-write and
 	// may spend extra bounded restarts (see internal/recovery).
 	Supervisor *SupervisorState `json:"supervisor,omitempty"`
+	// LastSaveError records the most recent Save failure for
+	// observability (in-memory only, never persisted): callers that
+	// fire-and-forget saves can still surface repeated failures via
+	// doctor/status without log spam on the success path.
+	LastSaveError string `json:"-"`
+	// LastSaveTime is when the last Save finished (success or
+	// failure), in-memory only.
+	LastSaveTime time.Time `json:"-"`
 }
 
 // SupervisorState is the persisted half of one supervised-restart
@@ -190,6 +199,34 @@ func (s *Session) compactIfNeeded() {
 	s.Compacted += dropped
 }
 
+// maxPersistedToolResultBytes bounds one tool-result record in the
+// session file. The in-memory provider view has its own smaller cap
+// (runtime maxToolResultChars); this is the persistence bound so a
+// single long-lived session file cannot reach GiB scale over a 5-day
+// run. 48 KiB sits inside the mandated 32-64 KiB window.
+const maxPersistedToolResultBytes = 48 * 1024
+
+// truncatePersistedToolResult caps content to
+// maxPersistedToolResultBytes on a rune boundary, preserving valid
+// UTF-8 and leaving an explicit marker with both sizes.
+func truncatePersistedToolResult(content string) string {
+	if len(content) <= maxPersistedToolResultBytes {
+		return content
+	}
+	cut := 0
+	for i, r := range content {
+		if i+utf8.RuneLen(r) > maxPersistedToolResultBytes {
+			break
+		}
+		cut = i + utf8.RuneLen(r)
+	}
+	if cut == 0 {
+		cut = 1
+	}
+	return fmt.Sprintf("%s\n\n[...persisted tool output truncated at %d bytes, %d bytes total. Full output not retained in session file.]",
+		content[:cut], cut, len(content))
+}
+
 // ProviderMessages converts session history to provider messages.
 // Tool results are fenced so the model treats them as data, not
 // instructions (prompt-injection mitigation). System compaction markers
@@ -228,6 +265,9 @@ func (s *Session) AddProviderMessage(msg providers.Message) {
 	// treatment (copied — the caller's map is never mutated): commands,
 	// paths, and file content routinely carry credentials.
 	msg.Content = ScrubContent(msg.Content)
+	if msg.Role == providers.ToolRole {
+		msg.Content = truncatePersistedToolResult(msg.Content)
+	}
 	if len(msg.ToolCalls) > 0 {
 		calls := make([]providers.ToolCall, len(msg.ToolCalls))
 		for i, tc := range msg.ToolCalls {
@@ -248,20 +288,72 @@ func (s *Session) AddProviderMessage(msg providers.Message) {
 	s.compactIfNeeded()
 }
 
+// hasAssistantToolCall reports whether a tool-call ID already appears
+// in any persisted assistant batch.
+func (s *Session) hasAssistantToolCall(id string) bool {
+	if s == nil || id == "" {
+		return false
+	}
+	for _, m := range s.Messages {
+		if m.Role != string(providers.AssistantRole) {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasToolResult reports whether a tool result with id is already
+// persisted.
+func (s *Session) hasToolResult(id string) bool {
+	if s == nil || id == "" {
+		return false
+	}
+	for _, m := range s.Messages {
+		if m.Role == string(providers.ToolRole) && m.ToolCallID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // AddAssistantToolCalls appends an assistant message that contains tool calls
 // (and optional accompanying text). It is the session-persistence side of the
 // in-memory messages = append(assistant, ToolCalls) in runtime.run.
 func (s *Session) AddAssistantToolCalls(content string, toolCalls []providers.ToolCall) {
+	// Duplicate IDs reuse execution without re-running (see runtime
+	// idempotency): persisting a second assistant pair with the same ID
+	// would bloat history and risk strict-provider replay rejection, so
+	// filter to IDs not yet recorded. Normal unique calls are untouched.
+	filtered := make([]providers.ToolCall, 0, len(toolCalls))
+	for _, tc := range toolCalls {
+		if tc.ID != "" && s.hasAssistantToolCall(tc.ID) {
+			continue
+		}
+		filtered = append(filtered, tc)
+	}
+	if len(filtered) == 0 && len(toolCalls) > 0 {
+		return
+	}
 	s.AddProviderMessage(providers.Message{
 		Role:      providers.AssistantRole,
 		Content:   content,
-		ToolCalls: toolCalls,
+		ToolCalls: filtered,
 	})
 }
 
 // AddToolResult appends a tool result message (role=="tool") linked to a
 // previous assistant tool call via ToolCallID.
 func (s *Session) AddToolResult(toolCallID, name, content string) {
+	// A repeated ID reuses the recorded result (never re-executed): do
+	// not persist a second result pair with the same ID.
+	if toolCallID != "" && s.hasToolResult(toolCallID) {
+		return
+	}
 	s.AddProviderMessage(providers.Message{
 		Role:       providers.ToolRole,
 		ToolCallID: toolCallID,
@@ -504,6 +596,11 @@ func (s *Session) RecoverInterruptedTurn() bool {
 // would be incorrectly coalesced, corrupting the batch.
 func (s *Session) AppendToolCallToLastAssistant(call providers.ToolCall, content string) {
 	content = ScrubContent(content)
+	// A repeated ID reuses execution elsewhere: never persist it twice,
+	// even across separate assistant batches.
+	if call.ID != "" && s.hasAssistantToolCall(call.ID) {
+		return
+	}
 	if n := len(s.Messages); n > 0 {
 		last := &s.Messages[n-1]
 		if last.Role == string(providers.AssistantRole) && len(last.ToolCalls) > 0 {

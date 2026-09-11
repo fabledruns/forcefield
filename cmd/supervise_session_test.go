@@ -66,8 +66,8 @@ func TestSuperviseRefusesExhaustedEpisode(t *testing.T) {
 
 	var calls [][2]any
 	superviseSpawn = scriptSpawn([]int{0}, &calls)
-	if got := superviseSessionCommand(context.Background(), id, 0, sessionTestBudget(), false); got != recovery.ExitRetryable {
-		t.Errorf("superviseSessionCommand = %d, want %d (refuse without spending)", got, recovery.ExitRetryable)
+	if got := superviseSessionCommand(context.Background(), id, 0, sessionTestBudget(), false); got != recovery.ExitTerminal {
+		t.Errorf("superviseSessionCommand = %d, want %d (refuse without spending)", got, recovery.ExitTerminal)
 	}
 	if len(calls) != 0 {
 		t.Errorf("spawned %d children for a latched episode, want none", len(calls))
@@ -264,8 +264,8 @@ func TestSuperviseTwoEpisodeLifecycle(t *testing.T) {
 	// without spawning or spending: the pathological wrapper loop is
 	// reduced to a cheap refusal.
 	calls = nil
-	if got := superviseSessionCommand(context.Background(), id, 0, budget, false); got != recovery.ExitRetryable {
-		t.Fatalf("refusal = %d, want %d", got, recovery.ExitRetryable)
+	if got := superviseSessionCommand(context.Background(), id, 0, budget, false); got != recovery.ExitTerminal {
+		t.Fatalf("refusal = %d, want %d", got, recovery.ExitTerminal)
 	}
 	if len(calls) != 0 {
 		t.Fatalf("refusal spawned %d children, want none", len(calls))

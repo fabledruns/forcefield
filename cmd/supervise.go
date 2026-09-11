@@ -186,7 +186,11 @@ func superviseSessionCommand(ctx context.Context, sessionID string, maxTurns int
 			sessionID,
 			time.Unix(sess.Supervisor.ExhaustedAt, 0).UTC().Format(time.RFC3339),
 			sessionID)
-		return recovery.ExitRetryable
+		// Refusal spawns nothing: report terminal (2), not retryable
+		// (3). Only a child that ran and proved retryable may use 3;
+		// returning 3 here would invite an outer restart-on-3 wrapper
+		// to hot-loop cheap refusals.
+		return recovery.ExitTerminal
 	}
 	used := 0
 	if sess.Supervisor != nil {

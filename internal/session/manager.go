@@ -59,7 +59,7 @@ func validID(id string) bool {
 // either the previous complete file or the new complete file. The
 // temporary file is flushed to disk before the rename so an OS-level
 // crash doesn't produce an empty replacement either.
-func (s *Session) Save() error {
+func (s *Session) Save() (err error) {
 	if !validID(s.ID) {
 		return fmt.Errorf("save session: invalid session id %q", s.ID)
 	}
@@ -67,16 +67,30 @@ func (s *Session) Save() error {
 	// Save original state so a write failure (disk-full, permission) does not
 	// leave the in-memory session diverged from the file on disk. The file
 	// remains the old valid version, and the in-memory session is restored
-	// to that same version on failure.
+	// to that same version on failure. Every lifecycle field Save can
+	// observe is covered: messages, timestamps, compaction count, plus
+	// deep copies of the Turn and Supervisor envelopes so a failed save
+	// can never silently drop lifecycle state.
 	origMessages := s.Messages
 	origUpdatedAt := s.UpdatedAt
 	origCompacted := s.Compacted
+	origTurn := cloneTurn(s.Turn)
+	origSupervisor := cloneSupervisor(s.Supervisor)
 	success := false
 	defer func() {
 		if !success {
 			s.Messages = origMessages
 			s.UpdatedAt = origUpdatedAt
 			s.Compacted = origCompacted
+			s.Turn = origTurn
+			s.Supervisor = origSupervisor
+			if err != nil {
+				s.LastSaveError = err.Error()
+				s.LastSaveTime = time.Now()
+			}
+		} else {
+			s.LastSaveError = ""
+			s.LastSaveTime = time.Now()
 		}
 	}()
 	s.compactIfNeeded()
@@ -132,15 +146,51 @@ func (s *Session) Save() error {
 	}
 
 	if err := replaceFile(tmpName, path); err != nil {
-		return fmt.Errorf("replace session file %s: %w", path, err)
+		return fmt.Errorf("replace session file %s after %d attempts: %w", path, renameAttempts, err)
 	}
 	success = true
 	return nil
 }
 
+// cloneTurn deep-copies a turn envelope for Save rollback so a failed
+// save restores lifecycle state exactly.
+func cloneTurn(t *TurnState) *TurnState {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	if t.Pending != nil {
+		cp.Pending = make([]PendingCall, len(t.Pending))
+		for i, p := range t.Pending {
+			np := p
+			if p.Arguments != nil {
+				m := make(map[string]any, len(p.Arguments))
+				for k, v := range p.Arguments {
+					m[k] = v
+				}
+				np.Arguments = m
+			}
+			cp.Pending[i] = np
+		}
+	}
+	return &cp
+}
+
+// cloneSupervisor copies supervisor lifecycle state for Save rollback.
+func cloneSupervisor(st *SupervisorState) *SupervisorState {
+	if st == nil {
+		return nil
+	}
+	cp := *st
+	return &cp
+}
+
 // renameAttempts bounds how many times replaceFile retries the final
-// rename before giving up.
-const renameAttempts = 5
+// rename before giving up. Ten attempts with linear 10ms backoff
+// (~450ms total) tolerates realistic antivirus/file-indexer holds on
+// Windows while staying bounded; on Unix the first attempt succeeds
+// and the loop costs nothing.
+const renameAttempts = 10
 
 // replaceFile atomically replaces dst with src via rename.
 //
@@ -155,7 +205,7 @@ func replaceFile(src, dst string) error {
 	var err error
 	for attempt := 0; attempt < renameAttempts; attempt++ {
 		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 5 * time.Millisecond)
+			time.Sleep(time.Duration(attempt) * 10 * time.Millisecond)
 		}
 		if err = os.Rename(src, dst); err == nil {
 			return nil
