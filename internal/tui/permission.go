@@ -122,15 +122,6 @@ var permissionChoices = []permOption{
 	{"d", "Always deny", permissions.PromptAlwaysDeny},
 }
 
-// permissionOptions retains the legacy name for tests that import it.
-func permissionOptions() []permOption {
-	return permissionChoices
-}
-
-// permOptionGap was used for the old horizontal layout; kept for
-// compatibility but no longer used in the vertical UI.
-const permOptionGap = "   "
-
 // footerPrompt renders the permission UI shown in place of the input box
 // while this prompt is open. It shows the tool name and a clean,
 // readable block for its arguments (never raw JSON as primary), plus
@@ -178,15 +169,6 @@ func (p *permissionPrompt) renderOptions(hoveredKey string) string {
 		}
 	}
 	return b.String()
-}
-
-// renderPermissionOptions retains compatibility for older callers.
-func renderPermissionOptions(hoveredKey string) string {
-	// Old horizontal rendering is replaced by vertical; delegate to the
-	// prompt's method with a temporary prompt for tests that call it
-	// directly.
-	tmp := &permissionPrompt{selected: 0}
-	return tmp.renderOptions(hoveredKey)
 }
 
 // formatToolBlock renders the tool name and its arguments as a clean,
@@ -376,10 +358,6 @@ func (m model) permissionOptionRects() []indexedRect {
 	}
 	return rects
 }
-
-// permOptionsRowFromBottom is kept for compatibility; new layout uses
-// firstRowFromBottom = 7.
-const permOptionsRowFromBottom = 3
 
 // indexedRect pairs a hit rectangle with its payload for ordered lookups.
 type indexedRect struct {

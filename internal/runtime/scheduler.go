@@ -192,11 +192,6 @@ func (s *scheduler) runWithConcurrency(ctx context.Context, calls []providers.To
 	return results
 }
 
-// runOne executes one tool call with retries, timeouts, and progress events.
-func (s *scheduler) runOne(ctx context.Context, call providers.ToolCall, emit func(Event) bool) ToolResult {
-	return s.runOneWithManager(ctx, call, emit, s.getManager())
-}
-
 // runOneWithManager executes one tool call against an explicit manager
 // snapshot. See RunWithManager for why the snapshot matters.
 func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCall, emit func(Event) bool, manager *tools.Manager) ToolResult {
@@ -458,13 +453,9 @@ func normalizedCommand(args map[string]any) (string, bool) {
 	return s, true
 }
 
-// checkPermission resolves a tool call's permission before execution.
-func (s *scheduler) checkPermission(ctx context.Context, call providers.ToolCall, emit func(Event) bool) (denied bool, result *ToolResult) {
-	return s.checkPermissionWithManager(ctx, call, emit, s.getManager())
-}
-
-// checkPermissionWithManager is checkPermission against an explicit manager
-// snapshot. See RunWithManager for why the snapshot matters.
+// checkPermissionWithManager resolves a tool call's permission before
+// execution against an explicit manager snapshot. See RunWithManager for
+// why the snapshot matters.
 func (s *scheduler) checkPermissionWithManager(ctx context.Context, call providers.ToolCall, emit func(Event) bool, manager *tools.Manager) (denied bool, result *ToolResult) {
 	if s.permissions == nil {
 		return false, nil // no permission manager configured: fail open
@@ -542,13 +533,9 @@ type executionEnforcementSource interface {
 	ExecutionEnforcement(ctx context.Context) (sandbox.Enforcement, bool)
 }
 
-// resolveAsk prompts for a decision and handles "always" as session-scoped.
-// It serializes concurrent asks so the single TUI modal is never overwritten.
-func (s *scheduler) resolveAsk(ctx context.Context, call providers.ToolCall) (permissions.Decision, error) {
-	return s.resolveAskWithManager(ctx, call, s.getManager())
-}
-
-// resolveAskWithManager is resolveAsk against an explicit manager snapshot.
+// resolveAskWithManager prompts for a decision against an explicit manager
+// snapshot. It handles "always" as session-scoped and serializes concurrent
+// asks so the single TUI modal is never overwritten.
 func (s *scheduler) resolveAskWithManager(ctx context.Context, call providers.ToolCall, manager *tools.Manager) (permissions.Decision, error) {
 	asker := s.getAsker()
 	if asker == nil {
@@ -601,10 +588,6 @@ func (s *scheduler) deniedResult(call providers.ToolCall, reason string) *ToolRe
 
 // lookupEnforcementSource resolves the registered tool implementing the
 // enforcement-source interface, if any.
-func (s *scheduler) lookupEnforcementSource(name string) (executionEnforcementSource, bool) {
-	return lookupEnforcementSource(s.getManager(), name)
-}
-
 func lookupEnforcementSource(manager *tools.Manager, name string) (executionEnforcementSource, bool) {
 	if manager == nil {
 		return nil, false

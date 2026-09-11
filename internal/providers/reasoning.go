@@ -112,10 +112,6 @@ func ModelReasoningCapabilities(providerID, modelID string) ReasoningCapabilitie
 			// Return deep copy to prevent caller mutation.
 			return cloneReasoningCapabilities(caps)
 		}
-		// Fallback: also check without normalizing (exact key) for backward compat
-		if caps, ok := nvidiaModelCapabilities[modelLower]; ok {
-			return cloneReasoningCapabilities(caps)
-		}
 		return ReasoningCapabilities{}
 	case "openai":
 		if openAIEffortModels[modelLower] {
@@ -350,22 +346,6 @@ var nvidiaModelCapabilities = map[string]ReasoningCapabilities{
 	"meta/muse-glimmer-30b": {
 		Effort: &EffortCapability{Levels: []string{"none", "minimal", "low", "medium", "high", "max"}, Default: "medium"},
 	},
-	// Also support prefixed form nvidia/meta/muse-glimmer-30b via normalization (see normalizeModelID)
-	"nvidia/meta/muse-glimmer-30b": {
-		Effort: &EffortCapability{Levels: []string{"none", "minimal", "low", "medium", "high", "max"}, Default: "medium"},
-	},
-	"nvidia/deepseek-ai/deepseek-v4-flash-0731": {
-		Effort: &EffortCapability{Levels: []string{"none", "high", "max"}, Default: "high"},
-	},
-}
-
-// nvidiaEffortModels kept for backward compat with existing tests that check false entries; use new map for capabilities.
-var nvidiaEffortModels = map[string]bool{
-	"z-ai/glm-5.2":                      true,
-	"nvidia/nemotron-3-ultra-550b-a55b": true,
-	"deepseek-ai/deepseek-v4-pro":       true,
-	"thinkingmachines/inkling":          false, // explicitly unsupported for testing
-	"minimaxai/minimax-m3":              false,
 }
 
 // normalizeModelID strips optional provider prefix and lowercases for lookup.

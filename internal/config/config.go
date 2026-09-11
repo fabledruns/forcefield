@@ -351,13 +351,6 @@ func Load() (*Config, error) {
 // per-provider keys are resolved through ResolveProvider instead.
 const apiKeyName = "NVIDIA_API_KEY"
 
-// ResolveAPIKey returns the NVIDIA API key along with where it came from:
-// the process environment first, then .env files (project-local, then
-// ~/.forcefield/.env). See ResolveEnvValue for the generalized lookup.
-func ResolveAPIKey() (key, source string, err error) {
-	return ResolveEnvValue(apiKeyName)
-}
-
 // ResolveEnvValue returns the value of a named environment variable,
 // falling back to .env files: .env in the current project directory
 // first, then ~/.forcefield/.env.

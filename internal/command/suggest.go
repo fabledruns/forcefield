@@ -35,21 +35,10 @@ func levenshtein(a, b string) int {
 			deletion := prev[j] + 1
 			insertion := curr[j-1] + 1
 			substitution := prev[j-1] + cost
-			curr[j] = min3(deletion, insertion, substitution)
+			curr[j] = min(deletion, min(insertion, substitution))
 		}
 		prev, curr = curr, prev
 	}
 
 	return prev[lb]
-}
-
-func min3(a, b, c int) int {
-	m := a
-	if b < m {
-		m = b
-	}
-	if c < m {
-		m = c
-	}
-	return m
 }

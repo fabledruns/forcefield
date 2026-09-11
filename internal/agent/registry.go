@@ -103,15 +103,6 @@ func (r *Registry) Default() Definition {
 	return r.MustGet("general")
 }
 
-// Clone returns a deep copy of the registry.
-func (r *Registry) Clone() *Registry {
-	out := NewRegistry()
-	for _, k := range r.order {
-		_ = out.Register(r.byName[k])
-	}
-	return out
-}
-
 // DefaultRegistry returns a registry pre-populated with the 7 built-in
 // agents. Each caller gets an independent copy.
 func DefaultRegistry() *Registry {

@@ -108,12 +108,6 @@ func (t *State) BeginIteration() int {
 	return t.s.Iteration
 }
 
-func (t *State) Iteration() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.s.Iteration
-}
-
 // RecordTool logs one completed tool call outcome. Consecutive tool
 // failures accumulate ConsecutiveFailures, which the runtime uses to
 // detect a stuck agent; any success resets the streak.

@@ -53,12 +53,12 @@ package config
 	provider?: string
 	model?:    string
 
-	max_iterations?:           int & > 0
-	max_tool_calls?:           int & > 0
-	max_consecutive_failures?: int & > 0
-	context_window?:           int & > 0
-	context_reserve?:          int & > 0
-	max_context_messages?:     int & > 0
+	max_iterations?:           int & >= 0
+	max_tool_calls?:           int & >= 0
+	max_consecutive_failures?: int & >= 0
+	context_window?:           int & >= 0
+	context_reserve?:          int & >= 0
+	max_context_messages?:     int & >= 0
 	context_summary?:          bool
 }
 
@@ -95,16 +95,16 @@ package config
 		// Long-horizon run limits. Zero/omitted values fall back to
 		// runtime.DefaultLimits; negative values are meaningless and are
 		// rejected here and by Go config validation (validateRunLimits).
-		max_iterations?:           int & > 0
-		max_tool_calls?:           int & > 0
-		max_consecutive_failures?: int & > 0
+		max_iterations?:           int & >= 0
+		max_tool_calls?:           int & >= 0
+		max_consecutive_failures?: int & >= 0
 
 		// Context-budget overrides. Omitted values resolve from the
 		// provider capability table (known models) or fall back to
 		// message-count windowing (unknown models).
-		context_window?:       int & > 0
-		context_reserve?:      int & > 0
-		max_context_messages?: int & > 0
+		context_window?:       int & >= 0
+		context_reserve?:      int & >= 0
+		max_context_messages?: int & >= 0
 		context_summary?:      bool
 	}
 
@@ -141,8 +141,8 @@ package config
 	// field is optional and omitted values resolve to the tool default.
 	// timeout_seconds is capped at 300 (the scheduler's hard ceiling).
 	tools?: [#ToolName]: {
-		max_bytes?:       int & > 0
-		max_lines?:       int & > 0
+		max_bytes?:       int & >= 0
+		max_lines?:       int & >= 0
 		timeout_seconds?: number & >= 0 & <= 300
 	}
 }

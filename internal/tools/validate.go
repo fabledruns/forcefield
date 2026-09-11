@@ -13,7 +13,6 @@ func ValidateArgs(def Definition, args map[string]any) error {
 	if def.InputSchema == nil {
 		return nil
 	}
-	// Extract properties
 	rawProps, ok := def.InputSchema["properties"]
 	if !ok {
 		return nil
@@ -22,7 +21,6 @@ func ValidateArgs(def Definition, args map[string]any) error {
 	if !ok {
 		return nil
 	}
-	// Build required set
 	required := make(map[string]bool)
 	if rawReq, ok := def.InputSchema["required"]; ok {
 		switch v := rawReq.(type) {
@@ -38,7 +36,6 @@ func ValidateArgs(def Definition, args map[string]any) error {
 			}
 		}
 	}
-	// Check required fields present
 	for field := range required {
 		if _, ok := args[field]; !ok {
 			return &ArgumentError{Field: field, Reason: "is required"}
@@ -50,7 +47,6 @@ func ValidateArgs(def Definition, args map[string]any) error {
 	if len(props) == 0 {
 		return nil
 	}
-	// Check for unknown fields and type mismatches
 	for key, val := range args {
 		propRaw, ok := props[key]
 		if !ok {
@@ -71,7 +67,6 @@ func ValidateArgs(def Definition, args map[string]any) error {
 		if err := checkType(key, typeStr, val); err != nil {
 			return err
 		}
-		// Enum check if present
 		if enumRaw, ok := prop["enum"]; ok {
 			if err := checkEnum(key, enumRaw, val); err != nil {
 				return err
@@ -90,7 +85,6 @@ func checkType(field, typeStr string, val any) error {
 	case "number":
 		switch val.(type) {
 		case int, int8, int16, int32, int64, float32, float64:
-			// ok
 		default:
 			return &ArgumentError{Field: field, Reason: "must be a number"}
 		}
@@ -107,7 +101,6 @@ func checkType(field, typeStr string, val any) error {
 			return &ArgumentError{Field: field, Reason: "must be an array"}
 		}
 	default:
-		// Unknown type, ignore
 	}
 	return nil
 }

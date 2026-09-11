@@ -145,12 +145,6 @@ func ResolveWithinWorkspace(workspace, dir string) (string, error) {
 	return resolveWithinWorkspace(workspace, dir)
 }
 
-// ResolveExistingDir is the exported historical resolver used by
-// native mode (existence-only, no scope).
-func ResolveExistingDir(dir string) (string, error) {
-	return resolveExistingDir(dir)
-}
-
 // EnsureWithinWorkspace validates a path intended for creation (the
 // file may not yet exist) against the workspace. It lexically ensures
 // the target is inside the workspace, follows symlinks for the full

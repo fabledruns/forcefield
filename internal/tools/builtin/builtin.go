@@ -35,12 +35,6 @@ func WithPolicy(p sandbox.Policy) Option {
 	return func(o *options) { o.policy = p; o.hasPolicy = true }
 }
 
-// WithFS remains an alias for WithPolicy for clarity at call sites that
-// only care about filesystem confinement.
-func WithFS(p sandbox.Policy) Option {
-	return WithPolicy(p)
-}
-
 // WithLimits applies per-tool output/timeout overrides. Keys are tool
 // names; tools that do not implement tools.LimitsSetter ignore their
 // entry. Only positive fields take effect per tool.

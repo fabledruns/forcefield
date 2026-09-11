@@ -86,8 +86,6 @@ func (h *HitMap) At(x, y int) (HitRegion, bool) {
 	return HitRegion{}, false
 }
 
-func (h *HitMap) len() int { return len(h.regions) }
-
 // contentBand returns the Rect for rows [start, start+height) of the
 // transcript content when drawn at the given scroll offset. Transcript
 // bands are stored in CONTENT coordinates inside spans; converting to

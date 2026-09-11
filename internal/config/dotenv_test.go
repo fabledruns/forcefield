@@ -34,7 +34,7 @@ func TestParseDotEnvRejectsMalformedLines(t *testing.T) {
 	}
 }
 
-func TestResolveAPIKeyPrefersEnvironment(t *testing.T) {
+func TestResolveEnvValuePrefersEnvironment(t *testing.T) {
 	isolateHome(t)
 
 	dir := t.TempDir()
@@ -44,16 +44,16 @@ func TestResolveAPIKeyPrefersEnvironment(t *testing.T) {
 	}
 	t.Setenv(apiKeyName, "from-environment")
 
-	key, source, err := ResolveAPIKey()
+	key, source, err := ResolveEnvValue(apiKeyName)
 	if err != nil {
-		t.Fatalf("ResolveAPIKey error = %v", err)
+		t.Fatalf("ResolveEnvValue error = %v", err)
 	}
 	if key != "from-environment" || source != "environment" {
 		t.Errorf("key=%q source=%q, want the environment to win", key, source)
 	}
 }
 
-func TestResolveAPIKeyReadsProjectDotEnv(t *testing.T) {
+func TestResolveEnvValueReadsProjectDotEnv(t *testing.T) {
 	isolateHome(t)
 
 	dir := t.TempDir()
@@ -63,9 +63,9 @@ func TestResolveAPIKeyReadsProjectDotEnv(t *testing.T) {
 	}
 	t.Setenv(apiKeyName, "")
 
-	key, source, err := ResolveAPIKey()
+	key, source, err := ResolveEnvValue(apiKeyName)
 	if err != nil {
-		t.Fatalf("ResolveAPIKey error = %v", err)
+		t.Fatalf("ResolveEnvValue error = %v", err)
 	}
 	if key != "nvapi-test-value" {
 		t.Errorf("key = %q", key)

@@ -1,0 +1,27 @@
+# Zero run/tool limits mean "use the default" (see validateRunLimits in
+# internal/config/config.go and Limits.WithDefaults); only negatives are
+# rejected. cue vet must accept this file.
+model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ornith:9b
+agent:
+  max_iterations: 0
+  max_tool_calls: 0
+  max_consecutive_failures: 0
+  context_window: 0
+  context_reserve: 0
+  max_context_messages: 0
+agents:
+  coding:
+    max_iterations: 0
+    max_tool_calls: 0
+    max_consecutive_failures: 0
+    context_window: 0
+    context_reserve: 0
+    max_context_messages: 0
+tools:
+  shell:
+    max_bytes: 0
+    max_lines: 0
+    timeout_seconds: 0
