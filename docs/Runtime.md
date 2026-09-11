@@ -186,5 +186,5 @@ old files, so a crash can only leave fewer complete files behind.
 ## Design Notes
 
 - The runtime owns the multi-turn tool loop. Providers stream only one turn.
-- Programmatic model/provider switches (`SetModel`/`SetProvider`) take effect on the next request and are in-memory only until `SaveConfig` is called. The TUI `/model` and `/provider` commands persist via `SaveConfig`, so interactive picks survive restarts. Length-truncated (`finish_reason=length`) and incomplete turns (stream closed without a terminal marker) block or error instead of reporting success; truncated tool calls are never executed. See `docs/Config.md`.
+- Programmatic model/provider switches (`SetModel`/`SetProvider`) take effect on the next request and are in-memory only until `SaveConfig` is called. The TUI `/model` and `/provider` commands persist via `SaveConfig`, so interactive picks survive restarts. Length-truncated (`finish_reason=length`) and incomplete turns (stream closed without a terminal marker) block or error instead of reporting success; truncated tool calls are never executed. A turn streaming past 8 MiB without terminating fails as a non-retryable runaway-stream error instead of growing without bound. See `docs/Config.md`.
 - Cancellation through context stops emission and ends the run cleanly when possible.

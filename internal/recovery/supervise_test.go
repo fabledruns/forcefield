@@ -218,3 +218,41 @@ func TestSuperviseNilGuards(t *testing.T) {
 		t.Errorf("nil emit/sleep: Supervise = %d, want %d", got, ExitOK)
 	}
 }
+
+// TestSuperviseLongFlappingRun pins counter exactness at endurance
+// scale: 25 straight retryable failures with a 25 budget spend exactly
+// 25 restarts with monotonically capped waits, then park on the 26th
+// outcome without drifting by even one attempt.
+func TestSuperviseLongFlappingRun(t *testing.T) {
+	const cycles = 25
+	script := make([]int, cycles+1)
+	for i := range script {
+		script[i] = ExitRetryable
+	}
+	child, calls := scriptChild(script...)
+	budget := Budget{MaxRestarts: cycles, BaseBackoff: time.Millisecond, MaxBackoff: time.Second}
+	var waits []time.Duration
+	var retries int
+	got := Supervise(context.Background(), budget, child, recordSleep(&waits), func(e SuperviseEvent) {
+		if e.Retry {
+			retries++
+		}
+	})
+	if got != ExitRetryable {
+		t.Errorf("Supervise = %d, want %d (budget spent)", got, ExitRetryable)
+	}
+	if *calls != cycles+1 {
+		t.Errorf("child called %d times, want %d (1 initial + %d restarts)", *calls, cycles+1, cycles)
+	}
+	if retries != cycles || len(waits) != cycles {
+		t.Fatalf("retries = %d, waits = %d; want %d of each", retries, len(waits), cycles)
+	}
+	for i := 1; i < len(waits); i++ {
+		if waits[i] < waits[i-1] {
+			t.Errorf("waits not non-decreasing at %d: %v after %v", i, waits[i], waits[i-1])
+		}
+		if waits[i] > budget.MaxBackoff {
+			t.Errorf("wait %d = %v exceeds cap %v", i, waits[i], budget.MaxBackoff)
+		}
+	}
+}

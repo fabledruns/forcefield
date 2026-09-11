@@ -1767,6 +1767,56 @@ func (r *Runtime) RunContext(ctx context.Context, messages []providers.Message) 
 // maxToolResultChars keeps verbose tool output from dominating later turns.
 const maxToolResultChars = 6000
 
+// maxTurnBytes caps how much content one model turn may stream before
+// terminating (text, thinking, and tool-call arguments combined). Model
+// output is bounded in practice by max-output-tokens, but a broken or
+// hostile endpoint could stream forever: without this, response.Content
+// would grow without bound and OOM the harness mid-run. 8 MiB is orders
+// of magnitude above any legitimate turn. Tripping it fails the turn
+// (non-transient: an endpoint that did this once is not proven safe to
+// immediately retry); the run surfaces EventError and stops.
+const maxTurnBytes = 8 << 20
+
+// streamEventBytes estimates one stream event's contribution to the
+// turn accumulator. Exact for text/thinking; tool-call arguments are
+// provider-decoded JSON (maps/slices/scalars), sized structurally.
+// This is a safety bound, not accounting: overcounting only trips
+// earlier on absurd turns.
+func streamEventBytes(event providers.StreamEvent) int {
+	n := len(event.Text) + len(event.Thinking)
+	for _, tc := range event.ToolCalls {
+		n += len(tc.ID) + len(tc.Name) + argBytes(tc.Arguments)
+	}
+	return n
+}
+
+func argBytes(args map[string]any) int {
+	n := 0
+	for k, v := range args {
+		n += len(k) + valueBytes(v)
+	}
+	return n
+}
+
+func valueBytes(v any) int {
+	switch t := v.(type) {
+	case string:
+		return len(t)
+	case []byte:
+		return len(t)
+	case map[string]any:
+		return argBytes(t)
+	case []any:
+		n := 0
+		for _, e := range t {
+			n += valueBytes(e)
+		}
+		return n
+	default:
+		return 32
+	}
+}
+
 // run executes the persistent agent loop and enforces runtime limits.
 func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit func(Event) bool, snap runSnapshot, tr *trace.Run) {
 	state := task.New(goalFrom(messages))
@@ -2209,6 +2259,7 @@ func (r *Runtime) streamOneTurn(ctx context.Context, messages []providers.Messag
 	var response providers.Response
 	emitted := false
 	sawDone := false
+	turnBytes := 0
 	// Select on ctx alongside the provider channel so a hung provider
 	// that never closes its stream cannot wedge the run forever: on
 	// cancellation the turn ends promptly, and the provider's own
@@ -2236,6 +2287,11 @@ func (r *Runtime) streamOneTurn(ctx context.Context, messages []providers.Messag
 			}
 			if event.Err != nil {
 				return providers.Response{}, emitted, redact.ScrubError(fmt.Errorf("model stream failed: %w", event.Err))
+			}
+
+			turnBytes += streamEventBytes(event)
+			if turnBytes > maxTurnBytes {
+				return providers.Response{}, emitted, fmt.Errorf("model turn exceeded %d bytes without terminating (runaway stream)", maxTurnBytes)
 			}
 
 			if event.Thinking != "" {

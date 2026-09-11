@@ -5,12 +5,22 @@ package permissions
 import "fmt"
 
 // Decision is the outcome of a permission lookup for a single tool.
+//
+// The zero value is Ask on purpose: an uninitialized Decision — a zero
+// Rules, a missed map lookup, a forgotten field — must confirm, never
+// silently allow. (Prompt is ordered the same way for the same reason:
+// its zero value denies.) All comparisons are symbolic and persistence
+// uses the String() spellings, so the ordering carries no wire meaning.
 type Decision int
 
 const (
-	Allow Decision = iota
+	// Ask means confirm with a human first. Zero value: safest default.
+	Ask Decision = iota
+	// Deny refuses the invocation.
 	Deny
-	Ask
+	// Allow runs without prompting. Must never be a zero value: it is
+	// only ever granted by explicit configuration or an explicit answer.
+	Allow
 )
 
 // String renders a Decision the way it's written in config.yaml.

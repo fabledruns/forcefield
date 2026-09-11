@@ -234,3 +234,52 @@ func TestSuperviseConcurrentInvocations(t *testing.T) {
 		t.Errorf("Supervisor = %+v, want nil after successes", final.Supervisor)
 	}
 }
+
+// TestSuperviseTwoEpisodeLifecycle drives the full wrapper-visible
+// lifecycle through one session file: an episode exhausts and latches,
+// a fresh external invocation refuses without spending, an explicit
+// reset starts a new episode, and its success leaves no residue.
+func TestSuperviseTwoEpisodeLifecycle(t *testing.T) {
+	isolateSuperviseGlobals(t)
+	enterSuperviseTempDir(t)
+	id := seedSession(t, nil)
+	budget := recovery.Budget{MaxRestarts: 1, BaseBackoff: time.Millisecond, MaxBackoff: time.Millisecond}
+
+	// Episode 1: one retryable failure spends the single restart, the
+	// next failure exhausts and latches.
+	var calls [][2]any
+	superviseSpawn = scriptSpawn([]int{3, 3}, &calls)
+	if got := superviseSessionCommand(context.Background(), id, 0, budget, false); got != recovery.ExitRetryable {
+		t.Fatalf("episode 1 = %d, want %d", got, recovery.ExitRetryable)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("episode 1 attempts = %d, want 2", len(calls))
+	}
+	st := loadSupervisor(t, id).Supervisor
+	if st == nil || st.ExhaustedAt == 0 {
+		t.Fatalf("Supervisor = %+v, want a latched episode", st)
+	}
+
+	// A fresh external invocation (new supervisor process) refuses
+	// without spawning or spending: the pathological wrapper loop is
+	// reduced to a cheap refusal.
+	calls = nil
+	if got := superviseSessionCommand(context.Background(), id, 0, budget, false); got != recovery.ExitRetryable {
+		t.Fatalf("refusal = %d, want %d", got, recovery.ExitRetryable)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("refusal spawned %d children, want none", len(calls))
+	}
+
+	// Explicit reset starts a new episode; its success clears everything.
+	superviseSpawn = scriptSpawn([]int{0}, &calls)
+	if got := superviseSessionCommand(context.Background(), id, 0, budget, true); got != 0 {
+		t.Fatalf("reset episode = %d, want 0", got)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("reset attempts = %d, want 1", len(calls))
+	}
+	if st := loadSupervisor(t, id).Supervisor; st != nil {
+		t.Errorf("Supervisor = %+v, want nil after the reset episode succeeds", st)
+	}
+}

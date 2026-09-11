@@ -194,22 +194,27 @@ func runResumeSession(ctx context.Context, resumeID string, maxTurns int) (int, 
 	}
 
 	code := driver.ExitCode(ctx.Err())
+	settleSupervisorEpisode(sess, code)
 	if code == recovery.ExitOK {
-		// Episode over successfully: drop any supervised-restart
-		// lifecycle so a later episode starts clean.
-		recovery.ClearSupervisor(sess)
 		if response, ok := driver.FinalResponse(); ok {
 			fmt.Println(response.Content)
 		}
 		return code, nil
 	}
-	if code == recovery.ExitTerminal || code == recovery.ExitNeedsHuman {
-		// Episode over for a non-retryable reason (including quota/auth
-		// and denials, which classify here): terminal outcomes never
-		// accumulate retry state. Retryable outcomes keep it.
+	return code, resumeOutcomeError(resumeID, driver)
+}
+
+// settleSupervisorEpisode drops supervised-restart lifecycle when a
+// headless run reaches a terminal outcome (completed, terminal failure,
+// or cancellation/denial — including quota/auth failures, which
+// classify as terminal). Retryable interruptions and setup failures
+// keep it: the episode is still open and a supervisor (or a fixed
+// manual retry) may legitimately continue it.
+func settleSupervisorEpisode(sess *session.Session, code int) {
+	switch code {
+	case recovery.ExitOK, recovery.ExitTerminal, recovery.ExitNeedsHuman:
 		recovery.ClearSupervisor(sess)
 	}
-	return code, resumeOutcomeError(resumeID, driver)
 }
 
 // resumeOutcomeError describes a non-zero resume outcome for stderr,

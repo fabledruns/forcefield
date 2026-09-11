@@ -431,3 +431,160 @@ func TestPersistAssistantTextSkipsBlank(t *testing.T) {
 		t.Errorf("last = %+v, want the text stored verbatim (scrub/trim is the caller's job)", last)
 	}
 }
+
+// breakSaves corrupts the session ID so every subsequent Save fails
+// validation before touching disk, and returns a repair func. Save
+// failures are otherwise hard to inject deterministically across
+// platforms (chmod semantics differ); an invalid ID fails identically
+// everywhere, exercising the exact same rollback/no-partial-write paths.
+func breakSaves(sess *session.Session) (restore func()) {
+	goodID := sess.ID
+	sess.ID = "bad/id"
+	return func() { sess.ID = goodID }
+}
+
+func TestDriverFailedBatchSaveLeavesHealableFile(t *testing.T) {
+	enterTempDir(t)
+	sess := newPersistedSession(t)
+	goodID := sess.ID
+	driver := NewDriver(sess)
+
+	restore := breakSaves(sess)
+	// Intent commits in memory, but the file keeps the last valid state.
+	driver.HandleEvent(runtime.Event{Type: runtime.EventText, Text: "working"})
+	driver.HandleEvent(toolStart("c1", "shell"))
+	if len(sess.Messages) != 2 {
+		t.Fatalf("in-memory messages = %d, want user + batch", len(sess.Messages))
+	}
+	// The on-disk file is untouched: still exactly the baseline, still
+	// coherent, still healable (nothing dangling was half-written).
+	onDisk := reloadSession(t, goodID)
+	if len(onDisk.Messages) != 1 {
+		t.Fatalf("on-disk messages = %d, want only the baseline", len(onDisk.Messages))
+	}
+	if onDisk.Turn != nil {
+		t.Errorf("on-disk turn = %+v, want nil (batch never persisted)", onDisk.Turn)
+	}
+	restore()
+	// Recovery converges: the next save persists everything at once.
+	driver.HandleEvent(toolTerminal(runtime.EventToolFinish, "c1", "shell", "done", nil))
+	converged := reloadSession(t, goodID)
+	if len(converged.Messages) != 3 {
+		t.Fatalf("converged messages = %d, want user + batch + result", len(converged.Messages))
+	}
+}
+
+func TestDriverFailedResultSaveConverges(t *testing.T) {
+	enterTempDir(t)
+	sess := newPersistedSession(t)
+	goodID := sess.ID
+	driver := NewDriver(sess)
+
+	driver.HandleEvent(toolStart("c1", "shell"))
+	restore := breakSaves(sess)
+	driver.HandleEvent(toolTerminal(runtime.EventToolFinish, "c1", "shell", "done", nil))
+	// In memory moved on; on disk the batch sits without its result —
+	// precisely the crash window heal() exists for.
+	if len(sess.Messages) != 3 {
+		t.Fatalf("in-memory messages = %d, want user + batch + result", len(sess.Messages))
+	}
+	stale := reloadSession(t, goodID)
+	if len(stale.Messages) != 2 {
+		t.Fatalf("on-disk messages = %d, want user + batch", len(stale.Messages))
+	}
+	if stale.Turn == nil || stale.Turn.Status != session.TurnInProgress {
+		t.Fatalf("on-disk turn = %+v, want in_progress", stale.Turn)
+	}
+	// A heal pass over the stale file pairs the orphan instead of
+	// replaying a dangling call, proving the failure left healable state.
+	if !Heal(stale) {
+		t.Fatal("Heal reported no change for an orphaned batch")
+	}
+	restore()
+	driver.HandleEvent(runtime.Event{Type: runtime.EventDone, Response: &providers.Response{}})
+	final := reloadSession(t, goodID)
+	var results int
+	for _, m := range final.Messages {
+		if m.Role == "tool" && m.ToolCallID == "c1" {
+			results++
+			if m.Content != "done" {
+				t.Errorf("result content = %q, want the real outcome", m.Content)
+			}
+		}
+	}
+	if results != 1 {
+		t.Errorf("results for c1 = %d, want exactly one (no duplicate)", results)
+	}
+}
+
+func TestDriverFailedEndTurnSaveKeepsPriorTurn(t *testing.T) {
+	enterTempDir(t)
+	sess := newPersistedSession(t)
+	goodID := sess.ID
+	driver := NewDriver(sess)
+
+	// Complete one turn cleanly first.
+	driver.HandleEvent(toolStart("c1", "shell"))
+	driver.HandleEvent(toolTerminal(runtime.EventToolFinish, "c1", "shell", "done", nil))
+	driver.HandleEvent(runtime.Event{Type: runtime.EventDone, Response: &providers.Response{}})
+	if st := reloadSession(t, goodID).Turn; st == nil || st.Status != session.TurnComplete {
+		t.Fatalf("setup turn = %+v, want complete", st)
+	}
+
+	// The next turn opens in memory but its persistence fails: the file
+	// must still describe the previous complete turn, not a half-open
+	// new one.
+	restore := breakSaves(sess)
+	driver.HandleEvent(toolStart("c2", "shell"))
+	_ = restore
+	kept := reloadSession(t, goodID)
+	if kept.Turn == nil || kept.Turn.Status != session.TurnComplete {
+		t.Fatalf("on-disk turn = %+v, want the previous complete turn", kept.Turn)
+	}
+	for _, m := range kept.Messages {
+		for _, tc := range m.ToolCalls {
+			if tc.ID == "c2" {
+				t.Fatalf("unpersisted batch for c2 leaked to disk: %+v", m)
+			}
+		}
+	}
+}
+
+func TestDriverMidStreamErrorWithPartialBatch(t *testing.T) {
+	enterTempDir(t)
+	sess := newPersistedSession(t)
+	driver := NewDriver(sess)
+
+	// Model streamed text plus one tool call, then the stream died with
+	// a transient failure: the turn must record interrupted (never
+	// retried mid-stream), keep what streamed, and exit retryable.
+	driver.HandleEvent(runtime.Event{Type: runtime.EventText, Text: "half an answer"})
+	driver.HandleEvent(toolStart("c1", "shell"))
+	driver.HandleEvent(runtime.Event{Type: runtime.EventError, Err: transientNetError{}})
+	if code := driver.ExitCode(context.Background().Err()); code != ExitRetryable {
+		t.Errorf("ExitCode = %d, want %d", code, ExitRetryable)
+	}
+	persisted := reloadSession(t, sess.ID)
+	if persisted.Turn == nil || persisted.Turn.Status != session.TurnInterrupted {
+		t.Errorf("turn = %+v, want interrupted", persisted.Turn)
+	}
+	if persisted.Messages[1].Content != "half an answer" {
+		t.Errorf("batch content = %q, want streamed text kept", persisted.Messages[1].Content)
+	}
+	// The terminal path already converged the file (CancelAndRepair
+	// runs inside terminal handling, exactly like the UI teardown), so
+	// a later heal is a no-op and the orphan is already paired.
+	if Heal(persisted) {
+		t.Error("Heal reported a change, want converged (already paired)")
+	}
+	converged := reloadSession(t, sess.ID)
+	var paired bool
+	for _, m := range converged.Messages {
+		if m.Role == "tool" && m.ToolCallID == "c1" {
+			paired = true
+		}
+	}
+	if !paired {
+		t.Errorf("orphaned c1 has no synthesized result: %+v", converged.Messages)
+	}
+}
