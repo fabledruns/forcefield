@@ -48,8 +48,8 @@ func TestHelperProcess(t *testing.T) {
 
 // spawnHeartbeatGrandchild starts a real detached descendant ticking
 // HELPER_LOG, then returns: the caller blocks so both stay alive until
-// the tree kill. Windows uses PowerShell (script file, no quoting
-// layers); Unix uses sh. A start failure exits loudly (9) so the test
+// the tree kill. Windows uses an inline PowerShell loop; Unix uses sh.
+// A start failure exits loudly (9) so the test
 // fails visibly instead of asserting against a tree that never existed.
 func spawnHeartbeatGrandchild() {
 	log := os.Getenv("HELPER_LOG")
@@ -59,13 +59,13 @@ func spawnHeartbeatGrandchild() {
 	}
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		script := "while($true){ Add-Content '" + log + "' 'tick'; Start-Sleep -Milliseconds 200 }\n"
-		child := filepath.Join(filepath.Dir(log), "grandchild.ps1")
-		if err := os.WriteFile(child, []byte(script), 0o600); err != nil {
-			fmt.Fprintln(os.Stderr, "write grandchild script:", err)
-			os.Exit(9)
-		}
-		cmd = exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-File", child)
+		cmd = exec.Command(
+			"powershell.exe",
+			"-NoProfile",
+			"-NonInteractive",
+			"-ExecutionPolicy", "Bypass",
+			"-Command", "$p=$env:HELPER_LOG; while($true){ Add-Content -LiteralPath $p -Value 'tick'; Start-Sleep -Milliseconds 200 }",
+		)
 	} else {
 		cmd = exec.Command("sh", "-c", "( while true; do echo tick >> "+log+"; sleep 0.2; done & ) ; sleep 3600")
 	}
