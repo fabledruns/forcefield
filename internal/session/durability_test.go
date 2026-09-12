@@ -254,6 +254,24 @@ func TestListEmptyWhenNoSessionsDir(t *testing.T) {
 	}
 }
 
+func TestProbeSessionsDirWritableLeavesNoDebris(t *testing.T) {
+	dir := chdirTemp(t)
+	if err := ProbeSessionsDir(); err != nil {
+		t.Fatalf("ProbeSessionsDir() error = %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, ".forcefield", "sessions"))
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("probe left debris: %+v", entries)
+	}
+	// A second probe is idempotent.
+	if err := ProbeSessionsDir(); err != nil {
+		t.Fatalf("second ProbeSessionsDir() error = %v", err)
+	}
+}
+
 func TestCorruptionErrorMessage(t *testing.T) {
 	c := Corruption{Path: "x.json", Err: errors.New("bad")}
 	if !strings.Contains(c.Error(), "x.json") || !strings.Contains(c.Error(), "bad") {

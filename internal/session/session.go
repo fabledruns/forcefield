@@ -206,16 +206,16 @@ func (s *Session) compactIfNeeded() {
 // run. 48 KiB sits inside the mandated 32-64 KiB window.
 const maxPersistedToolResultBytes = 48 * 1024
 
-// truncatePersistedToolResult caps content to
-// maxPersistedToolResultBytes on a rune boundary, preserving valid
-// UTF-8 and leaving an explicit marker with both sizes.
-func truncatePersistedToolResult(content string) string {
-	if len(content) <= maxPersistedToolResultBytes {
-		return content
+// cutRuneBoundary returns the largest prefix of s within limit bytes
+// that ends on a UTF-8 rune boundary, so truncation never splits a
+// multi-byte character into invalid bytes.
+func cutRuneBoundary(s string, limit int) int {
+	if len(s) <= limit {
+		return len(s)
 	}
 	cut := 0
-	for i, r := range content {
-		if i+utf8.RuneLen(r) > maxPersistedToolResultBytes {
+	for i, r := range s {
+		if i+utf8.RuneLen(r) > limit {
 			break
 		}
 		cut = i + utf8.RuneLen(r)
@@ -223,8 +223,96 @@ func truncatePersistedToolResult(content string) string {
 	if cut == 0 {
 		cut = 1
 	}
+	return cut
+}
+
+// truncatePersistedToolResult caps content to
+// maxPersistedToolResultBytes on a rune boundary, preserving valid
+// UTF-8 and leaving an explicit marker with both sizes.
+func truncatePersistedToolResult(content string) string {
+	if len(content) <= maxPersistedToolResultBytes {
+		return content
+	}
+	cut := cutRuneBoundary(content, maxPersistedToolResultBytes)
 	return fmt.Sprintf("%s\n\n[...persisted tool output truncated at %d bytes, %d bytes total. Full output not retained in session file.]",
 		content[:cut], cut, len(content))
+}
+
+// maxPersistedArgStringBytes caps any single string value inside
+// persisted tool-call arguments. 8 KiB keeps commands, paths, and
+// snippets intact while bounding the per-call record alongside the
+// 48 KiB tool-result cap.
+const maxPersistedArgStringBytes = 8 * 1024
+
+// truncatePersistedArgString caps one argument string on a rune
+// boundary with an explicit marker carrying both sizes.
+func truncatePersistedArgString(s string) string {
+	if len(s) <= maxPersistedArgStringBytes {
+		return s
+	}
+	cut := cutRuneBoundary(s, maxPersistedArgStringBytes)
+	return fmt.Sprintf("%s\n[...persisted argument truncated at %d bytes, %d bytes total. Full value not retained in session file.]",
+		s[:cut], cut, len(s))
+}
+
+// sanitizePersistedArguments returns a copy of args with secrets
+// scrubbed and every nested string value bounded. Inputs are never
+// mutated. Non-string scalars pass through; unknown container types
+// pass through by reference (they cannot be bounded without changing
+// their shape).
+func sanitizePersistedArguments(args map[string]any) map[string]any {
+	if args == nil {
+		return nil
+	}
+	return capPersistedArgValue(redact.ScrubMap(args)).(map[string]any)
+}
+
+// capPersistedArgValue bounds strings recursively, rebuilding every
+// map and slice it descends into so the caller's structures are never
+// shared with the persisted record.
+func capPersistedArgValue(v any) any {
+	switch t := v.(type) {
+	case string:
+		return truncatePersistedArgString(t)
+	case map[string]any:
+		if t == nil {
+			return t
+		}
+		out := make(map[string]any, len(t))
+		for k, v2 := range t {
+			out[k] = capPersistedArgValue(v2)
+		}
+		return out
+	case []any:
+		if t == nil {
+			return t
+		}
+		out := make([]any, len(t))
+		for i, v2 := range t {
+			out[i] = capPersistedArgValue(v2)
+		}
+		return out
+	case []string:
+		if t == nil {
+			return t
+		}
+		out := make([]string, len(t))
+		for i, s := range t {
+			out[i] = truncatePersistedArgString(s)
+		}
+		return out
+	case []map[string]any:
+		if t == nil {
+			return t
+		}
+		out := make([]map[string]any, len(t))
+		for i, m := range t {
+			out[i] = capPersistedArgValue(m).(map[string]any)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // ProviderMessages converts session history to provider messages.
@@ -271,7 +359,7 @@ func (s *Session) AddProviderMessage(msg providers.Message) {
 	if len(msg.ToolCalls) > 0 {
 		calls := make([]providers.ToolCall, len(msg.ToolCalls))
 		for i, tc := range msg.ToolCalls {
-			tc.Arguments = redact.ScrubMap(tc.Arguments)
+			tc.Arguments = sanitizePersistedArguments(tc.Arguments)
 			calls[i] = tc
 		}
 		msg.ToolCalls = calls
@@ -328,11 +416,20 @@ func (s *Session) AddAssistantToolCalls(content string, toolCalls []providers.To
 	// Duplicate IDs reuse execution without re-running (see runtime
 	// idempotency): persisting a second assistant pair with the same ID
 	// would bloat history and risk strict-provider replay rejection, so
-	// filter to IDs not yet recorded. Normal unique calls are untouched.
+	// filter to IDs not yet recorded. The same non-empty ID twice in one
+	// batch keeps only its first occurrence. Empty IDs carry no identity
+	// and always persist. Normal unique calls are untouched.
 	filtered := make([]providers.ToolCall, 0, len(toolCalls))
+	seen := make(map[string]struct{}, len(toolCalls))
 	for _, tc := range toolCalls {
-		if tc.ID != "" && s.hasAssistantToolCall(tc.ID) {
-			continue
+		if tc.ID != "" {
+			if _, ok := seen[tc.ID]; ok {
+				continue
+			}
+			seen[tc.ID] = struct{}{}
+			if s.hasAssistantToolCall(tc.ID) {
+				continue
+			}
 		}
 		filtered = append(filtered, tc)
 	}
@@ -465,7 +562,7 @@ func (s *Session) AddPendingCall(call providers.ToolCall) {
 	turn.Pending = append(turn.Pending, PendingCall{
 		ID:        call.ID,
 		Name:      call.Name,
-		Arguments: redact.ScrubMap(call.Arguments),
+		Arguments: sanitizePersistedArguments(call.Arguments),
 		Status:    CallRunning,
 		StartedAt: now,
 	})
@@ -615,6 +712,10 @@ func (s *Session) AppendToolCallToLastAssistant(call providers.ToolCall, content
 						return
 					}
 				}
+				// Same sanitization as the normal persistence path so
+				// incrementally recorded calls cannot smuggle raw secrets
+				// or unbounded values into the session file.
+				call.Arguments = sanitizePersistedArguments(call.Arguments)
 				last.ToolCalls = append(last.ToolCalls, call)
 				if content != "" && last.Content == "" {
 					last.Content = content

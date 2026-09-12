@@ -275,6 +275,7 @@ func (m *model) SessionStats() command.SessionStats {
 	for _, msg := range m.session.Messages {
 		stats.Chars += len(msg.Content)
 	}
+	stats.SaveError = m.session.LastSaveError
 	return stats
 }
 

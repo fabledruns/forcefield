@@ -329,6 +329,10 @@ func doctorSessions(report func(verdict, string, ...any)) {
 	for _, c := range corrupt {
 		report(vWarn, "sessions: unreadable file will be skipped by /sessions: %s", c.Error())
 	}
+	if err := session.ProbeSessionsDir(); err != nil {
+		report(vFail, "sessions: storage is not writable: %v", err)
+		return
+	}
 	report(vOK, "sessions: %d readable, %d unreadable", len(sessions), len(corrupt))
 }
 

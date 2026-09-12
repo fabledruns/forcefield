@@ -17,6 +17,10 @@ type SessionStats struct {
 	// Chars is the total size of all message contents combined - an
 	// honest, provider-independent lower bound on context growth.
 	Chars int
+	// SaveError is the active session's most recent save failure, empty
+	// when the last save succeeded. Commands surface it; they never set
+	// it.
+	SaveError string
 }
 
 // AgentSummary describes one specialised agent for listings.

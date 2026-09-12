@@ -214,6 +214,36 @@ func replaceFile(src, dst string) error {
 	return err
 }
 
+// ProbeSessionsDir verifies session storage is writable by creating,
+// writing, and removing a temporary probe file. Doctor calls it so an
+// unwritable sessions directory (disk-full, permissions, AV lock) shows
+// up as a failure instead of surfacing later as silent save errors. It
+// leaves no debris behind.
+func ProbeSessionsDir() error {
+	dir := filepath.Join(".", filepath.FromSlash(sessionsDir))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create sessions directory: %w", err)
+	}
+	f, err := os.CreateTemp(dir, ".doctor-probe-*")
+	if err != nil {
+		return fmt.Errorf("write probe in sessions directory: %w", err)
+	}
+	name := f.Name()
+	if _, err := f.Write([]byte("probe")); err != nil {
+		f.Close()
+		_ = os.Remove(name)
+		return fmt.Errorf("write probe in sessions directory: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return fmt.Errorf("write probe in sessions directory: %w", err)
+	}
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("remove probe in sessions directory: %w", err)
+	}
+	return nil
+}
+
 // AddMessage appends a message and updates UpdatedAt.
 func (s *Session) AddMessage(role, content string) {
 	content = ScrubContent(content)

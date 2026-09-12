@@ -503,6 +503,41 @@ func TestDoctorSessionsAndSkillsAndMemory(t *testing.T) {
 	}
 }
 
+func TestDoctorSessionsWritableStoragePasses(t *testing.T) {
+	// doctorSessions must stay quiet about storage health when the
+	// sessions directory is writable: the probe reports failures only.
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(prev); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var failed []string
+	report := func(v verdict, format string, args ...any) {
+		if v == vFail {
+			failed = append(failed, fmt.Sprintf(format, args...))
+		}
+	}
+	doctorSessions(report)
+	if len(failed) != 0 {
+		t.Errorf("writable storage reported failures: %v", failed)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, ".forcefield", "sessions"))
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("doctor probe left debris: %+v", entries)
+	}
+}
+
 func TestDoctorSandbox_NilConfig(t *testing.T) {
 	var reports []string
 	report := func(v verdict, format string, args ...any) {

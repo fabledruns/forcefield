@@ -34,6 +34,12 @@ func (Status) Execute(ctx command.Context, _ []string) error {
 	}
 	ctx.Println("Messages:  %d (~%s of context)", stats.Messages, humanBytes(stats.Chars))
 
+	// Surface a persisted-save failure only when one is recorded; the
+	// quiet path stays exactly as before.
+	if stats.SaveError != "" {
+		ctx.Println("Save:      WARNING: last session save failed (%s)", stats.SaveError)
+	}
+
 	if tools := ctx.Tools(); len(tools) > 0 {
 		ctx.Println("Tools:     %d available (/tools to list)", len(tools))
 	} else {

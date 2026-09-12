@@ -104,5 +104,27 @@ func TestStatusShowsAllSkillsForGeneral(t *testing.T) {
 	}
 }
 
+func TestStatusShowsSaveWarningOnlyOnFailure(t *testing.T) {
+	failing := &fakeContext{
+		stats: command.SessionStats{ID: "s", Messages: 1, Chars: 10, SaveError: "replace session file x after 10 attempts: access denied"},
+	}
+	if err := NewStatus().Execute(failing, nil); err != nil {
+		t.Fatalf("Status.Execute error = %v", err)
+	}
+	if out := strings.Join(failing.lines, "\n"); !strings.Contains(out, "Save:") || !strings.Contains(out, "WARNING") {
+		t.Errorf("status must warn about the recorded save failure, got:\n%s", out)
+	}
+
+	healthy := &fakeContext{
+		stats: command.SessionStats{ID: "s", Messages: 1, Chars: 10},
+	}
+	if err := NewStatus().Execute(healthy, nil); err != nil {
+		t.Fatalf("Status.Execute error = %v", err)
+	}
+	if out := strings.Join(healthy.lines, "\n"); strings.Contains(out, "Save:") {
+		t.Errorf("status must stay quiet without a save failure, got:\n%s", out)
+	}
+}
+
 // compile-time interface check for the new Context methods
 var _ command.Context = (*fakeContext)(nil)
