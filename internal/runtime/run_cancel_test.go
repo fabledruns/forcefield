@@ -139,17 +139,23 @@ func (p *serializedProvider) StreamChat(ctx context.Context, _ []providers.Messa
 	}
 	if call == 1 {
 		close(p.started)
+		// Block inside the provider call until cancellation, then
+		// unwind synchronously: the runtime holds runMu across the
+		// provider call and only releases it once the run returns, so
+		// decrementing before return keeps the overlap counter inside
+		// the region the runtime actually serializes. Counting a
+		// detached background goroutine instead would race the
+		// replacement run's first request against orphan teardown
+		// that nothing joins, making max==1 scheduling-dependent.
+		<-ctx.Done()
+		atomic.AddInt32(&p.active, -1)
+		ch := make(chan providers.StreamEvent)
+		close(ch)
+		return ch, nil
 	}
 	ch := make(chan providers.StreamEvent, 1)
-	go func() {
-		defer atomic.AddInt32(&p.active, -1)
-		defer close(ch)
-		if call == 1 {
-			<-ctx.Done()
-			return
-		}
-		ch <- providers.StreamEvent{Text: "second run", Done: true}
-	}()
+	ch <- providers.StreamEvent{Text: "second run", Done: true}
+	close(ch)
 	return ch, nil
 }
 
