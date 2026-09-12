@@ -4,6 +4,8 @@ Forcefield is a local-first command line tool for running AI agents.
 
 It provides the runtime around a model: tools, skills, sessions, memory, permissions, shell execution, and provider communication. Forcefield runs as a single binary.
 
+Forcefield does not require a local model. It works with either local or remote model providers; running a model locally is optional.
+
 It does not require:
 
 * A user account
@@ -32,9 +34,12 @@ Forcefield is under active development. Features and interfaces can change.
 
 ## Requirements
 
-For local models, install Ollama or another supported provider and have a model available.
+Forcefield requires access to a supported model provider. Ollama is only required if you choose to run a local model.
 
-Example:
+* Local models: Ollama or LM Studio, with a model installed.
+* Remote models: a supported remote provider, with its required credentials/configuration.
+
+Optional local-model example:
 
 ```bash
 ollama pull ornith:9b
