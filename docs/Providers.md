@@ -204,6 +204,8 @@ Non-2xx responses become `*statusError` carrying a normalized kind; transport fa
 
 Transient 429s retry with exponential backoff capped by policy, honoring `Retry-After`; quota/billing exhaustion is detected and never retried. One inference request per provider instance is allowed at a time by design.
 
+Retry work model (upper bounds, not exact counts): the transport allows up to 4 attempts per model turn (1 + 3 retries) and the runtime allows up to 3 turn attempts (1 + 2 retries), so one model turn can issue up to 4 × 3 requests against a persistently failing endpoint; under `ff supervise` that multiplies again by (1 + restarts) runs per episode.
+
 ## Service Catalog
 
 `Catalog` describes every known service: display name, transport type, default base URL, authentication environment variable, local/cloud scope, and known models. The display registry used by pickers (`Registry`, `ByID`, `DisplayName`, `ModelDisplayName`) derives from it.

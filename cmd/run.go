@@ -194,6 +194,19 @@ func runResumeSession(ctx context.Context, resumeID string, maxTurns int) (int, 
 	}
 
 	code := driver.ExitCode(ctx.Err())
+	return finishResumeSession(sess, driver, resumeID, code)
+}
+
+// finishResumeSession applies the save-health gate, settles supervisor
+// lifecycle, and reports the outcome for stderr. A failed final save
+// means the file is stale even when the run otherwise completed: it
+// reports terminal without clearing supervisor state, so a supervisor
+// (or operator) retries instead of assuming success. A clean final
+// save preserves the existing settle/report behavior exactly.
+func finishResumeSession(sess *session.Session, driver *recovery.Driver, resumeID string, code int) (int, error) {
+	if sess.LastSaveError != "" {
+		return recovery.ExitTerminal, fmt.Errorf("ff run --resume %s failed: session save failed (%s)", resumeID, sess.LastSaveError)
+	}
 	settleSupervisorEpisode(sess, code)
 	if code == recovery.ExitOK {
 		if response, ok := driver.FinalResponse(); ok {

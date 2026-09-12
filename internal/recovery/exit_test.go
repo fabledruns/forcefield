@@ -80,6 +80,12 @@ func TestClassifyExitCodes(t *testing.T) {
 		{"context canceled error", runtime.EventError, context.Canceled, Stats{}, ExitNeedsHuman},
 		{"wrapped cancel", runtime.EventError, fmt.Errorf("model call failed: %w", context.Canceled), Stats{}, ExitNeedsHuman},
 		{"deadline exceeded", runtime.EventError, context.DeadlineExceeded, Stats{}, ExitNeedsHuman},
+		// A deadline wrapped by provider layers (but never classified
+		// transient by the runtime) is still an ordinary deadline: only
+		// the runtime transient mark promotes it to retryable. This
+		// guards against reordering IsTransient ahead of the shortcut,
+		// which would flip every bare deadline to ExitRetryable.
+		{"wrapped deadline without runtime mark stays human", runtime.EventError, fmt.Errorf("gateway timeout: %w", context.DeadlineExceeded), Stats{}, ExitNeedsHuman},
 		{"transient 429", runtime.EventError, transient429, Stats{}, ExitRetryable},
 		{"transient timeout class", runtime.EventError, transientNetError{}, Stats{}, ExitRetryable},
 		{"quota exhaustion", runtime.EventError, quota429, Stats{}, ExitTerminal},

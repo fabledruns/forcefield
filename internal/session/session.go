@@ -3,6 +3,7 @@ package session
 
 import (
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -472,14 +473,26 @@ func (s *Session) AddToolResult(toolCallID, name, content string) {
 // (the content names the interruption explicitly). It returns how many
 // results were synthesized; 0 means the session was already consistent.
 // Callers should Save when the count is positive.
+//
+// Calls without an ID carry no identity, so they cannot be paired by ID:
+// completed ones are matched positionally against ID-less results, and
+// genuinely orphaned ones are dropped from their assistant batch (with an
+// explicit note when the batch would otherwise become an empty shell) so
+// replay never carries a dangling call. The drop count is included in the
+// return value since the session changed and should be saved.
 func (s *Session) RepairInterruptedTurn() int {
 	if s == nil {
 		return 0
 	}
 	resultIDs := make(map[string]struct{}, len(s.Messages))
+	unpairedEmptyResults := 0
 	for _, m := range s.Messages {
-		if m.Role == string(providers.ToolRole) && m.ToolCallID != "" {
-			resultIDs[m.ToolCallID] = struct{}{}
+		if m.Role == string(providers.ToolRole) {
+			if m.ToolCallID != "" {
+				resultIDs[m.ToolCallID] = struct{}{}
+			} else {
+				unpairedEmptyResults++
+			}
 		}
 	}
 	type orphan struct {
@@ -487,25 +500,50 @@ func (s *Session) RepairInterruptedTurn() int {
 		name string
 	}
 	var orphans []orphan
-	for _, m := range s.Messages {
+	droppedEmpty := 0
+	for i := range s.Messages {
+		m := &s.Messages[i]
 		if m.Role != string(providers.AssistantRole) {
 			continue
 		}
+		kept := m.ToolCalls[:0]
+		droppedHere := 0
 		for _, tc := range m.ToolCalls {
 			if tc.ID == "" {
+				// Pair positionally with an ID-less result when one
+				// exists; otherwise the call is unrecoverable by ID
+				// and must not replay as a dangling call.
+				if unpairedEmptyResults > 0 {
+					unpairedEmptyResults--
+					kept = append(kept, tc)
+				} else {
+					droppedEmpty++
+					droppedHere++
+				}
 				continue
 			}
 			if _, ok := resultIDs[tc.ID]; ok {
+				kept = append(kept, tc)
 				continue
 			}
 			orphans = append(orphans, orphan{id: tc.ID, name: tc.Name})
 			resultIDs[tc.ID] = struct{}{} // same ID twice: repair once
+			kept = append(kept, tc)
+		}
+		// Clear the tail so dropped calls do not linger in the backing
+		// array beyond the kept prefix.
+		for j := len(kept); j < len(m.ToolCalls); j++ {
+			m.ToolCalls[j] = providers.ToolCall{}
+		}
+		m.ToolCalls = kept
+		if droppedHere > 0 && len(m.ToolCalls) == 0 && strings.TrimSpace(m.Content) == "" {
+			m.Content = "[empty tool call dropped: turn interrupted before the result was recorded]"
 		}
 	}
 	for _, o := range orphans {
 		s.AddToolResult(o.id, o.name, "tool execution cancelled (turn interrupted before the result was recorded)")
 	}
-	return len(orphans)
+	return len(orphans) + droppedEmpty
 }
 
 // BeginTurn starts a new tool-calling turn envelope, replacing any

@@ -30,8 +30,12 @@ import (
 //     a fresh network namespace (in-distribution unshare with an
 //     unprivileged user namespace). When the kernel/distro refuses that,
 //     the executor FAILS CLOSED rather than running with host networking.
-//   - Process lifetime: timeout, context cancellation, and process-tree
-//     teardown remain fully effective.
+//   - Process lifetime: timeout, context cancellation, and Windows-side
+//     process-tree teardown (the wsl.exe relay) remain fully effective.
+//     Linux-side processes inside the distribution may outlive the relay:
+//     no Windows host primitive used here reaches inside the
+//     distribution, so their cleanup is not guaranteed. A full
+//     distribution-level sweep requires `wsl --shutdown`.
 //
 // What it does NOT do, stated plainly:
 //

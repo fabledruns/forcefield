@@ -233,3 +233,21 @@ func TestTurnRetry_RetryDoesNotDuplicateToolExecution(t *testing.T) {
 		t.Errorf("tool executed %d times, want exactly 1", got)
 	}
 }
+
+// TestMarkedTimeoutPreservesDeadlineIdentity pins the exact error shape
+// the supervisor classification relies on: a runtime-marked transient
+// timeout still matches errors.Is(DeadlineExceeded) (so the cause is
+// never lost) while reporting IsTransientError (so it is retryable
+// rather than parked for a human).
+func TestMarkedTimeoutPreservesDeadlineIdentity(t *testing.T) {
+	err := markTransient(context.DeadlineExceeded)
+	if !IsTransientError(err) {
+		t.Fatalf("marked timeout IsTransientError = false, want true")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("marked timeout lost its DeadlineExceeded identity: %v", err)
+	}
+	if IsTransientError(context.DeadlineExceeded) {
+		t.Error("bare DeadlineExceeded must never read as runtime-marked")
+	}
+}

@@ -3,6 +3,9 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -420,13 +423,14 @@ func (s *scheduler) setSessionDecision(tool string, d permissions.Decision) {
 
 // sessionAllowKey returns the session-scoped Always-allow lookup key for a
 // call. Command-oriented tools (shell, shell_job) scope by normalized
-// command text; all other tools have no meaningful operation identifier
-// and preserve the historical per-tool-name behavior.
+// command text, working directory, and environment; all other tools have
+// no meaningful operation identifier and preserve the historical
+// per-tool-name behavior.
 func sessionAllowKey(call providers.ToolCall) string {
 	switch call.Name {
 	case "shell", "shell_job":
 		if cmd, ok := normalizedCommand(call.Arguments); ok {
-			return call.Name + "\x00" + cmd
+			return call.Name + "\x00" + cmd + "\x00" + normalizedCwd(call.Arguments) + "\x00" + canonicalEnvHash(call.Arguments)
 		}
 	}
 	return call.Name
@@ -453,6 +457,59 @@ func normalizedCommand(args map[string]any) (string, bool) {
 	return s, true
 }
 
+// normalizedCwd extracts the trimmed working directory so the same
+// command approved in one directory does not silently authorize the
+// same string elsewhere. Missing or blank reads as empty (stable).
+func normalizedCwd(args map[string]any) string {
+	if args == nil {
+		return ""
+	}
+	raw, ok := args["cwd"]
+	if !ok {
+		return ""
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+// canonicalEnvHash folds the call's environment block into a stable
+// digest so an approval granted with one environment is not reused
+// under another. Missing or non-object blocks hash as empty; entries
+// are sorted so key order cannot change the key.
+func canonicalEnvHash(args map[string]any) string {
+	if args == nil {
+		return emptyEnvHash()
+	}
+	raw, ok := args["env"]
+	if !ok || raw == nil {
+		return emptyEnvHash()
+	}
+	env, ok := raw.(map[string]any)
+	if !ok {
+		h := fnv.New64a()
+		fmt.Fprintf(h, "%v", raw)
+		return strconv.FormatUint(h.Sum64(), 16)
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	h := fnv.New64a()
+	for _, k := range keys {
+		fmt.Fprintf(h, "%s\x00%v\x01", k, env[k])
+	}
+	return strconv.FormatUint(h.Sum64(), 16)
+}
+
+func emptyEnvHash() string {
+	h := fnv.New64a()
+	return strconv.FormatUint(h.Sum64(), 16)
+}
+
 // checkPermissionWithManager resolves a tool call's permission before
 // execution against an explicit manager snapshot. See RunWithManager for
 // why the snapshot matters.
@@ -464,7 +521,8 @@ func (s *scheduler) checkPermissionWithManager(ctx context.Context, call provide
 	// Session-scoped Always allow/deny takes precedence over persisted rules.
 	// Deny stays per-tool-name (fail-closed); Allow is operation-scoped
 	// via sessionAllowKey so one "Always allow shell" authorizes only the
-	// approved command, not every future command in the session.
+	// approved command in its directory and environment, not every
+	// future command in the session.
 	if d, ok := s.getSessionDecision(call.Name); ok && d == permissions.Deny {
 		result = s.deniedResult(call, fmt.Sprintf("permission denied for tool %q", call.Name))
 		emit(Event{Type: EventToolDenied, ToolResult: result})

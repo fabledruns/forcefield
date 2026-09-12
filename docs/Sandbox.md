@@ -94,16 +94,18 @@ These properties hold at boundaries Forcefield controls:
 2. **Pinned working directory.** The requested directory is resolved to an absolute path, symlink-resolved, and required to lie inside the project workspace (the Git repository root, else the working directory). Traversal (`..`), absolute paths outside the workspace, drive-relative forms (`C:foo`), Linux-absolute paths on a Windows workspace, and symlinks that resolve outside are all rejected before any process exists.
 3. **Severed host environment.** The `wsl.exe` launcher receives only `SystemRoot`, `TEMP`, `TMP`, and an explicitly **empty `WSLENV`**, which turns off all host-to-Linux variable sharing. Inside the distribution, the environment is the distribution's own defaults plus exactly the key/value pairs the tool requested. Provider API keys (e.g. `NVIDIA_API_KEY`) do not cross; Forcefield deliberately keeps them out of its own process environment too (see [Config](Config.md)).
 4. **Network isolation when achievable.** With `network: disabled`, the command is launched inside a fresh user+network namespace via in-distribution `unshare --user --net --map-root-user`. Only loopback remains. File ownership maps back to your real user, so files created in this mode belong to you. Support is probed once per run; see below for what happens without support.
-5. **Process lifetime.** Timeouts, context cancellation, and process-tree teardown remain fully effective inside the namespace.
+5. **Process lifetime.** Timeouts, context cancellation, and Windows-side process-tree teardown (the `wsl.exe` relay) remain fully effective. Linux-side processes inside the distribution may outlive the relay: no Windows host primitive used by Forcefield reaches inside the distribution, so their cleanup is not guaranteed. A full distribution-level sweep requires `wsl --shutdown`.
 
 ## What `wsl` mode does NOT do
 
 Stated plainly, because these are the limits:
 
-1. **Filesystems are not confined.** A WSL distribution automounts every Windows drive under `/mnt/<letter>` and contains its own full Linux filesystem. A sandboxed command can therefore read and write any path your OS identity permits, anywhere on the machine. Only the *working directory* is validated; nothing stops a command from opening other paths. Plain WSL cannot deliver filesystem confinement, and Forcefield will not pretend otherwise.
-2. **Network denial fails closed.** If the distribution cannot create network namespaces (no `unshare`, kernel restrictions, AppArmor policy), a requested `network: disabled` makes commands **refuse to run** with an explanation - it never silently runs them with host networking. Set `network: host` if you accept unisolated networking.
-3. **No resource limits.** CPU, memory, and process-count limits are not enforced.
-4. **Not a security boundary against the user.** This boundary constrains what agent-driven commands can reach by default posture; it is not a defense against a local user, and it is not a malware containment system.
+1. **Linux-side processes are not reaped.** Killing the Windows relay stops the Windows side promptly, but descendants running inside the distribution outlive it by platform design. This is an OS boundary, not a Forcefield bug; see item 5 above.
+
+2. **Filesystems are not confined.** A WSL distribution automounts every Windows drive under `/mnt/<letter>` and contains its own full Linux filesystem. A sandboxed command can therefore read and write any path your OS identity permits, anywhere on the machine. Only the *working directory* is validated; nothing stops a command from opening other paths. Plain WSL cannot deliver filesystem confinement, and Forcefield will not pretend otherwise.
+3. **Network denial fails closed.** If the distribution cannot create network namespaces (no `unshare`, kernel restrictions, AppArmor policy), a requested `network: disabled` makes commands **refuse to run** with an explanation - it never silently runs them with host networking. Set `network: host` if you accept unisolated networking.
+4. **No resource limits.** CPU, memory, and process-count limits are not enforced.
+5. **Not a security boundary against the user.** This boundary constrains what agent-driven commands can reach by default posture; it is not a defense against a local user, and it is not a malware containment system.
 
 ## Approval UX
 

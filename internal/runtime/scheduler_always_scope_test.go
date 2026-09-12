@@ -214,3 +214,115 @@ func TestScheduler_AlwaysAllowScopedToShellJobStart(t *testing.T) {
 		t.Fatalf("asks = %d, want 2 (different command re-prompted)", asks)
 	}
 }
+
+// Always approvals are scoped to working directory: the same command
+// string approved in one directory must prompt again elsewhere.
+func TestScheduler_AlwaysAllowScopedToCwd(t *testing.T) {
+	tool := &fixedResultTool{name: "shell"}
+	manager := newTestManager(t, tool)
+	perms := newTestPermManager(t, permissions.Ask, nil)
+	asks := 0
+	s := newScheduler(manager, perms, permissions.AskerFunc(func(ctx context.Context, req permissions.Request) (permissions.Prompt, error) {
+		asks++
+		if asks <= 2 {
+			return permissions.PromptAlwaysAllow, nil
+		}
+		return permissions.PromptAllowOnce, nil
+	}), SchedulerConfig{MaxConcurrency: 1, MaxRetries: 0, BaseBackoff: time.Millisecond})
+
+	if r := runOneCall(t, s, "1", "shell", map[string]any{"command": "pytest", "cwd": "/repo"}); r.IsError {
+		t.Fatalf("first should execute, got %#v", r)
+	}
+	if r := runOneCall(t, s, "2", "shell", map[string]any{"command": "pytest", "cwd": "/repo"}); r.IsError {
+		t.Fatalf("same cwd should reuse approval, got %#v", r)
+	}
+	if asks != 1 {
+		t.Fatalf("asks = %d, want 1 (same cwd reuses approval)", asks)
+	}
+	if r := runOneCall(t, s, "3", "shell", map[string]any{"command": "pytest", "cwd": "/etc"}); r.IsError {
+		t.Fatalf("different cwd should execute after fresh ask, got %#v", r)
+	}
+	if asks != 2 {
+		t.Fatalf("asks = %d, want 2 (different cwd re-prompted)", asks)
+	}
+	// Whitespace-only cwd differences share the approval.
+	if r := runOneCall(t, s, "4", "shell", map[string]any{"command": "pytest", "cwd": "  /etc  "}); r.IsError {
+		t.Fatalf("normalized cwd should execute, got %#v", r)
+	}
+	if asks != 2 {
+		t.Fatalf("asks = %d, want 2 (normalized cwd shares approval)", asks)
+	}
+}
+
+// Always approvals are scoped to environment: the same command string
+// approved with one environment must prompt again under another.
+func TestScheduler_AlwaysAllowScopedToEnv(t *testing.T) {
+	tool := &fixedResultTool{name: "shell"}
+	manager := newTestManager(t, tool)
+	perms := newTestPermManager(t, permissions.Ask, nil)
+	asks := 0
+	s := newScheduler(manager, perms, permissions.AskerFunc(func(ctx context.Context, req permissions.Request) (permissions.Prompt, error) {
+		asks++
+		if asks == 1 {
+			return permissions.PromptAlwaysAllow, nil
+		}
+		return permissions.PromptAllowOnce, nil
+	}), SchedulerConfig{MaxConcurrency: 1, MaxRetries: 0, BaseBackoff: time.Millisecond})
+
+	base := map[string]any{"command": "deploy", "env": map[string]any{"TARGET": "staging"}}
+	if r := runOneCall(t, s, "1", "shell", base); r.IsError {
+		t.Fatalf("first should execute, got %#v", r)
+	}
+	// Same entries in different key order share the approval (canonical).
+	shuffled := map[string]any{"command": "deploy", "env": map[string]any{"TARGET": "staging"}}
+	if r := runOneCall(t, s, "2", "shell", shuffled); r.IsError {
+		t.Fatalf("same env should reuse approval, got %#v", r)
+	}
+	if asks != 1 {
+		t.Fatalf("asks = %d, want 1 (same env reuses approval)", asks)
+	}
+	if r := runOneCall(t, s, "3", "shell", map[string]any{"command": "deploy", "env": map[string]any{"TARGET": "prod"}}); r.IsError {
+		t.Fatalf("different env should execute after fresh ask, got %#v", r)
+	}
+	if asks != 2 {
+		t.Fatalf("asks = %d, want 2 (different env re-prompted)", asks)
+	}
+	if r := runOneCall(t, s, "4", "shell", map[string]any{"command": "deploy"}); r.IsError {
+		t.Fatalf("missing env should execute after fresh ask, got %#v", r)
+	}
+	if asks != 3 {
+		t.Fatalf("asks = %d, want 3 (absent env re-prompted)", asks)
+	}
+}
+
+// Key stability: equivalent contexts hash identically, differing
+// contexts never collide.
+func TestSessionAllowKeyCwdEnvStability(t *testing.T) {
+	mk := func(cwd string, env map[string]any) string {
+		args := map[string]any{"command": "echo hi"}
+		if cwd != "" {
+			args["cwd"] = cwd
+		}
+		if env != nil {
+			args["env"] = env
+		}
+		return sessionAllowKey(providers.ToolCall{Name: "shell", Arguments: args})
+	}
+	base := mk("/repo", map[string]any{"A": "1", "B": "2"})
+	if got := mk("/repo", map[string]any{"B": "2", "A": "1"}); got != base {
+		t.Error("key order must not change the session key")
+	}
+	if got := mk("  /repo  ", map[string]any{"A": "1", "B": "2"}); got != base {
+		t.Error("cwd whitespace must not change the session key")
+	}
+	for name, other := range map[string]string{
+		"different cwd": mk("/etc", map[string]any{"A": "1", "B": "2"}),
+		"different env": mk("/repo", map[string]any{"A": "1", "B": "3"}),
+		"missing env":   mk("/repo", nil),
+		"missing cwd":   mk("", map[string]any{"A": "1", "B": "2"}),
+	} {
+		if other == base {
+			t.Errorf("%s reuses the same session key", name)
+		}
+	}
+}

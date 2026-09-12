@@ -61,7 +61,12 @@ Restart lifecycle persists in the session file (see session.SupervisorState):
 a killed supervisor resumes with its remaining budget, and an exhausted
 episode refuses further supervised restarts until a terminal child outcome,
 a successful manual run, or --reset-budget starts a new episode. Manual
-ff run --resume and the TUI never consult this state.`,
+ff run --resume and the TUI never consult this state.
+
+Work model (upper bounds, not exact counts): one supervised episode runs
+up to (1 + --max-restarts) children, and each child is still bounded by
+its own per-run turn/call limits — so an episode can spend up to
+(1 + restarts) × turns × calls of model/tool work before it parks.`,
 	Args: cobra.ExactArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {

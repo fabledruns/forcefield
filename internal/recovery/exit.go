@@ -89,7 +89,14 @@ func Classify(eventType runtime.EventType, err error, stats Stats) int {
 	if eventType == runtime.EventCancelled {
 		return ExitNeedsHuman
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) {
+		return ExitNeedsHuman
+	}
+	// A bare deadline (caller context timed out, never classified by the
+	// runtime) needs a human decision. A runtime-marked transient timeout
+	// carries a provider classification underneath, so it skips this
+	// shortcut and is evaluated as transient below.
+	if errors.Is(err, context.DeadlineExceeded) && !runtime.IsTransientError(err) {
 		return ExitNeedsHuman
 	}
 	if eventType == runtime.EventBlocked || eventType == runtime.EventError {
