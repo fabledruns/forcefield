@@ -9,14 +9,20 @@ import (
 	"forcefield/internal/providers"
 )
 
-// repeatedToolExecutionLimit leaves room for a transient retry or a tool
-// whose first repeat observes a changing system, while still stopping an
-// agent that is replaying the same operation without learning from it.
+// repeatedToolExecutionLimit bounds consecutive identical operations:
+// one repeat may be a retry or a re-check, but three in a row with no
+// intervening difference is evidence the agent is stuck.
 const repeatedToolExecutionLimit = 3
 
 // loopDetector identifies repeated work by its normalized tool request and
 // effective result. Tool IDs are deliberately excluded: providers assign a
 // fresh ID for each model turn, so they are not evidence of a changed plan.
+//
+// Only consecutive identical batches accumulate toward the limit. A batch
+// that differs from the previous one — a different tool, different
+// arguments, or a different result — is evidence the agent is still
+// making progress, so accumulated counts reset. A genuinely stuck agent
+// replays the identical operation every turn and still trips the limit.
 //
 // The detector is local to one agent run. It does not change scheduling or
 // tool execution semantics; it only decides when the runtime should stop
@@ -25,6 +31,9 @@ type loopDetector struct {
 	calls  map[string]repeatedOperation
 	cycles map[string]repeatedOperation
 	limit  int
+	// prev fingerprints the immediately preceding completed batch, so a
+	// differing batch can reset the accumulated counts.
+	prev string
 }
 
 type repeatedOperation struct {
@@ -40,29 +49,46 @@ func newLoopDetector() *loopDetector {
 	}
 }
 
-// Observe records one completed tool batch. It reports true only when the
-// same request(s) produced effectively the same result often enough that a
-// further model/tool cycle would have no evidence of progress.
+// Observe records one completed tool batch. It reports true only when
+// consecutive batches replay effectively the same request(s) with
+// effectively the same result often enough that a further model/tool
+// cycle would have no evidence of progress. A batch that differs from
+// the previous one resets the accumulated counts.
 func (d *loopDetector) Observe(calls []providers.ToolCall, results []ToolResult) bool {
 	if d == nil || len(calls) == 0 || len(calls) != len(results) {
 		return false
 	}
 
-	cycle := make([]string, 0, len(calls))
+	callKeys := make([]string, len(calls))
+	resultKeys := make([]string, len(calls))
+	pairs := make([]string, len(calls))
 	for i, call := range calls {
-		callKey := normalizedToolCall(call)
-		resultKey := normalizedToolResult(results[i])
-		if d.observe(d.calls, callKey, resultKey) {
-			return true
-		}
-		cycle = append(cycle, callKey+"\x00"+resultKey)
+		callKeys[i] = normalizedToolCall(call)
+		resultKeys[i] = normalizedToolResult(results[i])
+		pairs[i] = callKeys[i] + "\x00" + resultKeys[i]
 	}
 
 	// Providers may return independent calls in a different order. Sort the
-	// completed request/result pairs so that ordering alone cannot evade the
-	// no-progress check.
-	sort.Strings(cycle)
-	return d.observe(d.cycles, strings.Join(cycle, "\x01"), "")
+	// completed request/result pairs so that ordering alone can neither
+	// evade nor trigger the no-progress check.
+	sort.Strings(pairs)
+	batch := strings.Join(pairs, "\x01")
+	if batch != d.prev {
+		// The agent did something different since the last batch: a
+		// different tool, different arguments, or a different result.
+		// That is progress, so prior repetition no longer counts
+		// toward stuckness.
+		clear(d.calls)
+		clear(d.cycles)
+		d.prev = batch
+	}
+
+	for i := range calls {
+		if d.observe(d.calls, callKeys[i], resultKeys[i]) {
+			return true
+		}
+	}
+	return d.observe(d.cycles, batch, "")
 }
 
 func (d *loopDetector) observe(history map[string]repeatedOperation, key, result string) bool {
