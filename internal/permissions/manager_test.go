@@ -40,6 +40,72 @@ func TestCheckFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestShippedAllowAppliesToSearchCode pins the search_code permission
+// contract: config files predating the tool have no per-tool entry, so
+// under the stock ask default the documented shipped default (allow)
+// applies without prompting. An explicit per-tool rule always wins,
+// and an explicit default-deny lockdown stays fail-closed.
+func TestShippedAllowAppliesToSearchCode(t *testing.T) {
+	// Legacy shape: stock default, no search_code entry.
+	store := &memStore{rules: Rules{Default: Ask, Tools: map[string]Decision{}}}
+	m, err := NewManager(store)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if got := m.Check("search_code"); got != Allow {
+		t.Errorf("Check(search_code) unlisted under ask default = %v, want Allow (shipped default)", got)
+	}
+	// Unrelated unlisted tools still fail closed.
+	for _, tool := range []string{"shell", "search_files", "unknown_tool"} {
+		if got := m.Check(tool); got != Ask {
+			t.Errorf("Check(%s) unlisted under ask default = %v, want Ask", tool, got)
+		}
+	}
+	// The shipped default must not leak into the persisted rules: the
+	// user's file gains no entry it never approved.
+	if _, ok := m.Rules().Tools["search_code"]; ok {
+		t.Errorf("Rules() must not contain an unapproved search_code entry")
+	}
+	if err := m.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, ok := store.rules.Tools["search_code"]; ok {
+		t.Errorf("Save must not persist an unapproved search_code entry")
+	}
+
+	// Explicit per-tool rules win in both directions.
+	for _, d := range []Decision{Deny, Ask} {
+		store := &memStore{rules: Rules{Default: Ask, Tools: map[string]Decision{"search_code": d}}}
+		m, err := NewManager(store)
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		if got := m.Check("search_code"); got != d {
+			t.Errorf("Check(search_code) explicitly %v = %v, want %v", d, got, d)
+		}
+	}
+
+	// Explicit default-deny lockdown stays fail-closed for unlisted tools.
+	store = &memStore{rules: Rules{Default: Deny, Tools: map[string]Decision{}}}
+	m, err = NewManager(store)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if got := m.Check("search_code"); got != Deny {
+		t.Errorf("Check(search_code) unlisted under deny default = %v, want Deny (lockdown preserved)", got)
+	}
+
+	// Permissive default is unaffected.
+	store = &memStore{rules: Rules{Default: Allow, Tools: map[string]Decision{}}}
+	m, err = NewManager(store)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if got := m.Check("search_code"); got != Allow {
+		t.Errorf("Check(search_code) unlisted under allow default = %v, want Allow", got)
+	}
+}
+
 // TestRuntimeToolsDefaultToAsk pins the N16 contract at the enforcement
 // layer: under shipped-default rules (default ask, no per-tool entry),
 // load_skill and update_task_state must require approval, never

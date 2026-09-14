@@ -11,6 +11,7 @@ func TestWithLimits_ReachesToolInstances(t *testing.T) {
 		"shell":        {MaxBytes: 1024},
 		"shell_job":    {MaxBytes: 2048},
 		"search_files": {MaxLines: 7},
+		"search_code":  {MaxLines: 5, MaxBytes: 4096},
 		"find_files":   {MaxLines: 9},
 		"secret_scan":  {MaxLines: 3},
 		"read_file":    {MaxBytes: 2048},
@@ -23,6 +24,7 @@ func TestWithLimits_ReachesToolInstances(t *testing.T) {
 		"shell":        {MaxBytes: 1024},
 		"shell_job":    {MaxBytes: 2048},
 		"search_files": {MaxLines: 7},
+		"search_code":  {MaxLines: 5, MaxBytes: 4096},
 		"find_files":   {MaxLines: 9},
 		"secret_scan":  {MaxLines: 3},
 		"read_file":    {MaxBytes: 2048},
@@ -40,8 +42,11 @@ func TestWithLimits_ReachesToolInstances(t *testing.T) {
 		if (name == "shell" || name == "shell_job" || name == "read_file") && got.MaxBytes != want.MaxBytes {
 			t.Errorf("%s MaxBytes = %d, want %d", name, got.MaxBytes, want.MaxBytes)
 		}
-		if (name == "search_files" || name == "find_files" || name == "secret_scan" || name == "list_files") && got.MaxLines != want.MaxLines {
+		if (name == "search_files" || name == "search_code" || name == "find_files" || name == "secret_scan" || name == "list_files") && got.MaxLines != want.MaxLines {
 			t.Errorf("%s MaxLines = %d, want %d", name, got.MaxLines, want.MaxLines)
+		}
+		if name == "search_code" && got.MaxBytes != want.MaxBytes {
+			t.Errorf("%s MaxBytes = %d, want %d", name, got.MaxBytes, want.MaxBytes)
 		}
 	}
 }

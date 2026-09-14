@@ -25,3 +25,7 @@ tools:
     max_bytes: 0
     max_lines: 0
     timeout_seconds: 0
+  search_code:
+    max_bytes: 0
+    max_lines: 0
+    timeout_seconds: 0

@@ -37,7 +37,7 @@ package config
 #AgentName: "coding" | "cyber" | "legal" | "docs" | "research" | "devops" | "general"
 
 // ToolName lists the tool names a tools: override block may address.
-#ToolName: "read_file" | "write_file" | "list_files" | "pwd" | "shell" | "shell_job" | "search_files" | "find_files" | "git" | "secret_scan" | "load_skill" | "update_task_state" | "add_project_memory"
+#ToolName: "read_file" | "write_file" | "list_files" | "pwd" | "shell" | "shell_job" | "search_files" | "search_code" | "find_files" | "git" | "secret_scan" | "load_skill" | "update_task_state" | "add_project_memory"
 
 // AgentConfig is the per-agent override block under agents:. Scalars are
 // optional (non-empty replaces). Lists are optional (omitted keeps the

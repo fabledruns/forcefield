@@ -33,6 +33,10 @@ const (
 	DefaultSearchMaxLines = 100
 	// DefaultFindMaxResults bounds find_files paths reported.
 	DefaultFindMaxResults = 50
+	// DefaultSearchCodeMaxLines bounds search_code matches reported.
+	DefaultSearchCodeMaxLines = 100
+	// DefaultSearchCodeMaxBytes bounds search_code captured output.
+	DefaultSearchCodeMaxBytes = 256 << 10 // 256 KiB
 	// DefaultGitMaxBytes bounds git tool output (diffs can be large).
 	DefaultGitMaxBytes = 256 << 10 // 256 KiB
 	// DefaultJobMaxBytes bounds one background job's captured output.
@@ -79,6 +83,8 @@ func DefaultLimitsFor(name string) Limits {
 		return Limits{MaxLines: DefaultSearchMaxLines, Timeout: DefaultToolTimeout}
 	case "find_files":
 		return Limits{MaxLines: DefaultFindMaxResults, Timeout: DefaultToolTimeout}
+	case "search_code":
+		return Limits{MaxBytes: DefaultSearchCodeMaxBytes, MaxLines: DefaultSearchCodeMaxLines, Timeout: DefaultToolTimeout}
 	case "git":
 		return Limits{MaxBytes: DefaultGitMaxBytes, Timeout: DefaultToolTimeout}
 	case "shell_job":

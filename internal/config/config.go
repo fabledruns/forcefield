@@ -237,6 +237,7 @@ permissions:
     list_files: allow
     pwd: allow
     search_files: allow
+    search_code: allow
     find_files: allow
     git: allow
     secret_scan: allow
@@ -652,7 +653,7 @@ func validateAgents(agents map[string]AgentConfig) error {
 // instead of silently never applying.
 var knownTools = map[string]struct{}{
 	"read_file": {}, "write_file": {}, "list_files": {}, "pwd": {},
-	"shell": {}, "shell_job": {}, "search_files": {}, "find_files": {}, "git": {}, "secret_scan": {},
+	"shell": {}, "shell_job": {}, "search_files": {}, "search_code": {}, "find_files": {}, "git": {}, "secret_scan": {},
 	"load_skill": {}, "update_task_state": {}, "add_project_memory": {},
 }
 
@@ -687,7 +688,7 @@ func validateRunLimits(prefix string, maxIter, maxCalls, maxFail, ctxWindow, ctx
 func validateTools(entries map[string]ToolLimits) error {
 	for name, lim := range entries {
 		if _, ok := knownTools[name]; !ok {
-			return fmt.Errorf("tools.%s: unknown tool %q (available: add_project_memory, find_files, git, list_files, load_skill, pwd, read_file, search_files, secret_scan, shell, shell_job, update_task_state, write_file)", name, name)
+			return fmt.Errorf("tools.%s: unknown tool %q (available: add_project_memory, find_files, git, list_files, load_skill, pwd, read_file, search_code, search_files, secret_scan, shell, shell_job, update_task_state, write_file)", name, name)
 		}
 		if lim.MaxBytes < 0 {
 			return fmt.Errorf("tools.%s.max_bytes must be positive (got %d)", name, lim.MaxBytes)

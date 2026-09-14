@@ -32,6 +32,19 @@ func NewManager(store Store) (*Manager, error) {
 	return &Manager{rules: rules, store: store}, nil
 }
 
+// shippedAllowTools names read-only built-ins whose documented shipped
+// default is allow. Config files created before such a tool existed
+// have no per-tool entry; resolving those installs to
+// permissions.default (ask) would prompt on every call even though the
+// tool ships as allow, so the shipped default applies in memory when
+// the operator expressed no opinion. It never touches the file, and an
+// explicit per-tool rule always wins. An explicit default-deny
+// lockdown stays fail-closed: the shipped default only fills the gap
+// under the stock ask default, never under deny.
+var shippedAllowTools = map[string]struct{}{
+	"search_code": {},
+}
+
 // Check returns the effective decision for toolName.
 func (m *Manager) Check(toolName string) Decision {
 	m.mu.RLock()
@@ -39,6 +52,11 @@ func (m *Manager) Check(toolName string) Decision {
 
 	if d, ok := m.rules.Tools[toolName]; ok {
 		return d
+	}
+	if m.rules.Default == Ask {
+		if _, ok := shippedAllowTools[toolName]; ok {
+			return Allow
+		}
 	}
 	return m.rules.Default
 }

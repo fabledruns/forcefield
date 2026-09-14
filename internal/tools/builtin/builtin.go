@@ -73,6 +73,7 @@ func Register(m *tools.Manager, opts ...Option) error {
 		newShellJob(o),
 		newSearchFiles(o),
 		newFindFiles(o),
+		newSearchCode(o),
 		newGit(o),
 		newSecretScan(o),
 	}
@@ -138,6 +139,13 @@ func newFindFiles(o options) tools.Tool {
 		return search.NewFindFilesWithPolicy(o.policy)
 	}
 	return search.NewFindFiles()
+}
+
+func newSearchCode(o options) tools.Tool {
+	if o.hasPolicy && o.policy.Confines() {
+		return search.NewSearchCodeWithPolicy(o.policy)
+	}
+	return search.NewSearchCode()
 }
 
 func newGit(o options) tools.Tool {

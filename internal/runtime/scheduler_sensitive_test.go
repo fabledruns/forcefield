@@ -67,6 +67,41 @@ func TestSensitiveFileRequiresApprovalEvenWhenAllowed(t *testing.T) {
 	}
 }
 
+func TestIsSensitiveCall_CoversSearchCode(t *testing.T) {
+	if !isSensitiveCall(providers.ToolCall{Name: "search_code", Arguments: map[string]any{"path": ".env"}}) {
+		t.Errorf("search_code on .env must escalate to Ask")
+	}
+	if isSensitiveCall(providers.ToolCall{Name: "search_code", Arguments: map[string]any{"path": "normal.go"}}) {
+		t.Errorf("search_code on a normal path must not escalate")
+	}
+}
+
+// TestScheduler_SearchCodeSensitivePathStillAsks proves the shipped
+// allow default does not weaken sensitive-path escalation: search_code
+// on a credential-looking path must prompt even with no per-tool entry.
+func TestScheduler_SearchCodeSensitivePathStillAsks(t *testing.T) {
+	tool := &fixedResultTool{name: "search_code"}
+	manager := newTestManager(t, tool)
+	perms := newTestPermManager(t, permissions.Ask, nil) // legacy shape: no search_code entry
+	asked := false
+	asker := permissions.AskerFunc(func(ctx context.Context, req permissions.Request) (permissions.Prompt, error) {
+		asked = true
+		return permissions.PromptDenyOnce, nil
+	})
+	s := newScheduler(manager, perms, asker, SchedulerConfig{MaxConcurrency: 1, MaxRetries: 0, BaseBackoff: time.Millisecond})
+
+	results := s.Run(context.Background(), []providers.ToolCall{{
+		ID: "1", Name: "search_code",
+		Arguments: map[string]any{"pattern": "x", "path": ".env"},
+	}}, func(Event) bool { return true })
+	if !asked {
+		t.Error("search_code on .env must force an Ask prompt even with no per-tool entry")
+	}
+	if len(results) != 1 || !results[0].IsError {
+		t.Fatalf("expected denied sensitive search to error, got %#v", results)
+	}
+}
+
 func TestConcurrentAskRequestsDoNotDeadlock(t *testing.T) {
 	tool := &fixedResultTool{name: "shell"}
 	manager := newTestManager(t, tool)

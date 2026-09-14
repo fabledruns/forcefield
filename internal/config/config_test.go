@@ -176,7 +176,7 @@ func TestLoadContextBudgetFieldsDefaultToZero(t *testing.T) {
 func TestLoadToolsOverrides(t *testing.T) {
 	isolateHome(t)
 	writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n"+
-		"tools:\n  shell:\n    max_bytes: 1048576\n    timeout_seconds: 60\n  search_files:\n    max_lines: 40\n")
+		"tools:\n  shell:\n    max_bytes: 1048576\n    timeout_seconds: 60\n  search_files:\n    max_lines: 40\n  search_code:\n    max_lines: 25\n")
 
 	cfg, err := Load()
 	if err != nil {
@@ -190,6 +190,9 @@ func TestLoadToolsOverrides(t *testing.T) {
 	}
 	if cfg.Tools["search_files"].MaxLines != 40 {
 		t.Errorf("search max_lines = %d, want 40", cfg.Tools["search_files"].MaxLines)
+	}
+	if cfg.Tools["search_code"].MaxLines != 25 {
+		t.Errorf("search_code max_lines = %d, want 25", cfg.Tools["search_code"].MaxLines)
 	}
 }
 

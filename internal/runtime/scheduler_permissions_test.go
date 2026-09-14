@@ -76,6 +76,52 @@ func TestScheduler_DefaultAppliesWhenNoOverride(t *testing.T) {
 	}
 }
 
+// TestScheduler_SearchCodeAllowedWithoutAskUnderLegacyRules is the
+// regression test for search_code prompting on every call: config files
+// predating the tool carry no per-tool entry, so under the stock ask
+// default the shipped allow default must let a normal search run with
+// no prompt. The asker fails the test if it is consulted at all.
+func TestScheduler_SearchCodeAllowedWithoutAskUnderLegacyRules(t *testing.T) {
+	tool := &fixedResultTool{name: "search_code"}
+	manager := newTestManager(t, tool)
+	perms := newTestPermManager(t, permissions.Ask, nil) // legacy shape: no search_code entry
+	asker := permissions.AskerFunc(func(ctx context.Context, req permissions.Request) (permissions.Prompt, error) {
+		t.Error("search_code on a normal path must not prompt")
+		return permissions.PromptDenyOnce, nil
+	})
+	s := newScheduler(manager, perms, asker, SchedulerConfig{MaxConcurrency: 1, MaxRetries: 0, BaseBackoff: time.Millisecond})
+
+	results := s.Run(context.Background(), []providers.ToolCall{{
+		ID: "1", Name: "search_code",
+		Arguments: map[string]any{"pattern": "x", "path": "internal/"},
+	}}, func(Event) bool { return true })
+	if len(results) != 1 || results[0].IsError {
+		t.Fatalf("expected search_code to execute, got %#v", results)
+	}
+}
+
+// TestScheduler_SearchCodeExplicitDenyStillDenies proves the shipped
+// default introduces no bypass: an explicit deny wins without prompting.
+func TestScheduler_SearchCodeExplicitDenyStillDenies(t *testing.T) {
+	ran := false
+	tool := &fnTool{name: "search_code", fn: func() { ran = true }}
+	manager := newTestManager(t, tool)
+	perms := newTestPermManager(t, permissions.Ask, map[string]permissions.Decision{"search_code": permissions.Deny})
+	asker := permissions.AskerFunc(func(ctx context.Context, req permissions.Request) (permissions.Prompt, error) {
+		t.Error("denied tool must not prompt")
+		return permissions.PromptDenyOnce, nil
+	})
+	s := newScheduler(manager, perms, asker, SchedulerConfig{MaxConcurrency: 1, MaxRetries: 0, BaseBackoff: time.Millisecond})
+
+	results := s.Run(context.Background(), []providers.ToolCall{{
+		ID: "1", Name: "search_code",
+		Arguments: map[string]any{"pattern": "x", "path": "internal/"},
+	}}, func(Event) bool { return true })
+	if len(results) != 1 || !results[0].IsError || ran {
+		t.Fatalf("expected explicit deny to hold, got IsError=%v ran=%v", results[0].IsError, ran)
+	}
+}
+
 func TestScheduler_AskAllowOnceDoesNotPersist(t *testing.T) {
 	tool := &fixedResultTool{name: "shell"}
 	manager := newTestManager(t, tool)
