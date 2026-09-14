@@ -81,6 +81,7 @@ Built-in tools are registered through `tools/builtin`.
 | `shell`       | `tools/shell`           | Run a Bash command. Combined stdout+stderr capped at 2 MiB; 30s default timeout, per-call up to 300s. |
 | `shell_job`   | `tools/shell`           | Run a Bash command in the background; poll, list, or cancel by job id. Max 4 running jobs, 1 MiB output, 300s lifetime, 10 min idle expiry. |
 | `search_files`| `tools/search`          | Search file contents under a directory. Skips excluded dirs, lockfiles, sensitive and binary files; max 100 matches. |
+| `search_code` | `tools/search`          | Fast code search via ripgrep (`rg` argv, never a shell). Same skips as `search_files` plus `.gitignore` support; path:line:column matches, max 100. Falls back to built-in search when `rg` is not on PATH. |
 | `find_files`  | `tools/search`          | Find files/dirs by glob or substring. Sorted workspace-relative paths; max 50 results. |
 | `git`         | `tools/git`             | Inspect a git repository (read-only): status, diffs, log, changed files. Max 256 KiB output. |
 | `secret_scan` | `tools/security`        | Defensively scan one file/text for hardcoded secrets (local-only, redacted output). Max 50 findings, 1 MiB input. |

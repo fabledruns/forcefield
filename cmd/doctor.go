@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -26,6 +27,10 @@ import (
 // probeTimeout bounds each network reachability check in ff doctor so a
 // dead provider fails fast instead of hanging the whole diagnosis.
 const probeTimeout = 3 * time.Second
+
+// execLookPath is a seam over exec.LookPath so tests can simulate rg
+// being absent without touching the real PATH.
+var execLookPath = exec.LookPath
 
 type verdict int
 
@@ -73,6 +78,7 @@ It never prints secret values such as API keys.`,
 		doctorSkills(report)
 		doctorMemory(report)
 		doctorShell(report)
+		doctorSearch(report)
 		doctorSandbox(cfg, report)
 
 		if failed {
@@ -397,6 +403,17 @@ func doctorShell(report func(verdict, string, ...any)) {
 		return
 	}
 	report(vOK, "shell backend: ready")
+}
+
+// doctorSearch reports whether ripgrep is available for the search_code
+// tool. Absence is a warning, never a failure: search_code falls back to
+// the built-in search_files walker when rg is not on PATH.
+func doctorSearch(report func(verdict, string, ...any)) {
+	if _, err := execLookPath("rg"); err != nil {
+		report(vWarn, "search: ripgrep (rg) not found on PATH; search_code falls back to built-in search")
+		return
+	}
+	report(vOK, "search: ripgrep (rg) available for search_code")
 }
 
 // doctorSandbox reports the configured execution boundary and whether its

@@ -105,6 +105,9 @@ func TestDefaultLimitsFor(t *testing.T) {
 	if got := DefaultLimitsFor("find_files"); got.MaxLines != DefaultFindMaxResults {
 		t.Errorf("find_files = %+v", got)
 	}
+	if got := DefaultLimitsFor("search_code"); got.MaxLines != DefaultSearchCodeMaxLines || got.MaxBytes != DefaultSearchCodeMaxBytes || got.Timeout != DefaultToolTimeout {
+		t.Errorf("search_code = %+v", got)
+	}
 	if got := DefaultLimitsFor("shell_job"); got.MaxBytes != DefaultJobMaxBytes || got.Timeout != DefaultJobTimeout {
 		t.Errorf("shell_job = %+v", got)
 	}

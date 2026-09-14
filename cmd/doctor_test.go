@@ -538,6 +538,32 @@ func TestDoctorSessionsWritableStoragePasses(t *testing.T) {
 	}
 }
 
+func TestDoctorSearch_PresentAndAbsent(t *testing.T) {
+	old := execLookPath
+	t.Cleanup(func() { execLookPath = old })
+
+	var got []verdict
+	report := func(v verdict, format string, args ...any) {
+		got = append(got, v)
+	}
+
+	// rg present: ok, never fail.
+	execLookPath = func(string) (string, error) { return `C:\tools\rg.exe`, nil }
+	got = nil
+	doctorSearch(report)
+	if len(got) != 1 || got[0] != vOK {
+		t.Fatalf("present rg should report ok, got %v", got)
+	}
+
+	// rg absent: warn, never fail.
+	execLookPath = func(string) (string, error) { return "", &os.LinkError{Op: "lookpath", Err: os.ErrNotExist} }
+	got = nil
+	doctorSearch(report)
+	if len(got) != 1 || got[0] != vWarn {
+		t.Fatalf("absent rg should warn (not fail), got %v", got)
+	}
+}
+
 func TestDoctorSandbox_NilConfig(t *testing.T) {
 	var reports []string
 	report := func(v verdict, format string, args ...any) {

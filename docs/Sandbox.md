@@ -68,7 +68,7 @@ reports the resolved root and mode.
 - **Permissive** (default): historical behavior. Nothing is confined;
   old configs without this block are unaffected.
 - **Strict**: every filesystem tool (`read_file`, `write_file`,
-  `list_files`, `search_files`, `find_files`, `secret_scan`) and the
+  `list_files`, `search_files`, `search_code`, `find_files`, `secret_scan`) and the
   shell working directory resolve through one shared pipeline —
   resolve + canonicalize (symlinks/junctions included) + boundary
   check — then permission check, then execution. Relative paths anchor
@@ -83,6 +83,12 @@ the backend differs (host Bash, full environment, host network).
 Command *text* is not filtered — a command may still name outside
 paths; that action is gated by permissions (`ask`), exactly as in
 `wsl` mode.
+
+Search execution: `search_code` spawns the host `rg` binary directly
+(never through a shell or the WSL relay) in every mode, against the
+same caged root. In `wsl` mode shell commands run in-distribution
+while search runs on the host; the workspace pinning is identical
+because both resolve through `policy.Workspace`.
 
 ---
 

@@ -214,6 +214,8 @@ Behavior:
 
 Permission values (`permissions.default` and every `permissions.tools.*`) must be `allow`, `deny`, or `ask`.
 
+A tool with no entry under `permissions.tools` resolves to `permissions.default` — except `search_code`, whose documented shipped default (`allow`) applies in memory under the stock `ask` default so config files predating the tool do not prompt on every search. An explicit `search_code` entry always wins, and an explicit `default: deny` lockdown stays fail-closed. Nothing is written back to the file.
+
 ## API Keys
 
 Each provider names its key source through `api_key_env`; when unset, the service's standard variable applies (`OPENAI_API_KEY` for OpenAI, `ANTHROPIC_API_KEY` for Anthropic, `GEMINI_API_KEY` for Gemini, `NVIDIA_API_KEY` for NVIDIA NIM, `OPENCODE_API_KEY` for OpenCode Zen and OpenCode Go, and so on).
