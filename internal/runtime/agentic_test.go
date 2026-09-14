@@ -353,6 +353,83 @@ func TestRun_RepeatedFailedOperationStopsBeforeGenericFailureLimit(t *testing.T)
 	}
 }
 
+func TestRun_SingleRepeatedIdenticalCallIsAllowed(t *testing.T) {
+	turns := [][]providers.StreamEvent{
+		toolCallTurn("call-1", "count"),
+		toolCallTurn("call-2", "count"),
+		{{Text: "done"}, {Done: true}},
+	}
+	provider := &scriptedProvider{turns: turns}
+	counter := &countingTool{}
+	rt := newTestRuntimeWithLimits(provider, Limits{MaxIterations: 10}, counter)
+
+	events, err := rt.StreamChat(context.Background(), []providers.Message{{Role: providers.UserRole, Content: "do it"}})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	_, done, blocked := collect(events)
+	if blocked != nil || done == nil {
+		t.Fatalf("done = %+v blocked = %+v, want normal completion after one repeat", done, blocked)
+	}
+	if got := counter.calls.Load(); got != 2 {
+		t.Errorf("tool calls = %d, want 2", got)
+	}
+}
+
+func TestRun_InterleavedRepeatsWithProgressAreAllowed(t *testing.T) {
+	turns := [][]providers.StreamEvent{
+		toolCallTurn("call-1", "count"),
+		toolCallTurn("call-2", "other-b"),
+		toolCallTurn("call-3", "count"),
+		toolCallTurn("call-4", "other-c"),
+		toolCallTurn("call-5", "count"),
+		{{Text: "done"}, {Done: true}},
+	}
+	provider := &scriptedProvider{turns: turns}
+	counter := &countingTool{}
+	rt := newTestRuntimeWithLimits(provider, Limits{MaxIterations: 10}, counter,
+		&fixedResultTool{name: "other-b"}, &fixedResultTool{name: "other-c"})
+
+	events, err := rt.StreamChat(context.Background(), []providers.Message{{Role: providers.UserRole, Content: "do it"}})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	_, done, blocked := collect(events)
+	if blocked != nil || done == nil {
+		t.Fatalf("done = %+v blocked = %+v, want normal completion: differing work in between is progress", done, blocked)
+	}
+	if got := counter.calls.Load(); got != 3 {
+		t.Errorf("tool calls = %d, want 3 (repeats with progress must all execute)", got)
+	}
+}
+
+func TestRun_RepeatPairsSeparatedByWorkAreAllowed(t *testing.T) {
+	turns := [][]providers.StreamEvent{
+		toolCallTurn("call-1", "count"),
+		toolCallTurn("call-2", "count"),
+		toolCallTurn("call-3", "other"),
+		toolCallTurn("call-4", "count"),
+		toolCallTurn("call-5", "count"),
+		{{Text: "done"}, {Done: true}},
+	}
+	provider := &scriptedProvider{turns: turns}
+	counter := &countingTool{}
+	rt := newTestRuntimeWithLimits(provider, Limits{MaxIterations: 10}, counter,
+		&fixedResultTool{name: "other"})
+
+	events, err := rt.StreamChat(context.Background(), []providers.Message{{Role: providers.UserRole, Content: "do it"}})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	_, done, blocked := collect(events)
+	if blocked != nil || done == nil {
+		t.Fatalf("done = %+v blocked = %+v, want normal completion: the streak must restart after differing work", done, blocked)
+	}
+	if got := counter.calls.Load(); got != 4 {
+		t.Errorf("tool calls = %d, want 4", got)
+	}
+}
+
 func TestRun_DifferentToolArgumentsRemainLegitimate(t *testing.T) {
 	turns := [][]providers.StreamEvent{
 		toolCallWithArgsTurn("one", "count", map[string]any{"path": "one"}),
