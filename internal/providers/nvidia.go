@@ -7,8 +7,9 @@ import (
 )
 
 // This file keeps the historical NVIDIA NIM and LM Studio constructors
-// working on top of the shared OpenAI-compatible transport. Both services
-// speak that wire protocol; only defaults and error wording differ.
+// working on top of the shared OpenAI-compatible transport. These services
+// (and llama.cpp's llama-server, via the catalog preset) speak that wire
+// protocol; only defaults and error wording differ.
 
 // defaultNvidiaTimeout bounds how long the client will wait for the first
 // response headers from NVIDIA NIM. Kimi K3 on NIM can take >60s to start

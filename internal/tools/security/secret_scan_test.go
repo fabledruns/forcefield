@@ -16,7 +16,7 @@ func TestSecretScan_DetectsAWSKeyInFile(t *testing.T) {
 	p := filepath.Join(dir, "config.go")
 	os.WriteFile(p, []byte("key = \""+secret+"\"\n"), 0o644)
 
-	tool := NewSecretScan()
+	tool := NewSecretScanWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"path": p})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -53,7 +53,7 @@ func TestSecretScan_CleanFileReportsNoFindings(t *testing.T) {
 	p := filepath.Join(dir, "main.go")
 	os.WriteFile(p, []byte("package main\nfunc main() {}\n"), 0o644)
 
-	tool := NewSecretScan()
+	tool := NewSecretScanWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"path": p})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -75,7 +75,7 @@ func TestSecretScan_PathAndTextBothIsHardError(t *testing.T) {
 
 func TestSecretScan_DirectoryIsSoftError(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewSecretScan()
+	tool := NewSecretScanWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"path": dir})
 	if err != nil {
 		t.Fatalf("directory must be soft error, got hard: %v", err)
@@ -92,7 +92,7 @@ func TestSecretScan_OversizeIsSoftError(t *testing.T) {
 	f.Write(make([]byte, maxScanBytes+10))
 	f.Close()
 
-	tool := NewSecretScan()
+	tool := NewSecretScanWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"path": p})
 	if err != nil {
 		t.Fatalf("oversize must be soft error, got hard: %v", err)
@@ -124,5 +124,35 @@ func TestSecretScan_NoNetworkNoValidation(t *testing.T) {
 	}
 	if res.IsError || !strings.Contains(res.Content, "no hardcoded secrets") {
 		t.Fatalf("got:\n%s", res.Content)
+	}
+}
+
+func TestSecretScan_CheckBoundary(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "main.go")
+	os.WriteFile(p, []byte("package main\n"), 0o644)
+	tool := NewSecretScanWithPolicy(sandbox.Policy{Workspace: dir})
+
+	// Inside path accepted as an absolute path under the workspace
+	// (compared canonically so aliased host spellings pass).
+	resolved, err := tool.CheckBoundary(map[string]any{"path": p})
+	if err != nil {
+		t.Fatalf("CheckBoundary(inside) = %v, want acceptance", err)
+	}
+	cleanDir, derr := filepath.EvalSymlinks(dir)
+	if derr != nil {
+		cleanDir = dir
+	}
+	if !filepath.IsAbs(resolved) || !strings.HasPrefix(strings.ToLower(filepath.Clean(resolved)), strings.ToLower(filepath.Clean(cleanDir)+string(filepath.Separator))) {
+		t.Errorf("CheckBoundary(inside) = %q, want an absolute path under %q", resolved, cleanDir)
+	}
+	// Outside path denied.
+	outside := filepath.Join(t.TempDir(), "other.go")
+	if _, err := tool.CheckBoundary(map[string]any{"path": outside}); err == nil {
+		t.Error("CheckBoundary(outside) succeeded, want rejection")
+	}
+	// Inline-text scans take no path: nothing to check.
+	if resolved, err := tool.CheckBoundary(map[string]any{"text": "x"}); err != nil || resolved != "" {
+		t.Errorf("CheckBoundary(text) = %q, %v; want empty acceptance", resolved, err)
 	}
 }

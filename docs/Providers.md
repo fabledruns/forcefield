@@ -122,7 +122,7 @@ The TUI contains no provider-specific logic: it consumes generic `providers.Mode
 | Transport   | Endpoint                          | Notes                                                        |
 | ----------- | --------------------------------- | ------------------------------------------------------------ |
 | Ollama      | `GET /api/tags`                   | Locally installed models; unavailable server is a soft failure. |
-| OpenAI-compatible | `GET {base_url}/models`     | One implementation for OpenAI, NVIDIA NIM, LM Studio, xAI, OpenRouter, Groq, Mistral, Together AI, and custom endpoints - auth and custom headers come from configuration. |
+| OpenAI-compatible | `GET {base_url}/models`     | One implementation for OpenAI, NVIDIA NIM, LM Studio, llama.cpp (llama-server), xAI, OpenRouter, Groq, Mistral, Together AI, and custom endpoints - auth and custom headers come from configuration. |
 | OpenAI Responses | `GET {base_url}/models`      | Same OpenAI list shape; used by OpenCode Zen/Go discovery. |
 | Anthropic   | `GET /v1/models`                  | Follows cursor pagination (`has_more` / `after_id`) to the last page. |
 | Gemini      | `GET /v1beta/models`              | Key rides the `x-goog-api-key` header, never the URL; IDs normalized (`models/` prefix stripped). |
@@ -180,7 +180,7 @@ Known limitations: Zen's per-model Gemini endpoints (`/v1/models/<id>`) need adm
 
 ### OpenAI-compatible
 
-The generic transport powers NVIDIA NIM, LM Studio, OpenAI, xAI, OpenRouter, Groq, Mistral, Together AI, and arbitrary self-hosted endpoints. It assumes only the documented protocol:
+The generic transport powers NVIDIA NIM, LM Studio, llama.cpp (llama-server), OpenAI, xAI, OpenRouter, Groq, Mistral, Together AI, and arbitrary self-hosted endpoints. It assumes only the documented protocol:
 
 - `POST {base_url}/chat/completions` for turns (streaming and non-streaming).
 - `GET {base_url}/models` for discovery.

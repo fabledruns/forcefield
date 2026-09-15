@@ -68,11 +68,23 @@ func TestSensitiveFileRequiresApprovalEvenWhenAllowed(t *testing.T) {
 }
 
 func TestIsSensitiveCall_CoversSearchCode(t *testing.T) {
-	if !isSensitiveCall(providers.ToolCall{Name: "search_code", Arguments: map[string]any{"path": ".env"}}) {
+	if !isSensitiveCall(providers.ToolCall{Name: "search_code", Arguments: map[string]any{"path": ".env"}}, "") {
 		t.Errorf("search_code on .env must escalate to Ask")
 	}
-	if isSensitiveCall(providers.ToolCall{Name: "search_code", Arguments: map[string]any{"path": "normal.go"}}) {
+	if isSensitiveCall(providers.ToolCall{Name: "search_code", Arguments: map[string]any{"path": "normal.go"}}, "") {
 		t.Errorf("search_code on a normal path must not escalate")
+	}
+}
+
+func TestIsSensitiveCall_CoversResolvedPath(t *testing.T) {
+	// A suspicious name must escalate even when only the canonical
+	// pre-flight path carries it (raw spelling hides it).
+	call := providers.ToolCall{Name: "read_file", Arguments: map[string]any{"path": "notes.txt"}}
+	if !isSensitiveCall(call, "/home/user/.ssh/id_rsa") {
+		t.Errorf("resolved sensitive path must escalate to Ask")
+	}
+	if isSensitiveCall(call, "/home/user/notes.txt") {
+		t.Errorf("resolved normal path must not escalate")
 	}
 }
 

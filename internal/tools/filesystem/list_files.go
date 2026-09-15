@@ -18,11 +18,14 @@ type ListFiles struct {
 	limits tools.Limits
 }
 
-// NewListFiles returns a ready-to-register ListFiles tool.
+// NewListFiles returns a ready-to-register ListFiles tool. Listings are
+// always confined to the workspace root (the policy's Workspace, or the
+// process working directory when unset).
 func NewListFiles() *ListFiles { return &ListFiles{} }
 
-// NewListFilesWithPolicy returns a ListFiles confined to policy.Workspace when
-// policy.Mode is wsl; otherwise it behaves like NewListFiles (native).
+// NewListFilesWithPolicy returns a ListFiles confined to
+// policy.Workspace. It behaves like NewListFiles: confinement is
+// unconditional, and the policy only selects which root to cage to.
 func NewListFilesWithPolicy(p sandbox.Policy) *ListFiles { return &ListFiles{policy: p} }
 
 // SetLimits overrides the entry bound. Only positive fields take effect;
@@ -68,13 +71,12 @@ func (l ListFiles) Execute(_ context.Context, args map[string]any) (tools.Result
 		return tools.Result{}, err
 	}
 
-	resolved := path
-	if l.policy.Confines() {
-		rp, err := sandbox.ResolveWithinWorkspace(l.policy.Workspace, path)
-		if err != nil {
-			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot list %s: %v", path, err)}, nil
-		}
-		resolved = rp
+	// Workspace confinement is unconditional: canonicalize and resolve
+	// inside the root before listing, so approval can never authorize a
+	// listing outside it.
+	resolved, err := sandbox.ResolveWithinWorkspace(l.policy.Workspace, path)
+	if err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot list %s: %v", path, err)}, nil
 	}
 
 	entries, err := os.ReadDir(resolved)
@@ -85,11 +87,9 @@ func (l ListFiles) Execute(_ context.Context, args map[string]any) (tools.Result
 	// TOCTOU mitigation: re-validate after ReadDir. A concurrent writer
 	// could have swapped the directory for a symlink to outside between
 	// the initial ResolveWithinWorkspace and the ReadDir.
-	if l.policy.Confines() {
-		if real, err := sandbox.EvalLinks(resolved); err == nil {
-			if _, err := sandbox.EnsureWithinWorkspace(l.policy.Workspace, real); err != nil {
-				return tools.Result{IsError: true, Content: fmt.Sprintf("cannot list %s: %v", path, err)}, nil
-			}
+	if real, err := sandbox.EvalLinks(resolved); err == nil {
+		if _, err := sandbox.EnsureWithinWorkspace(l.policy.Workspace, real); err != nil {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot list %s: %v", path, err)}, nil
 		}
 	}
 
@@ -120,6 +120,18 @@ func (l ListFiles) Execute(_ context.Context, args map[string]any) (tools.Result
 	}
 
 	return tools.Result{Content: out, Metadata: listTruncMeta(shown, len(entries))}, nil
+}
+
+// CheckBoundary implements tools.BoundaryChecker: it dry-runs the
+// workspace boundary decision for a listing (canonicalize + resolve,
+// nothing opened) and returns the canonical directory that would be
+// listed.
+func (l ListFiles) CheckBoundary(args map[string]any) (string, error) {
+	path, err := tools.OptionalStringArg(args, "path", ".")
+	if err != nil {
+		return "", err
+	}
+	return sandbox.ResolveWithinWorkspace(l.policy.Workspace, path)
 }
 
 // listTruncMeta reports structured truncation info only when entries

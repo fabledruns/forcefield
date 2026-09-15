@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"forcefield/internal/sandbox"
 )
 
 // TestSearch_SkipsDefaultExcludedDirs pins the fixed exclusion set:
@@ -18,7 +20,7 @@ func TestSearch_SkipsDefaultExcludedDirs(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(dir, "src", "code.go"), "nothing here\n")
 
-	tool := NewSearchFiles()
+	tool := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_EXCLUDED", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -41,7 +43,7 @@ func TestSearch_SkipsLockFiles(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "poetry.lock"), "MARKER_LOCKED\n")
 	writeFile(t, filepath.Join(dir, "main.go"), "MARKER_LOCKED\n")
 
-	tool := NewSearchFiles()
+	tool := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_LOCKED", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -64,7 +66,7 @@ func TestSearch_SkipsBinaryFiles(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(dir, "notes.txt"), "nothing here\n")
 
-	tool := NewSearchFiles()
+	tool := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_BINARY", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -94,7 +96,7 @@ func TestSearch_BinaryAndLargeNotesCombine(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(dir, "c.txt"), "MARKER_HERE\n")
 
-	tool := NewSearchFiles()
+	tool := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_HERE", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)

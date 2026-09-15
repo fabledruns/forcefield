@@ -67,7 +67,7 @@ Each key defines one selectable provider. Every field is optional; omitted value
 
 | Field         | Description                                                                    |
 | ------------- | ------------------------------------------------------------------------------ |
-| `type`        | Wire protocol (`ollama`, `openai-compatible`, `openai-responses`, `anthropic`, `gemini`) or a known service id (`openai`, `xai`, `nvidia`, `lmstudio`, `opencode-zen`, `opencode-go`, ...). A custom id can alias a service to inherit its defaults. |
+| `type`        | Wire protocol (`ollama`, `openai-compatible`, `openai-responses`, `anthropic`, `gemini`) or a known service id (`openai`, `xai`, `nvidia`, `lmstudio`, `llama-cpp`, `opencode-zen`, `opencode-go`, ...). A custom id can alias a service to inherit its defaults. |
 | `base_url`    | API root. Overrides the service default. Required when the type has no default (e.g. a self-hosted OpenAI-compatible server). |
 | `api_key_env` | Environment variable (or `.env` file key) holding the API key. Defaults to the service's standard variable. |
 | `model`       | Optional default model recorded for this provider.                             |
@@ -165,7 +165,7 @@ Unknown tool names are rejected at load.
 | Field   | Required | Description |
 | ------- | -------- | ----------- |
 | `root`  | No       | Project root for filesystem tools and shell working directories. Empty resolves to the Git top-level when available, else the working directory. An explicit root (absolute or startup-relative) must exist. |
-| `mode`  | No       | `permissive` (default, historical behavior) or `strict` (confine every filesystem tool and the shell cwd to the root). Old configs without this block stay permissive. |
+| `mode`  | No       | `permissive` (default: filesystem tools stay confined to the root; shell runs unconfined) or `strict` (additionally pins the shell cwd to the root). Old configs without this block stay permissive. |
 
 See [Sandbox](Sandbox.md) for the boundary algorithm and guarantees.
 

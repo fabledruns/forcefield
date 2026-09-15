@@ -40,6 +40,7 @@ func stubMissingRg(t *testing.T) {
 }
 
 func TestSearchCode_SchemaShape(t *testing.T) {
+	// Schema-only: no filesystem use, so no workspace fixture needed.
 	tool := NewSearchCode()
 	if tool.Name() != "search_code" {
 		t.Fatalf("Name() = %q, want search_code", tool.Name())
@@ -73,6 +74,7 @@ func TestSearchCode_SchemaShape(t *testing.T) {
 }
 
 func TestSearchCode_StrictValidationRejectsUnknownFields(t *testing.T) {
+	// Validation-only: no filesystem use, so no workspace fixture needed.
 	tool := NewSearchCode()
 	def := tools.Definition{Name: tool.Name(), InputSchema: tool.InputSchema()}
 	if err := tools.ValidateArgs(def, map[string]any{"pattern": "x", "flags": "--no-ignore"}); err == nil {
@@ -84,6 +86,7 @@ func TestSearchCode_StrictValidationRejectsUnknownFields(t *testing.T) {
 }
 
 func TestSearchCode_MetadataAndLimits(t *testing.T) {
+	// Metadata-only: no filesystem use, so no workspace fixture needed.
 	tool := NewSearchCode()
 	meta := tools.MetadataOf(tool)
 	if !meta.SupportsCancellation || !meta.SupportsParallel || meta.Retryable {
@@ -104,7 +107,7 @@ func TestSearchCode_LiteralMatch(t *testing.T) {
 	writeSearchCodeFile(t, filepath.Join(dir, "a.go"), "package main\n// TODO fix this\nfunc main() {}\n")
 	writeSearchCodeFile(t, filepath.Join(dir, "b.go"), "package main\nfunc ok() {}\n")
 
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "TODO", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -126,7 +129,7 @@ func TestSearchCode_RegexIncludeAndCase(t *testing.T) {
 	writeSearchCodeFile(t, filepath.Join(dir, "a.go"), "func Foo() {}\n")
 	writeSearchCodeFile(t, filepath.Join(dir, "b.txt"), "func Foo() {}\n")
 
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{
 		"pattern": `func\s+\w+\(\)`, "path": dir, "regex": true, "include": "*.go",
 	})
@@ -153,7 +156,7 @@ func TestSearchCode_NoMatches(t *testing.T) {
 	dir := t.TempDir()
 	writeSearchCodeFile(t, filepath.Join(dir, "a.go"), "package main\n")
 
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_ABSENT_XYZ", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -169,7 +172,7 @@ func TestSearchCode_NoMatches(t *testing.T) {
 func TestSearchCode_InvalidRegexIsSoftError(t *testing.T) {
 	requireRg(t)
 	dir := t.TempDir()
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "([", "path": dir, "regex": true})
 	if err != nil {
 		t.Fatalf("invalid regex must be soft error, got hard: %v", err)
@@ -182,7 +185,7 @@ func TestSearchCode_InvalidRegexIsSoftError(t *testing.T) {
 func TestSearchCode_InvalidGlobIsSoftError(t *testing.T) {
 	requireRg(t)
 	dir := t.TempDir()
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "x", "path": dir, "include": "[["})
 	if err != nil {
 		t.Fatalf("invalid glob must be soft error, got hard: %v", err)
@@ -193,6 +196,8 @@ func TestSearchCode_InvalidGlobIsSoftError(t *testing.T) {
 }
 
 func TestSearchCode_EmptyPatternIsHardError(t *testing.T) {
+	// Pattern validation fails before any path resolution, so no
+	// workspace fixture is needed here.
 	tool := NewSearchCode()
 	if _, err := tool.Execute(context.Background(), map[string]any{"pattern": "  "}); err == nil {
 		t.Fatalf("empty pattern must be a hard error")
@@ -203,6 +208,8 @@ func TestSearchCode_EmptyPatternIsHardError(t *testing.T) {
 }
 
 func TestSearchCode_WrongTypesAreHardErrors(t *testing.T) {
+	// Argument validation fails before any path resolution, so no
+	// workspace fixture is needed here.
 	tool := NewSearchCode()
 	for _, args := range []map[string]any{
 		{"pattern": "x", "regex": "yes"},
@@ -226,7 +233,7 @@ func TestSearchCode_NonDirectoryIsSoftError(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "a.go")
 	writeSearchCodeFile(t, f, "x\n")
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "x", "path": f})
 	if err != nil {
 		t.Fatalf("file path must be soft error, got hard: %v", err)
@@ -254,7 +261,7 @@ func TestSearchCode_SkipsSensitiveFiles(t *testing.T) {
 	writeSearchCodeFile(t, filepath.Join(dir, ".env"), "MARKER_SECRET=hunter2\n")
 	writeSearchCodeFile(t, filepath.Join(dir, "app.go"), "MARKER_SECRET=hunter2\n")
 
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_SECRET", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -273,7 +280,7 @@ func TestSearchCode_SkipsGitDir(t *testing.T) {
 	writeSearchCodeFile(t, filepath.Join(dir, ".git", "objects", "x"), "MARKER_GITDATA\n")
 	writeSearchCodeFile(t, filepath.Join(dir, "code.go"), "nothing here\n")
 
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_GITDATA", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -289,7 +296,7 @@ func TestSearchCode_HiddenDefaultSkipsDotfiles(t *testing.T) {
 	writeSearchCodeFile(t, filepath.Join(dir, ".hidden"), "MARKER_HIDDEN\n")
 	writeSearchCodeFile(t, filepath.Join(dir, "vis.go"), "nothing\n")
 
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_HIDDEN", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -317,7 +324,7 @@ func TestSearchCode_SymlinkEscapeSkipped(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_OUTSIDE", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -336,7 +343,7 @@ func TestSearchCode_MaxResultsTruncates(t *testing.T) {
 	}
 	writeSearchCodeFile(t, filepath.Join(dir, "big.go"), b.String())
 
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_MANY", "path": dir, "max_results": 10})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -358,7 +365,7 @@ func TestSearchCode_ConfiguredLimitApplies(t *testing.T) {
 	}
 	writeSearchCodeFile(t, filepath.Join(dir, "big.go"), b.String())
 
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	tool.SetLimits(tools.Limits{MaxLines: 3})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_CFG", "path": dir})
 	if err != nil {
@@ -374,7 +381,7 @@ func TestSearchCode_MissingRgFallsBack(t *testing.T) {
 	dir := t.TempDir()
 	writeSearchCodeFile(t, filepath.Join(dir, "a.go"), "package main\n// TODO fallback\n")
 
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "TODO", "path": dir})
 	if err != nil {
 		t.Fatalf("fallback must not hard-fail, got: %v", err)
@@ -399,7 +406,7 @@ func TestSearchCode_CancelledContextIsSoftError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(ctx, map[string]any{"pattern": "x", "path": dir})
 	if err != nil {
 		t.Fatalf("cancellation must be soft, got hard: %v", err)
@@ -414,7 +421,7 @@ func TestSearchCode_TimeoutFires(t *testing.T) {
 	dir := t.TempDir()
 	writeSearchCodeFile(t, filepath.Join(dir, "a.go"), "x\n")
 
-	tool := NewSearchCode()
+	tool := NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "x", "path": dir, "timeout_seconds": 0.000000001})
 	if err != nil {
 		t.Fatalf("timeout must be soft, got hard: %v", err)
@@ -494,8 +501,12 @@ func TestSearchCode_ParseVimgrep(t *testing.T) {
 }
 
 func TestSearchCode_ModelVisibleDefinition(t *testing.T) {
+	// End-to-end through the normal dispatch path, confined to the
+	// fixture directory like every other filesystem test.
+	dir := t.TempDir()
+	writeSearchCodeFile(t, filepath.Join(dir, "a.go"), "MARKER_DISPATCH\n")
 	mgr := tools.NewManager(tools.NewRegistry())
-	if err := mgr.Register(NewSearchCode()); err != nil {
+	if err := mgr.Register(NewSearchCodeWithPolicy(sandbox.Policy{Workspace: dir})); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	found := false
@@ -513,8 +524,6 @@ func TestSearchCode_ModelVisibleDefinition(t *testing.T) {
 	}
 
 	// End-to-end through the normal dispatch path.
-	dir := t.TempDir()
-	writeSearchCodeFile(t, filepath.Join(dir, "a.go"), "MARKER_DISPATCH\n")
 	res, err := mgr.Execute(context.Background(), "search_code", map[string]any{"pattern": "MARKER_DISPATCH", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)

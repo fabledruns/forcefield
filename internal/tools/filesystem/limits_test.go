@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 )
 
@@ -21,7 +22,7 @@ func TestListFiles_TruncatesHugeDirectories(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	l := NewListFiles()
+	l := NewListFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	l.SetLimits(tools.Limits{MaxLines: 5})
 
 	result, err := l.Execute(context.Background(), map[string]any{"path": dir})
@@ -51,7 +52,7 @@ func TestListFiles_SmallDirectoryUnchanged(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	l := NewListFiles()
+	l := NewListFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	result, err := l.Execute(context.Background(), map[string]any{"path": dir})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -75,7 +76,7 @@ func TestReadFile_OverrideRefusal(t *testing.T) {
 	if err := os.WriteFile(path, make([]byte, 3000), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := NewReadFile()
+	r := NewReadFileWithPolicy(sandbox.Policy{Workspace: dir})
 	r.SetLimits(tools.Limits{MaxBytes: 100})
 	result, err := r.Execute(context.Background(), map[string]any{"path": path})
 	if err != nil {
@@ -100,7 +101,7 @@ func TestReadFile_DefaultStillReadsNormalFiles(t *testing.T) {
 	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := NewReadFile()
+	r := NewReadFileWithPolicy(sandbox.Policy{Workspace: dir})
 	if got := r.ToolLimits().MaxBytes; got != tools.DefaultReadMaxBytes {
 		t.Errorf("default MaxBytes = %d, want %d", got, tools.DefaultReadMaxBytes)
 	}

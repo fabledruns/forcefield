@@ -3,7 +3,7 @@
 // discovery. Both share the workspace boundary (resolveSearchRoot),
 // directory exclusions, symlink containment, sensitive-file skipping,
 // and traversal/output caps, so neither can become an unbounded walk
-// or escape the workspace in strict mode.
+// or escape the workspace.
 package search
 
 import (
@@ -27,11 +27,14 @@ type FindFiles struct {
 	limits tools.Limits
 }
 
-// NewFindFiles returns a ready-to-register FindFiles tool.
+// NewFindFiles returns a ready-to-register FindFiles tool. Searches are
+// always confined to the workspace root (the policy's Workspace, or the
+// process working directory when unset).
 func NewFindFiles() *FindFiles { return &FindFiles{} }
 
 // NewFindFilesWithPolicy returns a FindFiles confined to
-// policy.Workspace when policy.Mode is wsl; otherwise native behavior.
+// policy.Workspace. It behaves like NewFindFiles: confinement is
+// unconditional, and the policy only selects which root to cage to.
 func NewFindFilesWithPolicy(p sandbox.Policy) *FindFiles { return &FindFiles{policy: p} }
 
 // SetLimits overrides the result bound. Only positive fields take
@@ -235,4 +238,16 @@ func (s FindFiles) Execute(ctx context.Context, args map[string]any) (tools.Resu
 		}
 	}
 	return tools.Result{Content: out, Metadata: meta}, nil
+}
+
+// CheckBoundary implements tools.BoundaryChecker: it dry-runs the
+// workspace boundary decision for a filename search (canonicalize +
+// resolve the root, nothing walked) and returns the canonical root
+// that would be searched.
+func (s FindFiles) CheckBoundary(args map[string]any) (string, error) {
+	rootArg, err := tools.OptionalStringArg(args, "path", ".")
+	if err != nil {
+		return "", err
+	}
+	return resolveSearchRoot(s.policy, rootArg)
 }

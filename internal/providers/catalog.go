@@ -54,6 +54,20 @@ var Catalog = []Preset{
 		},
 	},
 	{
+		ID:          "llama-cpp",
+		Name:        "llama.cpp",
+		Description: "Local models served by llama-server.",
+		Type:        "openai-compatible",
+		BaseURL:     "http://localhost:8080/v1",
+		Auth:        AuthNone,
+		Scope:       ScopeLocal,
+		// No fallback models: the served model ID is user-defined
+		// (llama-server --alias, defaulting to the model file path),
+		// so any hardcoded ID would be a guess. Model discovery
+		// (GET {base_url}/models) is the source of truth; the active
+		// model always remains selectable before discovery lands.
+	},
+	{
 		ID:          "nvidia",
 		Name:        "NVIDIA NIM",
 		Description: "Hosted models served by NVIDIA NIM.",

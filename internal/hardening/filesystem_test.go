@@ -29,10 +29,10 @@ func TestReadFileStrictConfinesTraversal(t *testing.T) {
 	}
 }
 
-func TestReadFileNativePermissiveDocumented(t *testing.T) {
-	// Native/permissive is historical unrestricted behavior by design.
-	// This test documents (not fixes) that absolute paths are readable.
-	// P1.16 must make this explicit in docs + sensitive-path escalation.
+func TestReadFileNativeConfinesOutside(t *testing.T) {
+	// Bare constructors cage to the process working directory: there is
+	// no unrestricted construction path, so an absolute outside path is
+	// denied and its content never reaches the result.
 	dir := t.TempDir()
 	p := filepath.Join(dir, "a.txt")
 	if err := os.WriteFile(p, []byte("hello"), 0o600); err != nil {
@@ -43,8 +43,11 @@ func TestReadFileNativePermissiveDocumented(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}
-	if res.IsError || res.Content != "hello" {
-		t.Fatalf("native read failed: %#v", res)
+	if !res.IsError {
+		t.Fatalf("bare-constructor read escaped the working-directory cage: %#v", res)
+	}
+	if res.Content == "hello" {
+		t.Fatalf("denied read leaked file content: %#v", res)
 	}
 }
 

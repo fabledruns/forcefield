@@ -25,7 +25,7 @@ func TestSearch_LiteralMatch(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "a.go"), "package main\n// TODO fix this\nfunc main() {}\n")
 	writeFile(t, filepath.Join(dir, "b.go"), "package main\nfunc ok() {}\n")
 
-	tool := NewSearchFiles()
+	tool := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "TODO", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -46,7 +46,7 @@ func TestSearch_SkipsSensitiveFiles(t *testing.T) {
 	writeFile(t, filepath.Join(dir, ".env"), "MARKER_SECRET=hunter2\n")
 	writeFile(t, filepath.Join(dir, "app.go"), "MARKER_SECRET=hunter2\n")
 
-	tool := NewSearchFiles()
+	tool := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_SECRET", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -64,7 +64,7 @@ func TestSearch_SkipsGitDir(t *testing.T) {
 	writeFile(t, filepath.Join(dir, ".git", "objects", "x"), "MARKER_GITDATA\n")
 	writeFile(t, filepath.Join(dir, "code.go"), "nothing here\n")
 
-	tool := NewSearchFiles()
+	tool := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_GITDATA", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -83,7 +83,7 @@ func TestSearch_SymlinkEscapeSkipped(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	tool := NewSearchFiles()
+	tool := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_OUTSIDE", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -107,7 +107,7 @@ func TestSearch_WSLConfinesRoot(t *testing.T) {
 
 func TestSearch_InvalidRegexIsSoftError(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewSearchFiles()
+	tool := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "([", "path": dir, "regex": "true"})
 	if err != nil {
 		t.Fatalf("invalid regex must be soft error, got hard: %v", err)
@@ -122,7 +122,7 @@ func TestSearch_RegexAndIncludeAndCase(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "a.go"), "func Foo() {}\n")
 	writeFile(t, filepath.Join(dir, "b.txt"), "func Foo() {}\n")
 
-	tool := NewSearchFiles()
+	tool := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{
 		"pattern": `func\s+\w+\(\)`, "path": dir, "regex": "true", "include": "*.go",
 	})
@@ -152,7 +152,7 @@ func TestSearch_MatchCapTruncates(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(dir, "big.go"), b.String())
 
-	tool := NewSearchFiles()
+	tool := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_MANY", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -172,7 +172,7 @@ func TestSearch_SkipsOversizeFiles(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "huge.bin"), string(big))
 	writeFile(t, filepath.Join(dir, "small.go"), "nothing\n")
 
-	tool := NewSearchFiles()
+	tool := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "MARKER_BIG", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -186,6 +186,8 @@ func TestSearch_SkipsOversizeFiles(t *testing.T) {
 }
 
 func TestSearch_EmptyPatternIsHardError(t *testing.T) {
+	// Pattern validation fails before any path resolution, so no
+	// workspace fixture is needed here.
 	tool := NewSearchFiles()
 	if _, err := tool.Execute(context.Background(), map[string]any{"pattern": "  "}); err == nil {
 		t.Fatalf("empty pattern must be a hard error")
@@ -193,6 +195,8 @@ func TestSearch_EmptyPatternIsHardError(t *testing.T) {
 }
 
 func TestSearch_MissingPatternArgIsHardError(t *testing.T) {
+	// Pattern validation fails before any path resolution, so no
+	// workspace fixture is needed here.
 	tool := NewSearchFiles()
 	if _, err := tool.Execute(context.Background(), map[string]any{}); err == nil {
 		t.Fatalf("missing pattern must be a hard error")

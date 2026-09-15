@@ -96,20 +96,52 @@ func TestStrict_ListInsideOkOutsideDenied(t *testing.T) {
 }
 
 func TestStrict_PermissiveRegression(t *testing.T) {
-	// Without Strict, the same native tools keep historical behavior:
-	// absolute outside paths are accepted (existence-only checks).
+	// Bare constructors no longer preserve historical unrestricted
+	// behavior: with no policy they cage to the process working
+	// directory, so absolute outside paths are denied exactly like
+	// explicit policies deny them.
 	outside := t.TempDir()
 	outPath := filepath.Join(outside, "open.txt")
 	if err := os.WriteFile(outPath, []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rf := NewReadFile() // zero policy: permissive native
+	rf := NewReadFile() // zero policy: caged to the working directory
 	res, err := rf.Execute(context.Background(), map[string]any{"path": outPath})
-	if err != nil || res.IsError || res.Content != "hi" {
-		t.Fatalf("permissive read = %+v err=%v, want historical acceptance", res, err)
+	if err != nil || !res.IsError {
+		t.Fatalf("bare-constructor read = %+v err=%v, want denial for the outside path", res, err)
 	}
 	if (sandbox.Policy{}).Confines() {
-		t.Fatal("zero Policy must not confine")
+		t.Fatal("zero Policy must not confine the shell executor")
+	}
+}
+
+func TestStrict_ZeroPolicyFallbackIsCWD(t *testing.T) {
+	// A tool built without a policy cages to the process working
+	// directory at call time: relative paths under a chdir'd cwd work,
+	// while absolute outside paths are denied.
+	ws := t.TempDir()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(ws); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	wf := NewWriteFile()
+	if res, err := wf.Execute(context.Background(), map[string]any{"path": "rel.txt", "content": "hi"}); err != nil || res.IsError {
+		t.Fatalf("relative write under cwd = %+v err=%v, want success", res, err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "rel.txt")); err != nil {
+		t.Fatalf("written file missing: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "evil.txt")
+	if res, err := wf.Execute(context.Background(), map[string]any{"path": outside, "content": "x"}); err != nil || !res.IsError {
+		t.Fatalf("absolute outside write = %+v err=%v, want denial", res, err)
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatal("outside file was created despite denial")
 	}
 }
 

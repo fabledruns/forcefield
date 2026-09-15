@@ -17,7 +17,7 @@ func TestFind_SubstringMatch(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "main_test.go"), "x")
 	writeFile(t, filepath.Join(dir, "README.md"), "x")
 
-	tool := NewFindFiles()
+	tool := NewFindFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "main", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -39,7 +39,7 @@ func TestFind_GlobMatch(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "b.txt"), "x")
 	writeFile(t, filepath.Join(dir, "sub", "c.go"), "x")
 
-	tool := NewFindFiles()
+	tool := NewFindFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "*.go", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -58,7 +58,7 @@ func TestFind_PathGlobMatch(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "sub", "c.go"), "x")
 	writeFile(t, filepath.Join(dir, "other.go"), "x")
 
-	tool := NewFindFiles()
+	tool := NewFindFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "sub/*.go", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -77,7 +77,7 @@ func TestFind_OutputSortedAndRelative(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "apple.txt"), "x")
 	writeFile(t, filepath.Join(dir, "sub", "mango.txt"), "x")
 
-	tool := NewFindFiles()
+	tool := NewFindFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "*.txt", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -102,7 +102,7 @@ func TestFind_ResultCapTruncates(t *testing.T) {
 	for i := 0; i < 70; i++ {
 		writeFile(t, filepath.Join(dir, strings.Repeat("f", 3)+string(rune('a'+i%26))+string(rune('a'+i/26))+".txt"), "x")
 	}
-	tool := NewFindFiles()
+	tool := NewFindFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "*.txt", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -118,7 +118,7 @@ func TestFind_ResultCapTruncates(t *testing.T) {
 func TestFind_EmptyAndErrorCases(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "a.go"), "x")
-	tool := NewFindFiles()
+	tool := NewFindFilesWithPolicy(sandbox.Policy{Workspace: dir})
 
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "zzz-no-such", "path": dir})
 	if err != nil {
@@ -151,7 +151,7 @@ func TestFind_EmptyAndErrorCases(t *testing.T) {
 
 func TestFind_InvalidGlobIsSoftError(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewFindFiles()
+	tool := NewFindFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	// "[*.go" contains glob metacharacters but is malformed.
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "[*.go", "path": dir})
 	if err != nil {
@@ -171,7 +171,7 @@ func TestFind_SkipsExcludedDirsSensitiveAndLocks(t *testing.T) {
 	writeFile(t, filepath.Join(dir, ".hidden", "secret.txt"), "x")
 	writeFile(t, filepath.Join(dir, "src", "main.go"), "x")
 
-	tool := NewFindFiles()
+	tool := NewFindFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "*", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -195,7 +195,7 @@ func TestFind_ExplicitLockQueryWins(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "Cargo.lock"), "x")
 	writeFile(t, filepath.Join(dir, "main.go"), "x")
 
-	tool := NewFindFiles()
+	tool := NewFindFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "*.lock", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -236,7 +236,7 @@ func TestFind_SymlinkEscapeSkipped(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(dir, "local.txt"), "x")
 
-	tool := NewFindFiles()
+	tool := NewFindFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "*.txt", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -254,7 +254,7 @@ func TestFind_OverrideBoundsResults(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		writeFile(t, filepath.Join(dir, string(rune('a'+i))+".txt"), "x")
 	}
-	tool := NewFindFiles()
+	tool := NewFindFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	tool.SetLimits(tools.Limits{MaxLines: 4})
 	if got := tool.ToolLimits().MaxLines; got != 4 {
 		t.Fatalf("ToolLimits MaxLines = %d, want 4", got)
@@ -270,7 +270,7 @@ func TestFind_OverrideBoundsResults(t *testing.T) {
 
 func TestFind_CancelledContextIsSoftError(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewFindFiles()
+	tool := NewFindFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	res, err := tool.Execute(ctx, map[string]any{"pattern": "*", "path": dir})

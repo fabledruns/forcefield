@@ -55,6 +55,21 @@ providers: {
 		}]
 	}
 
+	// llama.cpp serves whatever model the user loads in llama-server: the
+	// model ID is user-defined (--alias, defaulting to the model file
+	// path), so no fallback model is listed here. Model discovery
+	// (GET {endpoint}/models) is the source of truth.
+	llamacpp: #ProviderInfo & {
+		name:        "llama.cpp"
+		id:          "llama-cpp"
+		type:        "openai-compatible"
+		description: "Local models served by llama-server."
+		endpoint:    "http://localhost:8080/v1"
+		scope:       "local"
+		requires_api_key: false
+		models: []
+	}
+
 	nvidia: #ProviderInfo & {
 		name:        "NVIDIA NIM"
 		id:          "nvidia"

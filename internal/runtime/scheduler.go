@@ -385,21 +385,34 @@ func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCa
 // isSensitiveCall reports whether a tool call targets a sensitive file
 // that should require explicit permission even if the tool is otherwise
 // allowed. This is a defense-in-depth check that does not rely on the
-// model to recognize secrets.
-func isSensitiveCall(call providers.ToolCall) bool {
+// model to recognize secrets. Both the raw path argument and the
+// canonical pre-flight path (when available) are matched, so a
+// suspicious name cannot hide behind an equivalent spelling.
+func isSensitiveCall(call providers.ToolCall, resolvedPath string) bool {
+	candidates := make([]string, 0, 3)
 	switch call.Name {
 	case "read_file", "write_file", "list_files", "search_files", "search_code", "find_files", "git", "secret_scan":
 		if v, ok := call.Arguments["path"]; ok {
 			if s, ok := v.(string); ok {
-				return filesystem.IsSensitivePath(s)
+				candidates = append(candidates, s)
 			}
 		}
 	case "shell_job":
 		// Jobs scope through cwd rather than path.
 		if v, ok := call.Arguments["cwd"]; ok {
 			if s, ok := v.(string); ok && s != "" {
-				return filesystem.IsSensitivePath(s)
+				candidates = append(candidates, s)
 			}
+		}
+	default:
+		return false
+	}
+	if resolvedPath != "" {
+		candidates = append(candidates, resolvedPath)
+	}
+	for _, c := range candidates {
+		if filesystem.IsSensitivePath(c) {
+			return true
 		}
 	}
 	return false
@@ -510,12 +523,53 @@ func emptyEnvHash() string {
 	return strconv.FormatUint(h.Sum64(), 16)
 }
 
+// checkBoundary dry-runs the workspace boundary decision for call when
+// its tool exposes one (tools.BoundaryChecker). It returns the canonical
+// path the call would act on, or an error when the call would escape the
+// workspace. Tools without a boundary story (shell, pwd, memory tools)
+// and unknown tool names have nothing to check and return "", nil,
+// leaving them to their existing paths.
+func checkBoundary(manager *tools.Manager, call providers.ToolCall) (string, error) {
+	if manager == nil {
+		return "", nil
+	}
+	tool, ok := manager.Lookup(call.Name)
+	if !ok {
+		return "", nil
+	}
+	bc, ok := tool.(tools.BoundaryChecker)
+	if !ok {
+		return "", nil
+	}
+	return bc.CheckBoundary(call.Arguments)
+}
+
 // checkPermissionWithManager resolves a tool call's permission before
 // execution against an explicit manager snapshot. See RunWithManager for
 // why the snapshot matters.
+//
+// The workspace boundary pre-flight runs first, before any stored
+// decision or prompt: an outside-workspace call is denied without
+// prompting, so neither a one-shot approval nor a session-scoped Always
+// allow can authorize it. The boundary is fail-closed and the tool's
+// own Execute re-checks it before touching the filesystem.
 func (s *scheduler) checkPermissionWithManager(ctx context.Context, call providers.ToolCall, emit func(Event) bool, manager *tools.Manager) (denied bool, result *ToolResult) {
 	if s.permissions == nil {
 		return false, nil // no permission manager configured: fail open
+	}
+
+	resolvedPath, boundaryErr := checkBoundary(manager, call)
+	if boundaryErr != nil {
+		result := &ToolResult{
+			ToolCallID: call.ID,
+			Name:       call.Name,
+			Arguments:  call.Arguments,
+			Success:    false,
+			IsError:    true,
+			Content:    boundaryErr.Error(),
+		}
+		emit(Event{Type: EventToolFailed, ToolResult: result})
+		return true, result
 	}
 
 	// Session-scoped Always allow/deny takes precedence over persisted rules.
@@ -532,7 +586,7 @@ func (s *scheduler) checkPermissionWithManager(ctx context.Context, call provide
 		// Even session-allowed operations still require explicit approval
 		// for sensitive files; otherwise a single Always allow would bypass
 		// the sensitive-file guard.
-		if isSensitiveCall(call) {
+		if isSensitiveCall(call, resolvedPath) {
 			// Fall through to Ask path
 		} else {
 			return false, nil
@@ -541,7 +595,7 @@ func (s *scheduler) checkPermissionWithManager(ctx context.Context, call provide
 
 	decision := s.permissions.Check(call.Name)
 	// Sensitive files always require Ask, even if globally allowed.
-	if decision == permissions.Allow && isSensitiveCall(call) {
+	if decision == permissions.Allow && isSensitiveCall(call, resolvedPath) {
 		decision = permissions.Ask
 	}
 
@@ -550,7 +604,7 @@ func (s *scheduler) checkPermissionWithManager(ctx context.Context, call provide
 	}
 
 	if decision == permissions.Ask {
-		resolved, err := s.resolveAskWithManager(ctx, call, manager)
+		resolved, err := s.resolveAskWithManager(ctx, call, manager, resolvedPath)
 		if err != nil {
 			// Cancellation while the prompt was open is a cancel, not a
 			// denial: report ToolCancelled so the transcript, session,
@@ -593,8 +647,11 @@ type executionEnforcementSource interface {
 
 // resolveAskWithManager prompts for a decision against an explicit manager
 // snapshot. It handles "always" as session-scoped and serializes concurrent
-// asks so the single TUI modal is never overwritten.
-func (s *scheduler) resolveAskWithManager(ctx context.Context, call providers.ToolCall, manager *tools.Manager) (permissions.Decision, error) {
+// asks so the single TUI modal is never overwritten. resolvedPath carries
+// the boundary pre-flight's canonical path into the prompt so the approval
+// surface can display the real target; it is empty for tools with no
+// boundary story.
+func (s *scheduler) resolveAskWithManager(ctx context.Context, call providers.ToolCall, manager *tools.Manager, resolvedPath string) (permissions.Decision, error) {
 	asker := s.getAsker()
 	if asker == nil {
 		// No interactive surface available (e.g. non-interactive
@@ -605,7 +662,7 @@ func (s *scheduler) resolveAskWithManager(ctx context.Context, call providers.To
 	s.askMu.Lock()
 	defer s.askMu.Unlock()
 
-	req := permissions.Request{Tool: call.Name, Arguments: call.Arguments}
+	req := permissions.Request{Tool: call.Name, Arguments: call.Arguments, ResolvedPath: resolvedPath}
 	if src, ok := lookupEnforcementSource(manager, call.Name); ok {
 		if e, ok := src.ExecutionEnforcement(ctx); ok {
 			req.Execution = &e

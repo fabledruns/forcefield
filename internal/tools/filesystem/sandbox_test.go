@@ -18,8 +18,8 @@ func wslPolicy(dir string) sandbox.Policy {
 func TestReadFile_WSL_InsideSuccess(t *testing.T) {
 	ws := t.TempDir()
 	p := wslPolicy(ws)
-	// create file via native write first, then read via wsl policy
-	native := NewWriteFile()
+	// create file via a workspace-scoped write first, then read via wsl policy
+	native := NewWriteFileWithPolicy(p)
 	path := filepath.Join(ws, "hello.txt")
 	if res, err := native.Execute(context.Background(), map[string]any{"path": path, "content": "hi"}); err != nil || res.IsError {
 		t.Fatalf("setup write failed: %v %v", res, err)
@@ -292,8 +292,10 @@ func TestListFiles_WSL_InsideSuccessAndTraversalDenied(t *testing.T) {
 	}
 }
 
-func TestFilesystem_NativeMode_AllowsOutside(t *testing.T) {
-	// native mode with no policy should allow outside access (historical behavior)
+func TestFilesystem_NativeConfinesOutside(t *testing.T) {
+	// Bare constructors cage to the process working directory: absolute
+	// outside paths are denied, exactly like explicit policies. There is
+	// no longer an unrestricted construction path.
 	ws := t.TempDir()
 	outside := t.TempDir()
 	outsideFile := filepath.Join(outside, "native.txt")
@@ -301,52 +303,45 @@ func TestFilesystem_NativeMode_AllowsOutside(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// read via native (no policy) should succeed
+	// read via bare constructor must be denied
 	rf := NewReadFile()
 	res, err := rf.Execute(context.Background(), map[string]any{"path": outsideFile})
-	if err != nil || res.IsError {
-		t.Fatalf("native read should allow outside, got err=%v res=%+v", err, res)
-	}
-	if res.Content != "native-secret" {
-		t.Fatalf("native read content = %q, want %q", res.Content, "native-secret")
+	if err != nil || !res.IsError {
+		t.Fatalf("bare-constructor read must deny outside paths, got err=%v res=%+v", err, res)
 	}
 
-	// native with explicit native policy also allows
+	// explicit native (non-strict) policy cages to its workspace too
 	nativePolicy := sandbox.Policy{Mode: sandbox.ModeNative, Workspace: ws}
 	rf2 := NewReadFileWithPolicy(nativePolicy)
 	res, err = rf2.Execute(context.Background(), map[string]any{"path": outsideFile})
-	if err != nil || res.IsError {
-		t.Fatalf("native policy read should allow outside, got %v %+v", err, res)
+	if err != nil || !res.IsError {
+		t.Fatalf("native policy read must deny outside paths, got %v %+v", err, res)
 	}
 
-	// write outside via native
+	// write outside via bare constructor must be denied without creating
 	wf := NewWriteFile()
 	out2 := filepath.Join(outside, "write_native.txt")
 	res, err = wf.Execute(context.Background(), map[string]any{"path": out2, "content": "hello"})
-	if err != nil || res.IsError {
-		t.Fatalf("native write outside should succeed, got %v %+v", err, res)
+	if err != nil || !res.IsError {
+		t.Fatalf("bare-constructor write must deny outside paths, got %v %+v", err, res)
 	}
-	data, err := os.ReadFile(out2)
-	if err != nil || string(data) != "hello" {
-		t.Fatalf("native write not persisted")
+	if _, err := os.Stat(out2); !os.IsNotExist(err) {
+		t.Error("denied outside write created the file")
 	}
 
-	// list outside via native
+	// list outside via bare constructor must be denied
 	lf := NewListFiles()
 	res, err = lf.Execute(context.Background(), map[string]any{"path": outside})
-	if err != nil || res.IsError {
-		t.Fatalf("native list outside should succeed, got %v %+v", err, res)
-	}
-	if !strings.Contains(res.Content, "native.txt") {
-		t.Errorf("native list should contain file, got %q", res.Content)
+	if err != nil || !res.IsError {
+		t.Fatalf("bare-constructor list must deny outside paths, got %v %+v", err, res)
 	}
 
-	// also ensure wsl policy with empty mode (default) behaves as native
+	// empty policy behaves identically: cage to the working directory
 	emptyPolicy := sandbox.Policy{}
 	rf3 := NewReadFileWithPolicy(emptyPolicy)
 	res, err = rf3.Execute(context.Background(), map[string]any{"path": outsideFile})
-	if err != nil || res.IsError {
-		t.Fatalf("empty policy should be native and allow outside, got %v %+v", err, res)
+	if err != nil || !res.IsError {
+		t.Fatalf("empty policy must deny outside paths, got %v %+v", err, res)
 	}
 }
 

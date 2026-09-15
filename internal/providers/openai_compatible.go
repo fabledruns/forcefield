@@ -15,7 +15,8 @@ import (
 
 // OpenAICompatible talks to any server that implements the OpenAI Chat
 // Completions wire protocol: /chat/completions for turns and /models for
-// discovery. One implementation serves NVIDIA NIM, LM Studio, OpenAI,
+// discovery. One implementation serves NVIDIA NIM, LM Studio, llama.cpp
+// (llama-server), OpenAI,
 // xAI, OpenRouter, Groq, Mistral, Together, and arbitrary self-hosted
 // endpoints; only configuration (base URL, key, model, headers) differs.
 //

@@ -94,10 +94,26 @@ func TestNonShellToolsKeepRiskNoteOnly(t *testing.T) {
 	}}
 
 	footer := p.footerPrompt("")
-	if !strings.Contains(footer, "creates or overwrites a file on disk") {
-		t.Errorf("write_file risk note missing:\n%s", footer)
+	if !strings.Contains(footer, "creates or overwrites a file on disk (confined to the workspace)") {
+		t.Errorf("write_file risk note must state workspace confinement:\n%s", footer)
 	}
 	if strings.Contains(footer, "Isolation") {
 		t.Errorf("tools without an executor must not render an enforcement block:\n%s", footer)
+	}
+}
+
+func TestPermissionPromptShowsResolvedPath(t *testing.T) {
+	p := &permissionPrompt{request: permissions.Request{
+		Tool:         "write_file",
+		Arguments:    map[string]any{"path": "x.txt"},
+		ResolvedPath: `C:\repo\x.txt`,
+	}}
+
+	footer := p.footerPrompt("")
+	if !strings.Contains(footer, `C:\repo\x.txt`) {
+		t.Errorf("prompt must show the canonical pre-flight path:\n%s", footer)
+	}
+	if !strings.Contains(footer, `"x.txt"`) {
+		t.Errorf("prompt must keep showing the raw argument:\n%s", footer)
 	}
 }
