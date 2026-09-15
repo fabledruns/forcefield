@@ -62,7 +62,7 @@ The command joins all task arguments into one prompt string.
 Checks the local pieces Forcefield depends on and reports problems with actionable messages:
 
 - config.yaml exists, parses, and validates
-- the configured provider is reachable and the configured model exists (Ollama), is loaded (LM Studio), or the API key works (NVIDIA)
+- the configured provider is reachable and the configured model exists (Ollama), is loaded (LM Studio, llama.cpp), or the API key works (NVIDIA)
 - session storage is readable; unreadable session files are named
 - skills load from `~/.forcefield/skills`
 - project memory parses

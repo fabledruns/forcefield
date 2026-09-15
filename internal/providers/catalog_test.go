@@ -9,7 +9,7 @@ import (
 )
 
 func TestPresetByID(t *testing.T) {
-	for _, id := range []string{"ollama", "lmstudio", "nvidia", "openai", "anthropic", "gemini", "xai", "openrouter", "groq", "mistral", "together", "opencode-zen", "opencode-go"} {
+	for _, id := range []string{"ollama", "lmstudio", "llama-cpp", "nvidia", "openai", "anthropic", "gemini", "xai", "openrouter", "groq", "mistral", "together", "opencode-zen", "opencode-go"} {
 		if _, ok := PresetByID(id); !ok {
 			t.Errorf("PresetByID(%q) missing from catalog", id)
 		}
@@ -20,7 +20,7 @@ func TestPresetByID(t *testing.T) {
 }
 
 func TestOpenAICompatibleServicesShareTransport(t *testing.T) {
-	for _, id := range []string{"lmstudio", "nvidia", "openai", "xai", "openrouter", "groq", "mistral", "together"} {
+	for _, id := range []string{"lmstudio", "llama-cpp", "nvidia", "openai", "xai", "openrouter", "groq", "mistral", "together"} {
 		preset, ok := PresetByID(id)
 		if !ok {
 			t.Fatalf("%q missing", id)

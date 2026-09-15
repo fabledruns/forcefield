@@ -38,6 +38,39 @@ func TestResolveProviderUsesCatalogDefaults(t *testing.T) {
 	}
 }
 
+func TestResolveProviderLlamaCppDefaults(t *testing.T) {
+	isolateHome(t)
+	writeProvidersConfig(t, "model:\n  provider: llama-cpp\n  name: my-model\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	resolved, err := cfg.ResolveProvider("llama-cpp", cfg.Model.Name)
+	if err != nil {
+		t.Fatalf("ResolveProvider(llama-cpp) error = %v", err)
+	}
+	if resolved.Type != "openai-compatible" {
+		t.Errorf("type = %q, want the openai-compatible protocol", resolved.Type)
+	}
+	if resolved.Label != "llama.cpp" || resolved.BaseURL != "http://localhost:8080/v1" {
+		t.Errorf("label/base = %q/%q, want llama.cpp catalog defaults", resolved.Label, resolved.BaseURL)
+	}
+	if resolved.AuthRequired || resolved.AuthEnvVar != "" {
+		t.Errorf("auth = %v/%q, want unauthenticated with no key variable", resolved.AuthRequired, resolved.AuthEnvVar)
+	}
+	if resolved.APIKey != "" {
+		t.Errorf("key = %q, want empty for the unauthenticated local server", resolved.APIKey)
+	}
+	if len(resolved.Models) != 0 {
+		t.Errorf("models = %v, want no fallback models (discovery is the source of truth)", resolved.Models)
+	}
+	spec := resolved.Spec(cfg.Model.Name)
+	if spec.Model != "my-model" || spec.Type != "openai-compatible" || spec.BaseURL != "http://localhost:8080/v1" {
+		t.Errorf("spec = %+v, want active model on the shared transport", spec)
+	}
+}
+
 func TestResolveProviderOpenCodePresets(t *testing.T) {
 	isolateHome(t)
 	writeProvidersConfig(t, "model:\n  provider: opencode-zen\n  name: gpt-5.5\n")

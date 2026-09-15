@@ -143,7 +143,7 @@ Provider and model switches take effect immediately - no restart needed.
 
 ## Using Other Providers
 
-Forcefield is not limited to Ollama. It speaks the OpenAI Chat Completions protocol (LM Studio, OpenRouter, NVIDIA NIM, Groq, Mistral, Together AI, xAI, OpenAI, and any self-hosted compatible server), Anthropic's native API, and Google Gemini.
+Forcefield is not limited to Ollama. It speaks the OpenAI Chat Completions protocol (LM Studio, llama.cpp via llama-server, OpenRouter, NVIDIA NIM, Groq, Mistral, Together AI, xAI, OpenAI, and any self-hosted compatible server), Anthropic's native API, and Google Gemini.
 
 To add a provider, extend `providers:` in `~/.forcefield/config.yaml`:
 
@@ -155,7 +155,12 @@ providers:
   local-llm:
     type: openai-compatible
     base_url: http://localhost:1234/v1
+
+  llama-cpp:
+    type: llama-cpp
 ```
+
+The `llama-cpp` preset points at `http://localhost:8080/v1` (the `/v1` prefix is required) and needs no API key. Serve a model first (e.g. `llama-server -m model.gguf --alias my-model --port 8080`), then check `GET /v1/models` or open `/model` discovery to see the served model ID for `model.name`.
 
 API keys come from environment variables or `.env` files - never from config.yaml:
 

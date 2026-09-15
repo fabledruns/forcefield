@@ -17,7 +17,7 @@ Forcefield is under active development. Features and interfaces can change.
 
 ## Features
 
-* Local model execution through Ollama and LM Studio
+* Local model execution through Ollama, LM Studio, and llama.cpp (llama-server)
 * Support for remote model providers
 * Interactive terminal interface
 * Streaming responses
@@ -36,7 +36,7 @@ Forcefield is under active development. Features and interfaces can change.
 
 Forcefield requires access to a supported model provider. Ollama is only required if you choose to run a local model.
 
-* Local models: Ollama or LM Studio, with a model installed.
+* Local models: Ollama, LM Studio, or llama.cpp (llama-server), with a model installed.
 * Remote models: a supported remote provider, with its required credentials/configuration.
 
 Optional local-model example:
