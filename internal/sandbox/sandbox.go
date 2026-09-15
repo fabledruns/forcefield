@@ -105,11 +105,12 @@ type Policy struct {
 	// confined to for working-directory purposes. Empty means the
 	// process's current working directory, resolved per request.
 	Workspace string
-	// Strict, when true, cages filesystem tools and shell working
-	// directories to Workspace in every mode, including native. It runs
-	// the exact same resolve + canonicalize + boundary-check pipeline
-	// the wsl path uses (see policy.go); only the execution backend
-	// differs. Default false preserves historical native behavior.
+	// Strict, when true, pins the shell working directory to Workspace
+	// in every mode, including native. Filesystem tools are confined to
+	// the workspace regardless of this flag; it runs the exact same
+	// resolve + canonicalize + boundary-check pipeline the wsl path
+	// uses (see policy.go) for the shell cwd. Default false preserves
+	// historical unconfined shell behavior.
 	Strict bool
 	// Distro selects a WSL distribution (mode wsl only). Empty means the
 	// system default distribution.
@@ -253,9 +254,10 @@ type Enforcement struct {
 	// FilesystemConfined: general filesystem access beyond the working
 	// directory is prevented. For shell, NO BACKEND SETS THIS TRUE - WSL
 	// distributions reach all Windows drives through /mnt automounts.
-	// Filesystem tools (read_file, write_file, list_files) ARE confined
-	// to the workspace when Mode is wsl via tool-layer policy (see
-	// internal/tools/filesystem); shell remains not confined.
+	// Filesystem tools (read_file, write_file, list_files, search,
+	// git, secret_scan) are confined to the workspace unconditionally
+	// at the tool layer (see internal/tools/...); shell remains not
+	// confined.
 	FilesystemConfined bool
 	// NetworkEnforced: the requested Network policy is actually
 	// implemented by this backend.

@@ -3,8 +3,9 @@
 // hardcoded secrets. It never transmits anything, never uses the network,
 // never validates credentials against services, and never uses findings.
 //
-// Confinement mirrors read_file: confined modes cage paths to the workspace;
-// native mode uses the path as given. Findings are reported with redacted
+// Confinement mirrors read_file: paths are always canonicalized and
+// caged to the workspace root (the policy's Workspace, or the process
+// working directory when unset). Findings are reported with redacted
 // snippets (match middle masked) as defense-in-depth on top of the
 // scheduler's output scrubbing.
 package security
@@ -57,11 +58,14 @@ type SecretScan struct {
 	limits tools.Limits
 }
 
-// NewSecretScan returns a ready-to-register SecretScan tool.
+// NewSecretScan returns a ready-to-register SecretScan tool. Scans are
+// always confined to the workspace root (the policy's Workspace, or the
+// process working directory when unset).
 func NewSecretScan() *SecretScan { return &SecretScan{} }
 
 // NewSecretScanWithPolicy returns a SecretScan confined to
-// policy.Workspace when policy.Mode is wsl.
+// policy.Workspace. It behaves like NewSecretScan: confinement is
+// unconditional, and the policy only selects which root to cage to.
 func NewSecretScanWithPolicy(p sandbox.Policy) *SecretScan { return &SecretScan{policy: p} }
 
 // SetLimits overrides the findings bound. Only positive fields take
@@ -131,13 +135,12 @@ func (s SecretScan) Execute(_ context.Context, args map[string]any) (tools.Resul
 		data = []byte(text)
 		name = "<text>"
 	} else {
-		resolved := path
-		if s.policy.Confines() {
-			rp, err := sandbox.ResolveWithinWorkspace(s.policy.Workspace, path)
-			if err != nil {
-				return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: %v", path, err)}, nil
-			}
-			resolved = rp
+		// Workspace confinement is unconditional: canonicalize and
+		// resolve inside the root before reading, so approval can
+		// never authorize a scan outside it.
+		resolved, err := sandbox.ResolveWithinWorkspace(s.policy.Workspace, path)
+		if err != nil {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: %v", path, err)}, nil
 		}
 		info, err := os.Stat(resolved)
 		if err != nil {
@@ -196,6 +199,18 @@ func (s SecretScan) Execute(_ context.Context, args map[string]any) (tools.Resul
 	}
 	out += "\n\nThese are heuristic matches for review only. Rotate any real credentials; do not paste them elsewhere."
 	return tools.Result{Content: out, Metadata: meta}, nil
+}
+
+// CheckBoundary implements tools.BoundaryChecker: it dry-runs the
+// workspace boundary decision for a scan (canonicalize + resolve,
+// nothing read) and returns the canonical file that would be scanned.
+// Inline-text scans take no path and need no check.
+func (s SecretScan) CheckBoundary(args map[string]any) (string, error) {
+	path, _ := args["path"].(string)
+	if strings.TrimSpace(path) == "" {
+		return "", nil
+	}
+	return sandbox.ResolveWithinWorkspace(s.policy.Workspace, path)
 }
 
 // redact masks the middle of a matched region, keeping 2 chars on each

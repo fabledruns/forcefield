@@ -16,10 +16,9 @@ import (
 type Option func(*options)
 
 type options struct {
-	executor  sandbox.Executor
-	policy    sandbox.Policy
-	hasPolicy bool
-	limits    map[string]tools.Limits
+	executor sandbox.Executor
+	policy   sandbox.Policy
+	limits   map[string]tools.Limits
 }
 
 // WithExecutor routes shell commands through the given sandbox.Executor.
@@ -28,11 +27,15 @@ func WithExecutor(e sandbox.Executor) Option {
 	return func(o *options) { o.executor = e }
 }
 
-// WithPolicy configures filesystem tools (read_file, write_file, list_files)
-// to enforce workspace confinement when the policy confines (wsl mode or
-// strict native). Otherwise tools preserve historical unrestricted behavior.
+// WithPolicy selects the workspace root filesystem tools
+// (read_file, write_file, list_files, search_files, find_files,
+// search_code, git, secret_scan) are confined to. Confinement itself is
+// unconditional; the policy only selects the root (an empty Workspace
+// cages to the process working directory at call time). The shell
+// executor is configured separately via WithExecutor and keeps its own
+// documented behavior.
 func WithPolicy(p sandbox.Policy) Option {
-	return func(o *options) { o.policy = p; o.hasPolicy = true }
+	return func(o *options) { o.policy = p }
 }
 
 // WithLimits applies per-tool output/timeout overrides. Keys are tool
@@ -89,25 +92,15 @@ func Register(m *tools.Manager, opts ...Option) error {
 }
 
 func newReadFile(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Confines() {
-		return filesystem.NewReadFileWithPolicy(o.policy)
-	}
-	// Native or unspecified: preserve historical unrestricted behavior.
-	return filesystem.NewReadFile()
+	return filesystem.NewReadFileWithPolicy(o.policy)
 }
 
 func newWriteFile(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Confines() {
-		return filesystem.NewWriteFileWithPolicy(o.policy)
-	}
-	return filesystem.NewWriteFile()
+	return filesystem.NewWriteFileWithPolicy(o.policy)
 }
 
 func newListFiles(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Confines() {
-		return filesystem.NewListFilesWithPolicy(o.policy)
-	}
-	return filesystem.NewListFiles()
+	return filesystem.NewListFilesWithPolicy(o.policy)
 }
 
 // newShell picks the shell constructor matching the options.
@@ -128,38 +121,23 @@ func newShellJob(o options) tools.Tool {
 }
 
 func newSearchFiles(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Confines() {
-		return search.NewSearchFilesWithPolicy(o.policy)
-	}
-	return search.NewSearchFiles()
+	return search.NewSearchFilesWithPolicy(o.policy)
 }
 
 func newFindFiles(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Confines() {
-		return search.NewFindFilesWithPolicy(o.policy)
-	}
-	return search.NewFindFiles()
+	return search.NewFindFilesWithPolicy(o.policy)
 }
 
 func newSearchCode(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Confines() {
-		return search.NewSearchCodeWithPolicy(o.policy)
-	}
-	return search.NewSearchCode()
+	return search.NewSearchCodeWithPolicy(o.policy)
 }
 
 func newGit(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Confines() {
-		return git.NewGitWithPolicy(o.policy)
-	}
-	return git.NewGit()
+	return git.NewGitWithPolicy(o.policy)
 }
 
 func newSecretScan(o options) tools.Tool {
-	if o.hasPolicy && o.policy.Confines() {
-		return security.NewSecretScanWithPolicy(o.policy)
-	}
-	return security.NewSecretScan()
+	return security.NewSecretScanWithPolicy(o.policy)
 }
 
 // NewManager returns a Manager with every built-in tool already

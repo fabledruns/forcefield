@@ -178,6 +178,16 @@ func (p *permissionPrompt) renderOptions(hoveredKey string) string {
 func (p *permissionPrompt) formatToolBlock() string {
 	var b strings.Builder
 	b.WriteString(permissionHelpStyle.Render("Tool: " + p.request.Tool))
+	// The canonical path from the workspace boundary pre-flight: what
+	// the tool would actually open, create, list, or search — never the
+	// raw model spelling alone (e.g. "/go/main.go" on Windows resolves
+	// to a drive-root path outside the project). A prompt is only ever
+	// shown for inside-workspace calls; outside calls are denied before
+	// any prompt.
+	if p.request.ResolvedPath != "" {
+		b.WriteString("\n")
+		b.WriteString(permissionHelpStyle.Render("Resolved: " + redact.Scrub(p.request.ResolvedPath)))
+	}
 	args := p.request.Arguments
 	if len(args) == 0 {
 		return b.String()
@@ -288,15 +298,16 @@ func (p *permissionPrompt) describeAction() string {
 }
 
 // riskNote returns an honest, one-line description of what approving this
-// tool allows when no executor report exists. It deliberately makes no
-// isolation claims: Forcefield does not sandbox native execution, and the
-// text must not pretend it does.
+// tool allows when no executor report exists. Filesystem tools are
+// workspace-confined (the boundary pre-flight denies outside paths
+// before any prompt), and the text states exactly that; shell keeps its
+// unconfined wording because native execution has no isolation.
 func riskNote(tool string) string {
 	switch tool {
 	case "shell":
 		return "runs a command on this machine with your user's permissions"
 	case "write_file":
-		return "creates or overwrites a file on disk"
+		return "creates or overwrites a file on disk (confined to the workspace)"
 	default:
 		return ""
 	}

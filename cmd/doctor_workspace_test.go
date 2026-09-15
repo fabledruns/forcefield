@@ -44,6 +44,12 @@ func TestDoctorWorkspace_ReportsRootAndMode(t *testing.T) {
 	if !strings.Contains(joined, "permissive") {
 		t.Errorf("default report = %q, want permissive", joined)
 	}
+	if !strings.Contains(joined, "filesystem tools are confined here") {
+		t.Errorf("permissive report = %q, want it to state that filesystem tools stay confined", joined)
+	}
+	if strings.Contains(joined, "nothing confined") {
+		t.Errorf("permissive report = %q, must not claim nothing is confined", joined)
+	}
 
 	lines = nil
 	bad := &config.Config{}

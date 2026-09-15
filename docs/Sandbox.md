@@ -65,8 +65,10 @@ The workspace root resolves once at startup: an explicit `root`
 else the Git top-level, else the working directory. `ff doctor`
 reports the resolved root and mode.
 
-- **Permissive** (default): historical behavior. Nothing is confined;
-  old configs without this block are unaffected.
+- **Permissive** (default): filesystem tools stay confined to the
+  root, exactly as in strict mode; only shell working-directory
+  pinning is off, preserving historical shell behavior.
+  Old configs without this block are unaffected.
 - **Strict**: every filesystem tool (`read_file`, `write_file`,
   `list_files`, `search_files`, `search_code`, `find_files`, `secret_scan`) and the
   shell working directory resolve through one shared pipeline —
@@ -78,8 +80,13 @@ reports the resolved root and mode.
   enforcement lives in the execution layer (`internal/sandbox` shared
   with the `wsl` path), never in prompts or tool descriptions.
 
-Strict native enforces the same path invariant as the `wsl` path; only
-the backend differs (host Bash, full environment, host network).
+Strict native enforces the same shell path invariant as the `wsl`
+path; only the backend differs (host Bash, full environment, host
+network). Filesystem tools enforce the workspace boundary in every
+mode, not just strict: outside paths are denied before any permission
+prompt, and approval — one-shot or Always allow — can never override
+the denial. Permission prompts show the canonical resolved path so a
+model spelling can never hide the real target.
 Command *text* is not filtered — a command may still name outside
 paths; that action is gated by permissions (`ask`), exactly as in
 `wsl` mode.
@@ -148,10 +155,13 @@ If you ever see stronger wording than this table allows, that is a bug.
 
 ## Security model (RC6 explicit guarantees)
 
-- **Default posture is permissive history, not isolation.** `native` +
+- **Default posture confines file tools, not the shell.** `native` +
   `permissive` runs shell with your user's privileges and full host
-  environment, and filesystem tools resolve paths as given. Do not treat
-  defaults as a sandbox.
+  environment. Filesystem tools are always confined to the workspace
+  root: paths are canonicalized and resolved inside it before any
+  permission prompt, and re-checked at execution (symlinks, junctions,
+  TOCTOU). Outside paths are denied fail-closed. Do not treat the
+  shell default as a sandbox.
 - **Reads are allowed by default but sensitive paths escalate.**
   `read_file`/`list_files`/`search_files`/`find_files`/`git`/`secret_scan`
   default to `allow` for usability; any call whose `path` (or `cwd` for
@@ -166,12 +176,15 @@ If you ever see stronger wording than this table allows, that is a bug.
   the normalized command text: approving one command does not authorize
   a different command (still gated by the interactive and WSL lexical
   refusals). Other tools without a meaningful operation identifier keep
-  per-tool-name scope; `Always deny` stays per-tool-name (fail-closed).
-  Sensitive-file calls still prompt even under `Always allow`.
+   per-tool-name scope; `Always deny` stays per-tool-name (fail-closed).
+   Per-tool-name Always allow stays safe for filesystem tools because
+   the workspace boundary denies outside paths regardless of approval.
+   Sensitive-file calls still prompt even under `Always allow`.
   Cross-agent switches retain session decisions for shared tools —
   re-prompt on agent switch for high-risk tools.
 - **Shell command text is never confined, in any mode.** Strict/WSL pin
-  the working directory and cage filesystem *tools*; `cat /etc/passwd`
+  the working directory; filesystem *tools* are caged in every mode.
+  `cat /etc/passwd`
   or `/mnt/c/...` in command text is gated only by permissions (`ask`)
   plus conservative lexical refusals (interactive-TTY list, WSL
   `/mnt/`/drive/`..`/interop patterns applied to both `shell` and

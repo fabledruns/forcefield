@@ -4,18 +4,20 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+
+	"forcefield/internal/sandbox"
 )
 
 func TestReadFile_Success(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "greeting.txt")
 
-	wf := NewWriteFile()
+	wf := NewWriteFileWithPolicy(sandbox.Policy{Workspace: dir})
 	if res, err := wf.Execute(context.Background(), map[string]any{"path": path, "content": "hello"}); err != nil || res.IsError {
 		t.Fatalf("setup write failed: res=%+v err=%v", res, err)
 	}
 
-	rf := NewReadFile()
+	rf := NewReadFileWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := rf.Execute(context.Background(), map[string]any{"path": path})
 	if err != nil {
 		t.Fatalf("Execute() unexpected error: %v", err)
@@ -29,6 +31,9 @@ func TestReadFile_Success(t *testing.T) {
 }
 
 func TestReadFile_MissingFileIsDomainError(t *testing.T) {
+	// No fixture dir: the missing path resolves outside the
+	// working-directory cage and is denied as a domain error either
+	// way — the contract under test is "nil Go error + IsError".
 	rf := NewReadFile()
 	res, err := rf.Execute(context.Background(), map[string]any{"path": "/does/not/exist"})
 	if err != nil {
@@ -40,6 +45,7 @@ func TestReadFile_MissingFileIsDomainError(t *testing.T) {
 }
 
 func TestReadFile_MissingPathArgIsGoError(t *testing.T) {
+	// Missing-arg validation fails before any path resolution.
 	rf := NewReadFile()
 	_, err := rf.Execute(context.Background(), map[string]any{})
 	if err == nil {
@@ -51,7 +57,7 @@ func TestWriteFile_CreatesParentDirs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "deeper", "file.txt")
 
-	wf := NewWriteFile()
+	wf := NewWriteFileWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := wf.Execute(context.Background(), map[string]any{"path": path, "content": "data"})
 	if err != nil {
 		t.Fatalf("Execute() unexpected error: %v", err)
@@ -60,7 +66,7 @@ func TestWriteFile_CreatesParentDirs(t *testing.T) {
 		t.Fatalf("Execute() result.IsError = true, content: %s", res.Content)
 	}
 
-	rf := NewReadFile()
+	rf := NewReadFileWithPolicy(sandbox.Policy{Workspace: dir})
 	readBack, err := rf.Execute(context.Background(), map[string]any{"path": path})
 	if err != nil || readBack.IsError {
 		t.Fatalf("read-back failed: res=%+v err=%v", readBack, err)
@@ -72,14 +78,14 @@ func TestWriteFile_CreatesParentDirs(t *testing.T) {
 
 func TestListFiles_DefaultsToCurrentDir(t *testing.T) {
 	dir := t.TempDir()
-	wf := NewWriteFile()
+	wf := NewWriteFileWithPolicy(sandbox.Policy{Workspace: dir})
 	if _, err := wf.Execute(context.Background(), map[string]any{
 		"path": filepath.Join(dir, "a.txt"), "content": "x",
 	}); err != nil {
 		t.Fatalf("setup write failed: %v", err)
 	}
 
-	lf := NewListFiles()
+	lf := NewListFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	res, err := lf.Execute(context.Background(), map[string]any{"path": dir})
 	if err != nil {
 		t.Fatalf("Execute() unexpected error: %v", err)
@@ -93,6 +99,9 @@ func TestListFiles_DefaultsToCurrentDir(t *testing.T) {
 }
 
 func TestListFiles_NonexistentDirIsDomainError(t *testing.T) {
+	// No fixture dir: the missing path resolves outside the
+	// working-directory cage and is denied as a domain error either
+	// way — the contract under test is "nil Go error + IsError".
 	lf := NewListFiles()
 	res, err := lf.Execute(context.Background(), map[string]any{"path": "/does/not/exist"})
 	if err != nil {

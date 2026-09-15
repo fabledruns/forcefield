@@ -165,7 +165,7 @@ Unknown tool names are rejected at load.
 | Field   | Required | Description |
 | ------- | -------- | ----------- |
 | `root`  | No       | Project root for filesystem tools and shell working directories. Empty resolves to the Git top-level when available, else the working directory. An explicit root (absolute or startup-relative) must exist. |
-| `mode`  | No       | `permissive` (default, historical behavior) or `strict` (confine every filesystem tool and the shell cwd to the root). Old configs without this block stay permissive. |
+| `mode`  | No       | `permissive` (default: filesystem tools stay confined to the root; shell runs unconfined) or `strict` (additionally pins the shell cwd to the root). Old configs without this block stay permissive. |
 
 See [Sandbox](Sandbox.md) for the boundary algorithm and guarantees.
 

@@ -16,11 +16,15 @@ type WriteFile struct {
 	policy sandbox.Policy
 }
 
-// NewWriteFile returns a ready-to-register WriteFile tool.
+// NewWriteFile returns a ready-to-register WriteFile tool. Writes are
+// always confined to the workspace root (the policy's Workspace, or the
+// process working directory when unset): paths are canonicalized and
+// resolved inside it before any directory is created or file is opened.
 func NewWriteFile() *WriteFile { return &WriteFile{} }
 
-// NewWriteFileWithPolicy returns a WriteFile confined to policy.Workspace when
-// policy.Mode is wsl; otherwise it behaves like NewWriteFile (native).
+// NewWriteFileWithPolicy returns a WriteFile confined to
+// policy.Workspace. It behaves like NewWriteFile: confinement is
+// unconditional, and the policy only selects which root to cage to.
 func NewWriteFileWithPolicy(p sandbox.Policy) *WriteFile { return &WriteFile{policy: p} }
 
 func (WriteFile) Name() string { return "write_file" }
@@ -62,13 +66,14 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: content is %d bytes, limit is %d bytes; split the write into smaller chunks", path, len(content), tools.DefaultWriteMaxBytes)}, nil
 	}
 
-	resolved := path
-	if w.policy.Confines() {
-		rp, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, path)
-		if err != nil {
-			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
-		}
-		resolved = rp
+	// Workspace confinement is unconditional: canonicalize and resolve
+	// inside the root before creating anything, so approval can never
+	// authorize a write outside it. EnsureWithinWorkspace is
+	// creation-aware (it walks existing ancestors for symlink escapes
+	// when the target itself does not exist yet).
+	resolved, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, path)
+	if err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
 
 	if dir := filepath.Dir(resolved); dir != "." {
@@ -78,14 +83,12 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 		// TOCTOU mitigation: re-validate after MkdirAll. A concurrent
 		// writer could have created a symlink between the initial check
 		// and the directory creation.
-		if w.policy.Confines() {
-			if _, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, resolved); err != nil {
+		if _, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, resolved); err != nil {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+		}
+		if realDir, err := sandbox.EvalLinks(filepath.Dir(resolved)); err == nil {
+			if _, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, realDir); err != nil {
 				return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
-			}
-			if realDir, err := sandbox.EvalLinks(filepath.Dir(resolved)); err == nil {
-				if _, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, realDir); err != nil {
-					return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
-				}
 			}
 		}
 	}
@@ -107,14 +110,9 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 	}
 
 	// Use O_NOFOLLOW where available so a symlink swap between the Lstat
-	// and the write is not followed. In native mode preserve historical
-	// behavior (follow symlinks).
+	// and the write is not followed.
 	var writeErr error
-	if w.policy.Confines() {
-		writeErr = writeFileNoFollow(resolved, []byte(content), targetPerm)
-	} else {
-		writeErr = os.WriteFile(resolved, []byte(content), targetPerm)
-	}
+	writeErr = writeFileNoFollow(resolved, []byte(content), targetPerm)
 	if writeErr != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, writeErr)}, nil
 	}
@@ -122,4 +120,16 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 	_ = os.Chmod(resolved, targetPerm)
 
 	return tools.Result{Content: fmt.Sprintf("wrote %d bytes to %s", len(content), path)}, nil
+}
+
+// CheckBoundary implements tools.BoundaryChecker: it dry-runs the
+// workspace boundary decision for a write (canonicalize + resolve, no
+// writes, nothing created) and returns the canonical path the write
+// would target.
+func (w WriteFile) CheckBoundary(args map[string]any) (string, error) {
+	path, err := tools.StringArg(args, "path")
+	if err != nil {
+		return "", err
+	}
+	return sandbox.EnsureWithinWorkspace(w.policy.Workspace, path)
 }

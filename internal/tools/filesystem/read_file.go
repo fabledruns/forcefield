@@ -20,11 +20,15 @@ type ReadFile struct {
 	limits tools.Limits
 }
 
-// NewReadFile returns a ready-to-register ReadFile tool.
+// NewReadFile returns a ready-to-register ReadFile tool. Reads are
+// always confined to the workspace root (the policy's Workspace, or the
+// process working directory when unset): paths are canonicalized and
+// resolved inside it before anything is opened.
 func NewReadFile() *ReadFile { return &ReadFile{} }
 
-// NewReadFileWithPolicy returns a ReadFile confined to policy.Workspace when
-// policy.Mode is wsl; otherwise it behaves like NewReadFile (native).
+// NewReadFileWithPolicy returns a ReadFile confined to policy.Workspace.
+// It behaves like NewReadFile: confinement is unconditional, and the
+// policy only selects which root to cage to.
 func NewReadFileWithPolicy(p sandbox.Policy) *ReadFile { return &ReadFile{policy: p} }
 
 // SetLimits overrides the read bound. Only positive fields take effect;
@@ -69,33 +73,23 @@ func (r ReadFile) Execute(_ context.Context, args map[string]any) (tools.Result,
 		return tools.Result{}, err
 	}
 
-	resolved := path
-	if r.policy.Confines() {
-		rp, err := sandbox.ResolveWithinWorkspace(r.policy.Workspace, path)
-		if err != nil {
-			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
-		}
-		resolved = rp
+	// Workspace confinement is unconditional: canonicalize and resolve
+	// inside the root before opening anything, so approval can never
+	// authorize a read outside it.
+	resolved, err := sandbox.ResolveWithinWorkspace(r.policy.Workspace, path)
+	if err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
 	}
 
-	// TOCTOU mitigation in confined mode (wsl or strict): open with O_NOFOLLOW where available
-	// so a symlink is not followed, then fstat the open descriptor. This
-	// narrows the Stat→Read window. In native mode (unrestricted) we use
-	// plain Open to preserve historical symlink-following behavior.
+	// TOCTOU mitigation: open with O_NOFOLLOW where available so a
+	// symlink is not followed, then fstat the open descriptor. This
+	// narrows the Stat→Read window.
 	var f *os.File
-	if r.policy.Confines() {
-		f, err = openNoFollow(resolved)
-		if err != nil {
-			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
-		}
-		defer f.Close()
-	} else {
-		f, err = os.Open(resolved)
-		if err != nil {
-			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
-		}
-		defer f.Close()
+	f, err = openNoFollow(resolved)
+	if err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
 	}
+	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
@@ -126,6 +120,17 @@ func (r ReadFile) Execute(_ context.Context, args map[string]any) (tools.Result,
 	}
 
 	return tools.Result{Content: string(data)}, nil
+}
+
+// CheckBoundary implements tools.BoundaryChecker: it dry-runs the
+// workspace boundary decision for a read (canonicalize + resolve, no
+// writes) and returns the canonical path the read would open.
+func (r ReadFile) CheckBoundary(args map[string]any) (string, error) {
+	path, err := tools.StringArg(args, "path")
+	if err != nil {
+		return "", err
+	}
+	return sandbox.ResolveWithinWorkspace(r.policy.Workspace, path)
 }
 
 func readLimited(f *os.File, limit int64) ([]byte, error) {

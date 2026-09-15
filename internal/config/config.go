@@ -40,7 +40,7 @@ type Model struct {
 type ProviderConfig struct {
 	// Type selects the wire protocol or a known service preset:
 	// "ollama", "openai-compatible", "anthropic", "gemini", or a service
-	// id like "openai", "xai", "nvidia", "lmstudio".
+	// id like "openai", "xai", "nvidia", "lmstudio", "llama-cpp".
 	Type string `yaml:"type,omitempty"`
 	// BaseURL overrides the service's default API root.
 	BaseURL string `yaml:"base_url,omitempty"`
@@ -169,11 +169,12 @@ type ToolLimits struct {
 // otherwise the current working directory. An explicit root may be
 // absolute or relative to the startup directory; it must exist.
 //
-// Mode "" and "permissive" both mean permissive: historical native
-// behavior is preserved and nothing is confined. "strict" cages every
-// filesystem tool and the shell working directory to the root through
-// the shared boundary pipeline. Strict is opt-in; old configs without
-// this block keep working unchanged.
+// Mode "" and "permissive" both mean permissive: filesystem tools stay
+// confined to the root while the shell keeps historical unconfined
+// behavior. "strict" additionally pins the shell working directory to
+// the root. Filesystem confinement runs through the shared boundary
+// pipeline in every mode. Strict is opt-in for shell pinning; old
+// configs without this block keep working unchanged.
 type Workspace struct {
 	Root string `yaml:"root,omitempty"`
 	Mode string `yaml:"mode,omitempty"`
@@ -265,9 +266,10 @@ sandbox:
 workspace:
   # Project root for filesystem tools and shell working directories.
   #   root: ""          # empty = Git top-level when available, else cwd
-  #   mode: permissive  # "permissive" (historical behavior) or "strict"
-  # Strict cages every filesystem tool and the shell cwd to the root;
-  # see docs/Sandbox.md. Old configs without this block stay permissive.
+  #   mode: permissive  # "permissive" (filesystem tools confined, shell unconfined) or "strict"
+  # Filesystem tools are always confined to the root; strict additionally
+  # pins the shell working directory to it; see docs/Sandbox.md.
+  # Old configs without this block stay permissive.
   root: ""
   mode: permissive
 `

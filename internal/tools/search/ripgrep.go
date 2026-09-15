@@ -2,9 +2,8 @@
 // search powered by the external ripgrep binary, with the built-in
 // search_files walker as the fallback when rg is unavailable.
 //
-// Security model mirrors search_files: the search root is caged via
-// resolveSearchRoot (sandbox.ResolveWithinWorkspace when the policy
-// confines, otherwise cwd-anchored), every reported file is
+// Security model mirrors search_files: the search root is always caged
+// to the workspace via resolveSearchRoot, every reported file is
 // symlink-resolved and required to stay within the root, sensitive
 // files (see filesystem.IsSensitivePath) are dropped from results, and
 // output, scope, and execution time are all bounded.
@@ -77,11 +76,14 @@ type SearchCode struct {
 	limits tools.Limits
 }
 
-// NewSearchCode returns a ready-to-register SearchCode tool.
+// NewSearchCode returns a ready-to-register SearchCode tool. The search
+// root is always confined to the workspace root (the policy's
+// Workspace, or the process working directory when unset).
 func NewSearchCode() *SearchCode { return &SearchCode{} }
 
 // NewSearchCodeWithPolicy returns a SearchCode confined to
-// policy.Workspace when the policy confines; otherwise native behavior.
+// policy.Workspace. It behaves like NewSearchCode: confinement is
+// unconditional, and the policy only selects which root to cage to.
 func NewSearchCodeWithPolicy(p sandbox.Policy) *SearchCode { return &SearchCode{policy: p} }
 
 // SetLimits overrides the bounds. Only positive fields take effect;
@@ -671,4 +673,16 @@ func firstLine(s string) string {
 		return strings.TrimSpace(s[:i])
 	}
 	return s
+}
+
+// CheckBoundary implements tools.BoundaryChecker: it dry-runs the
+// workspace boundary decision for a code search (canonicalize +
+// resolve the root, nothing executed) and returns the canonical root
+// that would be searched.
+func (s SearchCode) CheckBoundary(args map[string]any) (string, error) {
+	rootArg, err := tools.OptionalStringArg(args, "path", ".")
+	if err != nil {
+		return "", err
+	}
+	return resolveSearchRoot(s.policy, rootArg)
 }

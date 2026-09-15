@@ -484,8 +484,9 @@ func newSandboxExecutor(cfg *config.Config) (sandbox.Executor, error) {
 }
 
 // doctorWorkspace reports the resolved project root and enforcement mode
-// so a user can see exactly what the boundary cages (strict) or anchors
-// (permissive) before any tool runs.
+// so a user can see exactly what the boundary cages before any tool
+// runs. Filesystem tools are always confined to the root; the mode only
+// governs shell working-directory pinning.
 func doctorWorkspace(cfg *config.Config, report func(verdict, string, ...any)) {
 	if cfg == nil {
 		return
@@ -503,7 +504,7 @@ func doctorWorkspace(cfg *config.Config, report func(verdict, string, ...any)) {
 		report(vOK, "workspace: root %s (strict: filesystem tools and shell cwd are confined here)", root)
 		return
 	}
-	report(vOK, "workspace: root %s (permissive: historical native behavior, nothing confined)", root)
+	report(vOK, "workspace: root %s (permissive: filesystem tools are confined here; shell runs unconfined)", root)
 }
 
 func init() {

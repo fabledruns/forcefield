@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 )
 
@@ -26,7 +27,7 @@ func writeFiles(t *testing.T, dir string, n int) {
 func TestSearchFiles_MatchOverrideBoundsOutput(t *testing.T) {
 	dir := t.TempDir()
 	writeFiles(t, dir, 10)
-	s := NewSearchFiles()
+	s := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	s.SetLimits(tools.Limits{MaxLines: 4})
 
 	result, err := s.Execute(context.Background(), map[string]any{"pattern": "needle", "path": dir})
@@ -49,7 +50,7 @@ func TestSearchFiles_DefaultMatchBoundUnchanged(t *testing.T) {
 	}
 	dir := t.TempDir()
 	writeFiles(t, dir, 3)
-	s := NewSearchFiles()
+	s := NewSearchFilesWithPolicy(sandbox.Policy{Workspace: dir})
 	result, err := s.Execute(context.Background(), map[string]any{"pattern": "needle", "path": dir})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)

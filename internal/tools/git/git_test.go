@@ -299,6 +299,32 @@ func TestGit_OutputBounded(t *testing.T) {
 func TestGit_ToolLimitsDefaults(t *testing.T) {
 	got := NewGit().ToolLimits()
 	if got.MaxBytes != tools.DefaultGitMaxBytes {
-		t.Errorf("MaxBytes = %d, want %d", got.MaxBytes, tools.DefaultGitMaxBytes)
+		t.Errorf("MaxBytes = %d, want %d", got, tools.DefaultGitMaxBytes)
+	}
+}
+
+func TestGit_CheckBoundary(t *testing.T) {
+	dir := setupRepo(t)
+	tool := NewGitWithPolicy(sandbox.Policy{Workspace: dir})
+
+	// No path scopes to the repository root: accepted, absolute.
+	resolved, err := tool.CheckBoundary(map[string]any{"action": "status"})
+	if err != nil {
+		t.Fatalf("CheckBoundary without path = %v, want the repo root", err)
+	}
+	if !filepath.IsAbs(resolved) {
+		t.Errorf("CheckBoundary without path = %q, want absolute", resolved)
+	}
+	// Inside scope accepted.
+	if _, err := tool.CheckBoundary(map[string]any{"action": "diff", "path": "seed.txt"}); err != nil {
+		t.Errorf("CheckBoundary(seed.txt) = %v, want acceptance", err)
+	}
+	// Outside scope and traversal denied without running git.
+	outside := filepath.Join(t.TempDir(), "evil.txt")
+	if _, err := tool.CheckBoundary(map[string]any{"action": "diff", "path": outside}); err == nil {
+		t.Error("CheckBoundary(outside) succeeded, want rejection")
+	}
+	if _, err := tool.CheckBoundary(map[string]any{"action": "status", "path": ".."}); err == nil {
+		t.Error("CheckBoundary(..) succeeded, want rejection")
 	}
 }

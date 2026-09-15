@@ -8,11 +8,11 @@
 // shell tool behind the permission system.
 //
 // Path arguments resolve through the shared workspace boundary
-// (sandbox.ResolveWithinWorkspace when the policy confines, otherwise
-// like read_file), and every git invocation runs with the resolved
-// workspace root as its working directory, scoped to it via pathspec,
-// so output never escapes the project. No destructive flag can reach
-// the command line because argv is built from constants per action.
+// (sandbox.ResolveWithinWorkspace), and every git invocation runs with
+// the resolved workspace root as its working directory, scoped to it
+// via pathspec, so output never escapes the project. No destructive
+// flag can reach the command line because argv is built from constants
+// per action.
 package git
 
 import (
@@ -53,11 +53,14 @@ type Git struct {
 	limits tools.Limits
 }
 
-// NewGit returns a ready-to-register Git tool.
+// NewGit returns a ready-to-register Git tool. Repository resolution is
+// always confined to the workspace root (the policy's Workspace, or the
+// process working directory when unset).
 func NewGit() *Git { return &Git{} }
 
-// NewGitWithPolicy returns a Git tool confined to policy.Workspace when
-// the policy confines; otherwise native behavior.
+// NewGitWithPolicy returns a Git tool confined to policy.Workspace. It
+// behaves like NewGit: confinement is unconditional, and the policy
+// only selects which root to cage to.
 func NewGitWithPolicy(p sandbox.Policy) *Git { return &Git{policy: p} }
 
 // SetLimits overrides the output bound. Only positive fields take
@@ -140,8 +143,8 @@ func (g Git) Execute(ctx context.Context, args map[string]any) (tools.Result, er
 	}
 
 	// Optional path scoping, resolved inside the workspace like
-	// read_file: confined modes cage, permissive anchors to cwd. The
-	// scope must stay under the root so output never leaves it.
+	// read_file. The scope must stay under the root so output never
+	// leaves it.
 	scope := "."
 	if raw, _ := args["path"].(string); strings.TrimSpace(raw) != "" {
 		p, err := resolveInScope(g.policy, strings.TrimSpace(raw))
@@ -282,38 +285,27 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 func (w *cappedWriter) String() string { return string(w.buf) }
 
 // resolveRepoRoot resolves the repository root the same way the search
-// tools resolve theirs: confined modes cage to the workspace,
-// permissive native anchors at the process cwd (or an explicitly
-// configured workspace).
+// tools resolve theirs: always caged to the workspace (the policy's
+// Workspace, or the process working directory when unset).
 func resolveRepoRoot(policy sandbox.Policy) (string, error) {
-	if policy.Confines() {
-		return sandbox.ResolveWithinWorkspace(policy.Workspace, ".")
-	}
-	if strings.TrimSpace(policy.Workspace) != "" {
-		abs, err := filepath.Abs(policy.Workspace)
-		if err != nil {
-			return "", err
-		}
-		return abs, nil
-	}
-	return os.Getwd()
+	return sandbox.ResolveWithinWorkspace(policy.Workspace, ".")
 }
 
 // resolveInScope resolves a user-supplied path for the optional scope
-// filter: confined modes cage to the workspace, permissive mode treats
-// it like read_file (absolute as-is, relative anchored at cwd).
+// filter: always caged to the workspace, exactly like read_file.
 func resolveInScope(policy sandbox.Policy, path string) (string, error) {
-	if policy.Confines() {
-		return sandbox.ResolveWithinWorkspace(policy.Workspace, path)
+	return sandbox.ResolveWithinWorkspace(policy.Workspace, path)
+}
+
+// CheckBoundary implements tools.BoundaryChecker: it dry-runs the
+// workspace boundary decision for a git inspection (canonicalize +
+// resolve the scope or repository root, nothing executed) and returns
+// the canonical path the inspection would be scoped to.
+func (g Git) CheckBoundary(args map[string]any) (string, error) {
+	if raw, _ := args["path"].(string); strings.TrimSpace(raw) != "" {
+		return resolveInScope(g.policy, strings.TrimSpace(raw))
 	}
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path), nil
-	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(wd, filepath.Clean(path)), nil
+	return resolveRepoRoot(g.policy)
 }
 
 // boundOutput turns captured command output into model content: empty

@@ -11,6 +11,13 @@ type Request struct {
 	Tool      string
 	Arguments map[string]any
 
+	// ResolvedPath is the canonical absolute path the call would act
+	// on, from the tool's workspace boundary pre-flight. Empty when the
+	// tool exposes no path (or the path needs no resolution, e.g. an
+	// inline-text scan). Approval surfaces show it alongside the raw
+	// arguments so a model spelling can never hide the real target.
+	ResolvedPath string
+
 	// Execution describes what will actually happen if this request is
 	// allowed - execution mode, isolation facts, limitations. It is nil
 	// for tools without a meaningful execution story (everything but

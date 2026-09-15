@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"forcefield/internal/sandbox"
 )
 
 func TestWriteFileCreatesWithRestrictivePermissions(t *testing.T) {
@@ -12,7 +14,7 @@ func TestWriteFileCreatesWithRestrictivePermissions(t *testing.T) {
 		t.Skip("permission bits not meaningful on Windows")
 	}
 	dir := t.TempDir()
-	tool := NewWriteFile()
+	tool := NewWriteFileWithPolicy(sandbox.Policy{Workspace: dir})
 	path := filepath.Join(dir, "newfile.txt")
 	_, err := tool.Execute(nil, map[string]any{"path": path, "content": "hello"})
 	if err != nil {
@@ -32,7 +34,7 @@ func TestWriteFilePreservesExistingPermissions(t *testing.T) {
 		t.Skip("permission bits not meaningful on Windows")
 	}
 	dir := t.TempDir()
-	tool := NewWriteFile()
+	tool := NewWriteFileWithPolicy(sandbox.Policy{Workspace: dir})
 	path := filepath.Join(dir, "preserve.txt")
 
 	// Create with 0600 and ensure second write preserves.
@@ -74,7 +76,7 @@ func TestWriteFileNewFileIsNotWorldReadable(t *testing.T) {
 		t.Skip("permission bits not meaningful on Windows")
 	}
 	dir := t.TempDir()
-	tool := NewWriteFile()
+	tool := NewWriteFileWithPolicy(sandbox.Policy{Workspace: dir})
 	path := filepath.Join(dir, "a", "b", "secret.txt")
 	_, err := tool.Execute(nil, map[string]any{"path": path, "content": "data"})
 	if err != nil {

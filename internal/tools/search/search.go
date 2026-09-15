@@ -1,10 +1,9 @@
 // Package search provides the search_files tool: bounded literal/regex
 // content search under a directory.
 //
-// Security model mirrors read_file/list_files: in confined modes the
-// search root is caged via sandbox.ResolveWithinWorkspace; in permissive
-// native mode the root is anchored to the process cwd. On top of that (both
-// modes, because a recursive walker is a stronger primitive than a
+// Security model mirrors read_file/list_files: the search root is always
+// caged to the workspace via sandbox.ResolveWithinWorkspace. On top of
+// that (because a recursive walker is a stronger primitive than a
 // single-file read), every visited file is symlink-resolved and required
 // to stay within the resolved root, sensitive files (see
 // filesystem.IsSensitivePath) are skipped, and the .git subtree is
@@ -80,11 +79,14 @@ type SearchFiles struct {
 	limits tools.Limits
 }
 
-// NewSearchFiles returns a ready-to-register SearchFiles tool.
+// NewSearchFiles returns a ready-to-register SearchFiles tool. The
+// search root is always confined to the workspace root (the policy's
+// Workspace, or the process working directory when unset).
 func NewSearchFiles() *SearchFiles { return &SearchFiles{} }
 
 // NewSearchFilesWithPolicy returns a SearchFiles confined to
-// policy.Workspace when policy.Mode is wsl; otherwise native behavior.
+// policy.Workspace. It behaves like NewSearchFiles: confinement is
+// unconditional, and the policy only selects which root to cage to.
 func NewSearchFilesWithPolicy(p sandbox.Policy) *SearchFiles { return &SearchFiles{policy: p} }
 
 // SetLimits overrides the match bound. Only positive fields take effect;
@@ -389,36 +391,21 @@ func isBinary(f *os.File) bool {
 	return bytes.IndexByte(head[:n], 0) >= 0
 }
 
-// resolveRoot confines the search root exactly like read_file/list_files:
-// confined modes cage to the workspace; permissive native anchors to the cwd.
+// resolveRoot confines the search root to the workspace, exactly like
+// read_file/list_files: the root is canonicalized and caged to the
+// policy's Workspace (or the process working directory when unset).
 func (s SearchFiles) resolveRoot(rootArg string) (string, error) {
 	return resolveSearchRoot(s.policy, rootArg)
 }
 
 // resolveSearchRoot is the shared root resolver for search_files and
 // find_files, so both tools enforce the identical workspace boundary:
-// confined modes (wsl, or native with strict) cage to the workspace,
-// permissive native anchors to the process cwd. One function, no
+// the root is always caged to the workspace. Relative roots anchor at
+// the workspace; absolute roots, drive letters, UNC paths, traversal,
+// and symlinks resolving outside are rejected. One function, no
 // divergent path semantics.
 func resolveSearchRoot(policy sandbox.Policy, rootArg string) (string, error) {
-	if policy.Confines() {
-		return sandbox.ResolveWithinWorkspace(policy.Workspace, rootArg)
-	}
-	if strings.TrimSpace(rootArg) == "" || rootArg == "." {
-		wd, err := os.Getwd()
-		if err != nil {
-			return "", err
-		}
-		return wd, nil
-	}
-	if filepath.IsAbs(rootArg) {
-		return filepath.Clean(rootArg), nil
-	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(wd, filepath.Clean(rootArg)), nil
+	return sandbox.ResolveWithinWorkspace(policy.Workspace, rootArg)
 }
 
 // within reports whether path equals root or lies underneath it.
@@ -434,4 +421,16 @@ func within(root, path string) bool {
 		prefix += sep
 	}
 	return strings.HasPrefix(cleanPath, prefix)
+}
+
+// CheckBoundary implements tools.BoundaryChecker: it dry-runs the
+// workspace boundary decision for a content search (canonicalize +
+// resolve the root, nothing walked) and returns the canonical root
+// that would be searched.
+func (s SearchFiles) CheckBoundary(args map[string]any) (string, error) {
+	rootArg, err := tools.OptionalStringArg(args, "path", ".")
+	if err != nil {
+		return "", err
+	}
+	return resolveSearchRoot(s.policy, rootArg)
 }
