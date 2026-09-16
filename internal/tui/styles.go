@@ -13,8 +13,8 @@ import (
 )
 
 var (
-	colorAccent    = lipgloss.Color("#FF3B3B")
-	colorAssistant = lipgloss.Color("#FF3B3B")
+	colorAccent    = lipgloss.Color("#ED2663")
+	colorAssistant = lipgloss.Color("#ED2663")
 	colorMuted     = lipgloss.Color("#7A7A7A")
 	colorDim       = lipgloss.Color("#4A4A50")
 	colorError     = lipgloss.Color("#FF6B6B")

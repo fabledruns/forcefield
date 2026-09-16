@@ -27,11 +27,11 @@ const (
 )
 
 // loadingDimRGB is the low-intensity red for idle blocks. It sits in the
-// same red family as colorAccent (#FF3B3B) but dark enough to read as
+// same red family as colorAccent (#ED2663) but dark enough to read as
 // background energy on a dark terminal.
 const (
 	loadingDimR, loadingDimG, loadingDimB          = 0x5A, 0x1A, 0x1A
-	loadingBrightR, loadingBrightG, loadingBrightB = 0xFF, 0x3B, 0x3B
+	loadingBrightR, loadingBrightG, loadingBrightB = 0xED, 0x26, 0x63
 )
 
 // loadingTickMsg advances the block wave one frame. It follows the same

@@ -74,14 +74,14 @@ func TestLoadingIntensityIsSmooth(t *testing.T) {
 }
 
 func TestLoadingColorUsesAccentSystem(t *testing.T) {
-	if got := loadingColor(1); string(got) != "#FF3B3B" {
-		t.Errorf("loadingColor(1) = %q, want accent #FF3B3B", got)
+	if got := loadingColor(1); string(got) != "#ED2663" {
+		t.Errorf("loadingColor(1) = %q, want accent #ED2663", got)
 	}
 	if got := loadingColor(0); string(got) != "#5A1A1A" {
 		t.Errorf("loadingColor(0) = %q, want dim #5A1A1A", got)
 	}
 	mid := string(loadingColor(0.5))
-	if mid == "#FF3B3B" || mid == "#5A1A1A" {
+	if mid == "#ED2663" || mid == "#5A1A1A" {
 		t.Errorf("loadingColor(0.5) = %q, want interpolated midpoint", mid)
 	}
 }
