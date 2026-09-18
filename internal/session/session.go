@@ -61,6 +61,10 @@ type Session struct {
 	// no locking — concurrent supervisors race read-modify-write and
 	// may spend extra bounded restarts (see internal/recovery).
 	Supervisor *SupervisorState `json:"supervisor,omitempty"`
+	// Plan is the persisted /plan and /build state (see plan.go). Nil
+	// for old session files and sessions that never ran /plan; replay
+	// and the transcript ignore it.
+	Plan *PlanState `json:"plan,omitempty"`
 	// LastSaveError records the most recent Save failure for
 	// observability (in-memory only, never persisted): callers that
 	// fire-and-forget saves can still surface repeated failures via

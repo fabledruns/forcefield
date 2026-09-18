@@ -40,6 +40,19 @@ func (Status) Execute(ctx command.Context, _ []string) error {
 		ctx.Println("Save:      WARNING: last session save failed (%s)", stats.SaveError)
 	}
 
+	if stats.PlanStatus != "" {
+		hint := ""
+		switch stats.PlanStatus {
+		case "draft":
+			hint = " (/build to execute)"
+		case "partial":
+			hint = " (/build to continue)"
+		case "building":
+			hint = " (in progress)"
+		}
+		ctx.Println("Plan:      %s%s", stats.PlanStatus, hint)
+	}
+
 	if tools := ctx.Tools(); len(tools) > 0 {
 		ctx.Println("Tools:     %d available (/tools to list)", len(tools))
 	} else {

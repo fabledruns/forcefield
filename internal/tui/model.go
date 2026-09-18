@@ -101,6 +101,16 @@ type model struct {
 
 	assistantBuffer string
 
+	// turnKind tracks what the in-flight turn is for: an ordinary chat
+	// turn, a read-only /plan turn, or a /build turn executing the
+	// accepted plan. Chat and build share the runtime's normal policy;
+	// only plan turns narrow it. planBuffer accumulates the planning
+	// turn's streamed text so a finished plan can be persisted even
+	// though the shared assistant buffer is recycled per tool batch.
+	// Both reset on every stream teardown (see stopStream).
+	turnKind   turnKind
+	planBuffer string
+
 	agentName    string
 	providerName string
 	modelName    string
@@ -495,6 +505,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.finishThinkingStream()
 			m.appendAssistantText(msg.Event.Text)
 			m.assistantBuffer += msg.Event.Text
+			if m.turnKind == turnPlan {
+				m.planBuffer += msg.Event.Text
+			}
 		case runtime.EventThinking:
 			// Reasoning deltas stream into the transcript's collapsible
 			// Thinking block as the model thinks. An empty payload marks
@@ -543,15 +556,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTranscript()
 		return m, waitForChunk(m.stream, m.streamGen)
 
+	case turnStartedMsg:
+		if msg.gen != m.streamGen || !m.waiting || m.stream == nil {
+			return m, nil // superseded before the pump started
+		}
+		return m, m.streamPumpCmd()
+
 	case streamDoneMsg:
 		if msg.gen != m.streamGen {
 			return m, nil // stale
 		}
+		kind, planBody := m.turnKind, m.planBuffer
 		// The run finished normally: close the turn before teardown so
 		// the persisted record says complete even if the process dies
 		// before the next save.
 		recovery.NoteTerminal(m.session, runtime.EventDone, nil)
 		m.stopStream(true)
+		switch kind {
+		case turnPlan:
+			m.acceptPlanBody(planBody)
+		case turnBuild:
+			m.setBuildStatus(session.PlanDone, "Build complete.")
+		}
 		m.refreshTranscript()
 		return m, nil
 
@@ -559,6 +585,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.streamGen {
 			return m, nil // stale
 		}
+		kind := m.turnKind
 		// Record how the turn ended: user cancellation stays cancelled,
 		// anything else (provider failure, timeout, crash-adjacent
 		// errors) is an interruption. Either way the pending calls are
@@ -572,6 +599,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Role:    roleError,
 			Content: msg.err.Error(),
 		})
+		if kind == turnBuild {
+			// The error above already explains the failure; the
+			// status transition keeps the partial work explicit.
+			m.setBuildStatus(session.PlanPartial, "")
+		}
 
 		m.refreshTranscript()
 
@@ -581,9 +613,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.streamGen {
 			return m, nil // stale
 		}
+		kind := m.turnKind
 		recovery.NoteTerminal(m.session, runtime.EventCancelled, msg.err)
 		m.stopStream(true)
 		m.entries = append(m.entries, chatEntry{Role: roleSystem, Content: "Run cancelled."})
+		if kind == turnBuild {
+			m.setBuildStatus(session.PlanPartial, "Partial build — run /build to continue.")
+		}
 		m.refreshTranscript()
 		return m, nil
 
@@ -591,6 +627,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.streamGen {
 			return m, nil // stale
 		}
+		kind, planBody := m.turnKind, m.planBuffer
 		// The tool batch finished cleanly; the runtime stopped before asking
 		// for another model turn. Record that batch as complete, then show
 		// the user-facing safety reason as a system entry.
@@ -601,6 +638,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			reason = msg.err.Error()
 		}
 		m.entries = append(m.entries, chatEntry{Role: roleSystem, Content: reason})
+		if kind == turnPlan {
+			m.acceptPlanBody(planBody)
+		}
+		if kind == turnBuild {
+			m.setBuildStatus(session.PlanPartial, "")
+		}
 		m.refreshTranscript()
 		return m, nil
 
@@ -663,6 +706,17 @@ func (m *model) stopStream(savePartial bool) {
 	m.status = ""
 	m.loadingFrame = 0
 	m.activeTools = make(map[string]int)
+	// A build turn abandoned here (session switch, /clear, agent switch,
+	// quit) never reaches its terminal handler, so settle a building
+	// plan as partial now; the save is best-effort with the failure
+	// surfaced once below via noteSaveError.
+	if m.turnKind == turnBuild && m.session != nil && m.session.Plan != nil &&
+		m.session.Plan.Status == session.PlanBuilding {
+		m.session.Plan.Status = session.PlanPartial
+		_ = m.session.Save()
+	}
+	m.turnKind = turnChat
+	m.planBuffer = ""
 	m.finishAssistantStream()
 	m.finishThinkingStream()
 	// Shared record path (internal/recovery): keep a reply that streamed
@@ -1039,13 +1093,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.streamGen++
 		m.loadingFrame = 0
 
-		if loadingSupportsGradient() {
-			return m, tea.Batch(
-				loadingTickCmd(),
-				waitForChunk(stream, m.streamGen),
-			)
-		}
-		return m, waitForChunk(stream, m.streamGen)
+		return m, m.streamPumpCmd()
 	case tea.KeyTab:
 		return m.handleTabComplete()
 	}

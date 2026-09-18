@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,6 +30,15 @@ func newRegistry() *command.Registry {
 	reg.Register(builtin.NewEffort())
 	reg.Register(builtin.NewThinking())
 	reg.Register(builtin.NewSkills())
+	reg.Register(builtin.NewUsage())
+	reg.Register(builtin.NewContext())
+	reg.Register(builtin.NewDiff())
+	reg.Register(builtin.NewGit())
+	reg.Register(builtin.NewCompact())
+	reg.Register(builtin.NewJobs())
+	reg.Register(builtin.NewCancel())
+	reg.Register(builtin.NewPlan())
+	reg.Register(builtin.NewBuild())
 	return reg
 }
 
@@ -276,7 +286,36 @@ func (m *model) SessionStats() command.SessionStats {
 		stats.Chars += len(msg.Content)
 	}
 	stats.SaveError = m.session.LastSaveError
+	if m.session.Plan != nil {
+		stats.PlanStatus = m.session.Plan.Status
+	}
 	return stats
+}
+
+// ContextInfo describes estimated context consumption for /usage and
+// /context. Session size is always available; the token estimate and
+// budget come from the runtime when one is attached.
+func (m *model) ContextInfo() command.ContextInfo {
+	info := command.ContextInfo{}
+	if m.session != nil {
+		info.Messages = len(m.session.Messages)
+		for _, msg := range m.session.Messages {
+			info.Chars += len(msg.Content)
+		}
+		info.Compacted = m.session.Compacted
+	}
+	if m.session == nil || m.runtime == nil {
+		return info
+	}
+	rep := m.runtime.UsageInfo(m.session.ProviderMessages())
+	info.EstTokens = rep.EstTokens
+	info.Limit = rep.Limit
+	info.Reserve = rep.Reserve
+	info.MaxMessages = rep.MaxMessages
+	info.Kept = rep.Kept
+	info.Evicted = rep.Evicted
+	info.Summarize = rep.Summarize
+	return info
 }
 
 // Tools returns one line per registered tool for /tools and /status.
@@ -286,6 +325,46 @@ func (m *model) Tools() []string {
 	}
 	return m.runtime.ToolSummaries()
 }
+
+// Git runs a read-only git inspection for /diff and /git.
+func (m *model) Git(action, path string) (string, error) {
+	if m.runtime == nil {
+		return "", fmt.Errorf("runtime not available")
+	}
+	return m.runtime.GitInspect(context.Background(), action, path)
+}
+
+// Jobs snapshots background shell jobs for /jobs.
+func (m *model) Jobs() []command.JobSnapshot {
+	if m.runtime == nil {
+		return nil
+	}
+	out := m.runtime.JobSnapshots()
+	res := make([]command.JobSnapshot, 0, len(out))
+	for _, s := range out {
+		res = append(res, command.JobSnapshot{
+			ID:       s.ID,
+			Command:  s.Command,
+			State:    string(s.State),
+			HasExit:  s.HasExit,
+			ExitCode: s.ExitCode,
+		})
+	}
+	return res
+}
+
+// CancelRun cancels the current run for /cancel, reusing the Ctrl+C
+// teardown. It reports whether a run was active.
+func (m *model) CancelRun() bool {
+	if !m.runActive() {
+		return false
+	}
+	m.cancelActiveRun()
+	return true
+}
+
+// StartPlan and StartBuild live in planbuild.go alongside the rest of
+// the /plan and /build turn wiring.
 
 // Skills returns the global skill catalog for /skills.
 func (m *model) Skills() []skills.Skill {

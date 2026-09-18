@@ -75,13 +75,14 @@ func (s *Session) Save() (err error) {
 	// remains the old valid version, and the in-memory session is restored
 	// to that same version on failure. Every lifecycle field Save can
 	// observe is covered: messages, timestamps, compaction count, plus
-	// deep copies of the Turn and Supervisor envelopes so a failed save
-	// can never silently drop lifecycle state.
+	// deep copies of the Turn, Supervisor, and Plan envelopes so a failed
+	// save can never silently drop lifecycle state.
 	origMessages := s.Messages
 	origUpdatedAt := s.UpdatedAt
 	origCompacted := s.Compacted
 	origTurn := cloneTurn(s.Turn)
 	origSupervisor := cloneSupervisor(s.Supervisor)
+	origPlan := clonePlan(s.Plan)
 	success := false
 	defer func() {
 		if !success {
@@ -90,6 +91,7 @@ func (s *Session) Save() (err error) {
 			s.Compacted = origCompacted
 			s.Turn = origTurn
 			s.Supervisor = origSupervisor
+			s.Plan = origPlan
 			if err != nil {
 				s.LastSaveError = err.Error()
 				s.LastSaveTime = time.Now()

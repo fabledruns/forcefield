@@ -38,6 +38,11 @@ func New() (*Runtime, error)
 | `AgentSummaries` / `ListAgents` | Lists every known agent with tools and hints.        |
 | `ProviderSummaries` | Describes every selectable provider with capabilities and availability. |
 | `StreamChat`        | Runs the agent loop and emits structured events as they happen.  |
+| `StreamChatWithMode` | Same, under one `RunMode`: `ModeChat` (normal) or `ModePlan` (read-only tool subset + planning prompt overlay). |
+| `UsageInfo`         | Estimates one history's token cost against the active budget (for `/usage`, `/context`). |
+| `GitInspect`        | Runs a read-only git inspection through the full tool manager (for `/diff`, `/git`). |
+| `JobSnapshots`      | Lists background shell job snapshots without affecting them (for `/jobs`). |
+| `TreeSignature`     | Hashes the workspace status output as a plan-drift signal.      |
 | `Stream`            | Compatibility alias for `StreamChat`.                            |
 | `Run`               | Runs the agent loop and returns the final response.              |
 | `RunContext`        | Same as `Run`, with caller-controlled cancellation.              |

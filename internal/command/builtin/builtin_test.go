@@ -32,7 +32,24 @@ type fakeContext struct {
 	openedModelPicker    bool
 
 	stats     command.SessionStats
+	info      command.ContextInfo
 	toolLines []string
+
+	gitOut string
+	gitErr error
+
+	gitAction string
+	gitPath   string
+
+	jobs []command.JobSnapshot
+
+	cancelCalled bool
+	cancelActive bool
+
+	planTask   string
+	planErr    error
+	buildCalls int
+	buildErr   error
 	agentList []command.AgentSummary
 
 	effort   string
@@ -76,12 +93,31 @@ func (f *fakeContext) OpenModelPicker()    { f.openedModelPicker = true }
 
 func (f *fakeContext) SessionStats() command.SessionStats { return f.stats }
 
+func (f *fakeContext) ContextInfo() command.ContextInfo { return f.info }
+
 func (f *fakeContext) Tools() []string {
 	if len(f.toolLines) == 0 {
 		return []string{"read_file: reads files"}
 	}
 	return f.toolLines
 }
+
+func (f *fakeContext) Git(action, path string) (string, error) {
+	f.gitAction = action
+	f.gitPath = path
+	if f.gitErr != nil {
+		return "", f.gitErr
+	}
+	return f.gitOut, nil
+}
+
+func (f *fakeContext) Jobs() []command.JobSnapshot { return f.jobs }
+
+func (f *fakeContext) CancelRun() bool { f.cancelCalled = true; return f.cancelActive }
+
+func (f *fakeContext) StartPlan(task string) error { f.planTask = task; return f.planErr }
+
+func (f *fakeContext) StartBuild() error { f.buildCalls++; return f.buildErr }
 
 func (f *fakeContext) ReasoningCapabilities() providers.ReasoningCapabilities {
 	return providers.ModelReasoningCapabilities(f.provider, f.model)

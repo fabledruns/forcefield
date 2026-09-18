@@ -17,6 +17,15 @@ Slash commands control the chat session. Examples:
 - `/sessions` — open the session picker
 - `/status` — show the active agent, model, session size, tools, and skills
 - `/tools` — list the tools available to the agent
+- `/usage` — show session and context usage estimates
+- `/context` — show what the next model turn will send
+- `/diff` — show the workspace's unstaged diff
+- `/git` — show git status for the workspace
+- `/compact` — show automatic compaction state
+- `/jobs` — list background shell jobs
+- `/cancel` — cancel the current run
+- `/plan` — produce an implementation plan without modifying anything
+- `/build` — execute the accepted plan
 
 ## Core Interfaces
 
@@ -48,7 +57,13 @@ Commands act on the session through a small interface. The TUI is the production
 | `OpenSessionPicker`  | Open the session selection UI.                   |
 | `OpenProviderPicker` | Open the provider selection UI.                  |
 | `OpenModelPicker`    | Open the model selection UI.                     |
-| `SessionStats`       | Report session id, message count, and size.      |
+| `SessionStats`       | Report session id, message count, size, save errors, and plan status. |
+| `ContextInfo`        | Report estimated context consumption for `/usage`, `/context`, and `/compact`. |
+| `Git`                | Run a read-only git inspection for `/diff` and `/git`. |
+| `Jobs`               | Snapshot background shell jobs for `/jobs`.      |
+| `CancelRun`          | Cancel the current run for `/cancel`.            |
+| `StartPlan`          | Begin a read-only planning turn for `/plan`.     |
+| `StartBuild`         | Execute the accepted plan for `/build`.          |
 | `Tools`              | List one line per available tool.                |
 | `Skills`             | List global skills in catalog order.             |
 | `LoadSkill`          | Load one global skill's Markdown body by id.     |
@@ -83,9 +98,31 @@ Commands act on the session through a small interface. The TUI is the production
 | `provider`   | —       | `/provider [name]`       | Show or switch the active provider.         |
 | `agent`      | —       | `/agent [name]`          | List agents or switch the active agent.     |
 | `sessions`   | `s`     | `/sessions`              | Open the saved session picker.              |
-| `status`     | —       | `/status`                | Show agent, provider, model, session size, tools, skills. |
+| `status`     | —       | `/status`                | Show agent, provider, model, session size, tools, skills, plan. |
 | `tools`      | —       | `/tools`                 | List the tools available to the agent.      |
 | `skills`     | `skill` | `/skills [list|show <id>]` | List and inspect global skills.           |
+| `usage`      | —       | `/usage`                 | Show session size, estimated tokens, budget, and fit. |
+| `context`    | —       | `/context`               | Show what the next model turn will send.    |
+| `diff`       | —       | `/diff [path]`           | Show the unstaged diff, optionally scoped to a path. |
+| `git`        | —       | `/git`                   | Show git status for the workspace.          |
+| `compact`    | —       | `/compact`               | Show automatic compaction state (report only). |
+| `jobs`       | —       | `/jobs`                  | List background shell jobs (read-only).     |
+| `cancel`     | —       | `/cancel`                | Cancel the current run (same as Ctrl+C).    |
+| `plan`       | —       | `/plan <task>`           | Produce an implementation plan without modifying anything. |
+| `build`      | —       | `/build`                 | Execute the accepted plan.                  |
+
+## Plan and Build
+
+`/plan <task>` starts a read-only planning turn through the normal
+runtime loop: the system prompt gains a planning overlay and the tool
+set narrows to inspection tools (`read_file`, `list_files`, search,
+`git`, `secret_scan`, `load_skill`). The finished text is stored as the
+session's draft plan (`session.Plan`) with a workspace tree signature
+and message count. `/build` warns about drift since planning (workspace
+or conversation) but always proceeds, executing the plan through the
+normal agent loop with the full tool set. A cancelled, errored, or
+blocked build leaves the plan `partial`; finishing marks it `done`.
+`/status` shows the plan line when a plan exists.
 
 ## How to Add a Command
 

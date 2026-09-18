@@ -1565,6 +1565,10 @@ type runSnapshot struct {
 	authEnvVar   string
 	providerName string
 	modelName    string
+	// mode selects the tool and prompt policy for this run (see
+	// planmode.go). It is fixed at StreamChat entry, like the rest of
+	// the snapshot, so a run can never change policy mid-turn.
+	mode RunMode
 }
 
 // snapshotRunState copies the switchable run state under RLock.
@@ -1603,6 +1607,14 @@ func (r *Runtime) snapshotRunState() runSnapshot {
 
 // StreamChat runs the agent loop and emits structured events.
 func (r *Runtime) StreamChat(ctx context.Context, messages []providers.Message) (<-chan Event, error) {
+	return r.StreamChatWithMode(ctx, messages, ModeChat)
+}
+
+// StreamChatWithMode runs the agent loop under one RunMode: ModeChat for
+// normal turns, ModePlan for read-only /plan turns. Both modes share the
+// same loop, scheduler, permissions, and cancellation; only the tool
+// subset and the system-prompt overlay differ.
+func (r *Runtime) StreamChatWithMode(ctx context.Context, messages []providers.Message, mode RunMode) (<-chan Event, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("stream context cannot be nil")
 	}
@@ -1611,7 +1623,19 @@ func (r *Runtime) StreamChat(ctx context.Context, messages []providers.Message) 
 	}
 
 	snap := r.snapshotRunState()
+	snap.mode = mode
+	if mode == ModePlan {
+		pm, err := planManager(snap.manager)
+		if err != nil {
+			return nil, fmt.Errorf("build plan tool set: %w", err)
+		}
+		snap.manager = pm
+	}
 	initial := buildMessagesWithBudget(messages, snap.agent, snap.contextBudget)
+	if overlay := mode.planOverlay(); overlay != "" &&
+		len(initial) > 0 && initial[0].Role == providers.SystemRole {
+		initial[0].Content += overlay
+	}
 	// Local execution trace (P1.11): one run handle for the whole
 	// StreamChat invocation. Nil when disabled or unopenable — every
 	// trace call below is nil-safe, so tracing can never fail the run.
@@ -1875,7 +1899,7 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 			return
 		}
 
-		refreshSystemPrompt(messages, snap.agent, state)
+		refreshSystemPrompt(messages, snap.agent, state, snap.mode.planOverlay())
 
 		// Window the provider view every turn so conversation/tool
 		// history can never grow past the model's context budget. The
@@ -2159,7 +2183,9 @@ func snapshotPtr(state *task.State) *task.Snapshot {
 }
 
 // refreshSystemPrompt adds the current task digest to the system message.
-func refreshSystemPrompt(messages []providers.Message, a *agent.Agent, state *task.State) {
+// overlay, when non-empty, is appended to the rebuilt base prompt so
+// plan-mode runs keep their constraint on every iteration.
+func refreshSystemPrompt(messages []providers.Message, a *agent.Agent, state *task.State, overlay string) {
 	if len(messages) == 0 || messages[0].Role != providers.SystemRole {
 		return
 	}
@@ -2167,7 +2193,7 @@ func refreshSystemPrompt(messages []providers.Message, a *agent.Agent, state *ta
 		return
 	}
 
-	base := a.BuildSystemPrompt()
+	base := a.BuildSystemPrompt() + overlay
 	summary := state.Summary()
 	if summary == "" {
 		messages[0].Content = base

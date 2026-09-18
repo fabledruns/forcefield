@@ -45,6 +45,32 @@ func TestStatusHandlesZeroValues(t *testing.T) {
 	}
 }
 
+func TestStatusShowsPlan(t *testing.T) {
+	ctx := &fakeContext{
+		stats: command.SessionStats{PlanStatus: "draft"},
+	}
+	if err := NewStatus().Execute(ctx, nil); err != nil {
+		t.Fatalf("Status.Execute error = %v", err)
+	}
+	out := strings.Join(ctx.lines, "\n")
+	if !strings.Contains(out, "Plan:") || !strings.Contains(out, "draft") {
+		t.Errorf("status output missing plan line:\n%s", out)
+	}
+	if !strings.Contains(out, "/build") {
+		t.Errorf("draft plan line should hint at /build:\n%s", out)
+	}
+}
+
+func TestStatusHidesPlanWhenNone(t *testing.T) {
+	ctx := &fakeContext{}
+	if err := NewStatus().Execute(ctx, nil); err != nil {
+		t.Fatalf("Status.Execute error = %v", err)
+	}
+	if out := strings.Join(ctx.lines, "\n"); strings.Contains(out, "Plan:") {
+		t.Errorf("status output shows a plan line with no plan:\n%s", out)
+	}
+}
+
 func TestHumanBytes(t *testing.T) {
 	cases := map[int]string{
 		0:           "0 B",

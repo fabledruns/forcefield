@@ -33,6 +33,7 @@ Old session files containing only `role`/`content`/`time` continue to load becau
 | `Agent`     | `string`    | Active specialised agent (`omitempty`).  |
 | `Messages`  | `[]Message` | Ordered message history (capped, see below). |
 | `Compacted` | `int`       | Messages dropped by compaction, lifetime total (`omitempty`). |
+| `Plan`      | `*PlanState`| Accepted `/plan` state: body, status (`draft`, `building`, `done`, `partial`), creation time, workspace tree signature, and message count (`omitempty`). |
 | `Turn`      | `*TurnState`| Crash-recovery envelope (`omitempty`).   |
 
 Old session files without `agent` continue to load; callers treat `""` as `general`.

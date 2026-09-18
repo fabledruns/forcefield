@@ -62,7 +62,19 @@ func (f *fakeContext) SessionStats() SessionStats {
 	return SessionStats{ID: "test-session", Messages: 2, Chars: 100}
 }
 
+func (f *fakeContext) ContextInfo() ContextInfo { return ContextInfo{} }
+
 func (f *fakeContext) Tools() []string { return []string{"read_file: reads files"} }
+
+func (f *fakeContext) Git(action, path string) (string, error) { return "", nil }
+
+func (f *fakeContext) Jobs() []JobSnapshot { return nil }
+
+func (f *fakeContext) CancelRun() bool { return false }
+
+func (f *fakeContext) StartPlan(task string) error { return nil }
+
+func (f *fakeContext) StartBuild() error { return nil }
 
 func (f *fakeContext) ReasoningCapabilities() providers.ReasoningCapabilities {
 	return providers.ModelReasoningCapabilities(f.provider, f.model)

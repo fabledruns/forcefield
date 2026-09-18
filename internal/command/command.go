@@ -21,6 +21,9 @@ type SessionStats struct {
 	// when the last save succeeded. Commands surface it; they never set
 	// it.
 	SaveError string
+	// PlanStatus is the accepted plan's status (draft, building, done,
+	// partial), empty when the session has no plan.
+	PlanStatus string
 }
 
 // AgentSummary describes one specialised agent for listings.
@@ -31,6 +34,35 @@ type AgentSummary struct {
 	// Skills lists assigned skill IDs; AllSkills reports full-catalog access.
 	Skills    []string
 	AllSkills bool
+}
+
+// ContextInfo summarizes estimated context consumption for /usage and
+// /context. EstTokens is a deterministic local estimate (never billed
+// usage); Limit <= 0 means the model's window is unknown, in which case
+// only MaxMessages bounds the turn. Kept/Evicted describe the turn-window
+// selection; Summarize reports whether evicted turns become a digest.
+type ContextInfo struct {
+	Messages    int
+	Chars       int
+	EstTokens   int
+	Limit       int
+	Reserve     int
+	MaxMessages int
+	Kept        int
+	Evicted     int
+	Summarize   bool
+	// Compacted counts messages dropped by size-bound compaction across
+	// the session lifetime.
+	Compacted int
+}
+
+// JobSnapshot is a race-free view of one background shell job for /jobs.
+type JobSnapshot struct {
+	ID       string
+	Command  string
+	State    string
+	HasExit  bool
+	ExitCode int
 }
 
 // Context is the session-facing interface used by commands.
@@ -49,9 +81,25 @@ type Context interface {
 	OpenModelPicker()
 	// SessionStats describes the active conversation.
 	SessionStats() SessionStats
+	// ContextInfo describes estimated context consumption.
+	ContextInfo() ContextInfo
 	// Tools returns one human-readable line per available tool, e.g.
 	// "read_file: Read the contents of a file.".
 	Tools() []string
+	// Git runs a read-only git inspection (status, diff, staged, log,
+	// changed) scoped to path inside the workspace. It reports the
+	// tool's soft errors as Go errors.
+	Git(action, path string) (string, error)
+	// Jobs snapshots every remembered background shell job, oldest first.
+	Jobs() []JobSnapshot
+	// CancelRun cancels the current run, reporting whether one was active.
+	CancelRun() bool
+	// StartPlan begins a read-only planning turn for task. It never
+	// modifies the workspace.
+	StartPlan(task string) error
+	// StartBuild executes the accepted plan through the normal agent
+	// loop. It reports an error when no plan exists.
+	StartBuild() error
 	// ReasoningCapabilities returns the capability for the active model.
 	ReasoningCapabilities() providers.ReasoningCapabilities
 	// Effort reports the current effort level for the active model.
