@@ -189,12 +189,33 @@ func TestNvidiaStreamFlushesToolCallsOnStopFinishReason(t *testing.T) {
 }
 
 // TestNvidiaStreamFlushesToolCallsOnEOF covers a stream that just ends
-// (connection closed) without [DONE] or any finish reason.
+// (connection closed) without [DONE] or any finish reason. That is a
+// truncated turn, not a complete one: it must surface as an error rather
+// than a successful Done, so the runtime never executes a tool call the
+// model never finished sending.
 func TestNvidiaStreamFlushesToolCallsOnEOF(t *testing.T) {
-	events := nvidiaSSE(t,
-		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"echo","arguments":"{}"}}]}}]}`,
-	)
-	equalSeq(t, summarize(events), "tools:1", "done")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"echo","arguments":"{}"}}]}}]}`+"\n\n")
+		// No finish_reason, no [DONE]: bare EOF.
+	}))
+	defer server.Close()
+
+	provider := NewNvidiaProvider(server.URL, "test-model", "", nil)
+	stream, err := provider.StreamChat(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
+	}
+	var events []StreamEvent
+	for event := range stream {
+		events = append(events, event)
+		if event.Done {
+			t.Fatalf("got Done event for truncated stream, want error (events=%+v)", events)
+		}
+	}
+	if len(events) == 0 || events[len(events)-1].Err == nil {
+		t.Fatalf("events = %+v, want a truncation error event", events)
+	}
 }
 
 // TestNvidiaStreamPlainContentUnchanged pins the non-tool, non-reasoning

@@ -1827,6 +1827,28 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 		cleanup.Wait()
 		r.emitCancelled(emit, state, err)
 	}
+	// A panic in the orchestration (provider, emit callback, history
+	// bookkeeping) must surface as a run error — never crash the whole
+	// process — with best-effort cleanup. Worker-goroutine panics are
+	// handled in the scheduler; this covers the run goroutine itself.
+	// The cleanup wait is bounded: with no background jobs it returns
+	// instantly, but live jobs owned by a live context would wedge
+	// error reporting if waited on forever (their watchers still
+	// terminate them on caller cancellation or their own deadline).
+	defer func() {
+		if p := recover(); p != nil {
+			waitDone := make(chan struct{})
+			go func() { cleanup.Wait(); close(waitDone) }()
+			select {
+			case <-waitDone:
+			case <-time.After(5 * time.Second):
+			}
+			func() {
+				defer func() { _ = recover() }()
+				emit(Event{Type: EventError, Err: fmt.Errorf("agent run panicked: %v", p), TaskState: snapshotPtr(state)})
+			}()
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		cancelled(err)
 		return

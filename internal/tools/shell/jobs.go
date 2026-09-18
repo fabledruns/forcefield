@@ -200,7 +200,17 @@ func (r *JobRegistry) Start(ctx context.Context, command, cwd string, env []stri
 		}
 	}
 
-	prepared, err := r.executorFor().Prepare(ctx, sandbox.Request{
+	// Detach the process lifetime from the caller's (per-tool-attempt)
+	// context: the scheduler cancels that context as soon as Start
+	// returns, which would immediately kill a CommandContext-bound
+	// background job at birth. The job outlives the starting tool call
+	// by design; its lifetime is governed by the absolute deadline,
+	// explicit poll/cancel/TTL, and the RunControl watcher below — not
+	// by the short-lived attempt context. WithoutCancel preserves
+	// context values (so RunControl is still visible) while dropping
+	// cancellation.
+	execCtx := context.WithoutCancel(ctx)
+	prepared, err := r.executorFor().Prepare(execCtx, sandbox.Request{
 		Command:  command,
 		Dir:      cwd,
 		ExtraEnv: env,

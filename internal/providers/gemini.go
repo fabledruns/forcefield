@@ -10,21 +10,20 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync/atomic"
 
 	"forcefield/internal/tools"
+
+	"github.com/google/uuid"
 )
 
-// syntheticCallSeq numbers provider-synthesized tool call IDs. Gemini
-// supplies no call IDs, so the adapter mints them; the counter is
-// process-wide — never per-turn — so IDs stay unique across every turn
-// of every run and the runtime can treat a repeated ID as the same
-// call instead of a counter collision.
-var syntheticCallSeq atomic.Int64
-
-// nextSyntheticCallID mints a unique tool call ID.
+// nextSyntheticCallID mints a unique tool call ID. Gemini supplies no
+// call IDs, so the adapter mints them; they must stay unique across
+// every turn of every run AND across process restarts, because persisted
+// sessions deduplicate by ID — a process-local counter restarting at
+// call-1 would collide with IDs already stored in a resumed session and
+// cause newly executed calls to be silently dropped from history.
 func nextSyntheticCallID() string {
-	return fmt.Sprintf("call-%d", syntheticCallSeq.Add(1))
+	return "call-" + uuid.NewString()
 }
 
 // GeminiProvider talks to Google's native Generative Language API. A
@@ -460,8 +459,13 @@ func (g *GeminiProvider) StreamChat(ctx context.Context, messages []Message, def
 			send(StreamEvent{Err: streamErr})
 			return
 		default:
+			// Stream ended without a finish reason (EOF): the turn is
+			// truncated, not complete. A turn with no finishReason at
+			// all was never completed by the model. Report it so the
+			// runtime never commits partial content as a finished turn.
 			if stop == FinishNone {
-				stop = FinishStop
+				send(StreamEvent{Err: &protocolError{msg: "stream ended without a terminal marker (finishReason); response is incomplete"}})
+				return
 			}
 			finishTurn()
 		}

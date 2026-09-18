@@ -520,7 +520,10 @@ func (a *AnthropicProvider) StreamChat(ctx context.Context, messages []Message, 
 			send(StreamEvent{Err: streamErr})
 			return
 		default:
-			finishTurn()
+			// Stream ended without message_stop (EOF): the turn is
+			// truncated, not complete. Report it so the runtime never
+			// commits partial content as a finished turn.
+			send(StreamEvent{Err: &protocolError{msg: "stream ended without a terminal marker (message_stop); response is incomplete"}})
 		}
 	}()
 

@@ -521,9 +521,10 @@ func (o *OpenAICompatible) StreamChat(ctx context.Context, messages []Message, d
 			send(StreamEvent{Err: streamErr})
 			return
 		default:
-			// Stream ended without [DONE] or a finish reason (EOF): still
-			// a complete turn as far as the runtime is concerned.
-			finishTurn(FinishStop)
+			// Stream ended without [DONE] or a finish reason (EOF): the
+			// turn is truncated, not complete. Report it so the runtime
+			// never commits partial content as a finished turn.
+			send(StreamEvent{Err: &protocolError{msg: "stream ended without a terminal marker ([DONE] or finish_reason); response is incomplete"}})
 		}
 	}()
 

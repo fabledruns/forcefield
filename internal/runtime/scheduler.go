@@ -169,6 +169,30 @@ func (s *scheduler) runWithConcurrency(ctx context.Context, calls []providers.To
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// A panicking tool must fail its own call, not the whole
+			// process: record a failed result (and a terminal event when
+			// reporting still works) and let the batch complete.
+			// Registered after wg.Done so the result lands before Wait
+			// is released; the semaphore release below still runs first.
+			defer func() {
+				if p := recover(); p != nil {
+					res := ToolResult{
+						ToolCallID: call.ID,
+						Name:       call.Name,
+						Arguments:  call.Arguments,
+						Success:    false,
+						IsError:    true,
+						Content:    session.ScrubContent(fmt.Sprintf("tool %q panicked: %v", call.Name, p)),
+						Attempt:    1,
+						Err:        fmt.Errorf("tool %q panicked: %v", call.Name, p),
+					}
+					results[i] = res
+					func() {
+						defer func() { _ = recover() }()
+						safeEmit(Event{Type: EventToolFailed, ToolResult: &res})
+					}()
+				}
+			}()
 
 			select {
 			case sem <- struct{}{}:
