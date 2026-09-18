@@ -199,6 +199,12 @@ type model struct {
 	// needing a toggle; keyboard behavior is identical.
 	mouseEnabled bool
 
+	// saveErrorNotified records the session save error already shown in
+	// the transcript, so a persistent failure warns once per distinct
+	// error instead of once per turn. It resets when saves succeed
+	// again, so a later recurrence is still reported.
+	saveErrorNotified string
+
 	// hoverID is the hit-region ID under the pointer, refreshed from
 	// every routed mouse event. Renderers apply subtle emphasis only.
 	hoverID string
@@ -670,6 +676,33 @@ func (m *model) stopStream(savePartial bool) {
 	// retired (and are therefore dropped).
 	recovery.CancelAndRepair(m.session)
 	m.assistantBuffer = ""
+	// Steady-state saves are fire-and-forget by design, so a failure
+	// here would otherwise stay silent: surface it once per distinct
+	// error (see also /status, which reports LastSaveError on demand).
+	m.noteSaveError()
+}
+
+// noteSaveError appends a transcript warning the first time a session
+// save error is observed, so a live run whose history stops reaching
+// disk is never silent. Nil-safe: teardown paths also run without an
+// adopted session.
+func (m *model) noteSaveError() {
+	if m.session == nil {
+		return
+	}
+	errText := m.session.LastSaveError
+	if errText == "" {
+		m.saveErrorNotified = ""
+		return
+	}
+	if errText == m.saveErrorNotified {
+		return
+	}
+	m.saveErrorNotified = errText
+	m.entries = append(m.entries, chatEntry{
+		Role:    roleError,
+		Content: fmt.Sprintf("session save failed — recent history is only in memory and will be lost on quit: %s", errText),
+	})
 }
 
 // runActive reports whether the TUI still owns a context, stream, tool, or

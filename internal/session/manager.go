@@ -61,7 +61,13 @@ func validID(id string) bool {
 // crash doesn't produce an empty replacement either.
 func (s *Session) Save() (err error) {
 	if !validID(s.ID) {
-		return fmt.Errorf("save session: invalid session id %q", s.ID)
+		// Recorded like any other save failure: callers gate on
+		// LastSaveError to detect a stale session file, and that
+		// invariant must hold for every failure path, not just I/O.
+		err := fmt.Errorf("save session: invalid session id %q", s.ID)
+		s.LastSaveError = err.Error()
+		s.LastSaveTime = time.Now()
+		return err
 	}
 
 	// Save original state so a write failure (disk-full, permission) does not

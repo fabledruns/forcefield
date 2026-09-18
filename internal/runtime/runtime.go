@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
@@ -1765,7 +1764,10 @@ func (r *Runtime) RunContext(ctx context.Context, messages []providers.Message) 
 }
 
 // maxToolResultChars keeps verbose tool output from dominating later turns.
-const maxToolResultChars = 6000
+// It mirrors session.MaxModelToolResultChars, which the session layer
+// applies when replaying persisted history, so a resumed run sees the
+// identical model-visible window as the originating run.
+const maxToolResultChars = session.MaxModelToolResultChars
 
 // maxTurnBytes caps how much content one model turn may stream before
 // terminating (text, thinking, and tool-call arguments combined). Model
@@ -2176,27 +2178,11 @@ func refreshSystemPrompt(messages []providers.Message, a *agent.Agent, state *ta
 		"\n\nUpdate this via update_task_state as your understanding of the task evolves."
 }
 
+// truncateToolResult caps one tool result to the model-visible window.
+// It delegates to the session layer so the run loop and session replay
+// share one implementation (see session.TruncateModelToolResult).
 func truncateToolResult(content string) string {
-	if len(content) <= maxToolResultChars {
-		return content
-	}
-
-	// Cut on a rune boundary so multi-byte characters at the limit are
-	// never split into invalid UTF-8, which would poison every later
-	// provider request that replays this tool result.
-	cut := 0
-	for i, r := range content {
-		if i+utf8.RuneLen(r) > maxToolResultChars {
-			break
-		}
-		cut = i + utf8.RuneLen(r)
-	}
-	if cut == 0 {
-		cut = 1
-	}
-
-	return fmt.Sprintf("%s\n\n[...output truncated at %d bytes, %d bytes total. Re-run with narrower output (e.g. filters, -run, grep) if you need the rest.]",
-		content[:cut], cut, len(content))
+	return session.TruncateModelToolResult(content)
 }
 
 // goalFrom returns the first user message for task-state display.

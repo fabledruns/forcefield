@@ -239,6 +239,34 @@ func truncatePersistedToolResult(content string) string {
 		content[:cut], cut, len(content))
 }
 
+// MaxModelToolResultChars is the model-visible window for one tool
+// result: the bound the originating run applies before the result
+// enters provider history. It lives here (not in the runtime) so both
+// the run loop and ProviderMessages share one source of truth: the
+// persisted record keeps up to 48 KiB for diagnostics, but replay must
+// not expose more than the window the model originally saw.
+const MaxModelToolResultChars = 6000
+
+// TruncateModelToolResult caps content to MaxModelToolResultChars on a
+// rune boundary, preserving valid UTF-8 and leaving an explicit marker
+// with both sizes. Content within the bound is returned unchanged.
+func TruncateModelToolResult(content string) string {
+	if len(content) <= MaxModelToolResultChars {
+		return content
+	}
+
+	// Cut on a rune boundary so multi-byte characters at the limit are
+	// never split into invalid UTF-8, which would poison every later
+	// provider request that replays this tool result.
+	cut := cutRuneBoundary(content, MaxModelToolResultChars)
+	if cut == 0 {
+		cut = 1
+	}
+
+	return fmt.Sprintf("%s\n\n[...output truncated at %d bytes, %d bytes total. Re-run with narrower output (e.g. filters, -run, grep) if you need the rest.]",
+		content[:cut], cut, len(content))
+}
+
 // maxPersistedArgStringBytes caps any single string value inside
 // persisted tool-call arguments. 8 KiB keeps commands, paths, and
 // snippets intact while bounding the per-call record alongside the
@@ -330,7 +358,12 @@ func (s *Session) ProviderMessages() []providers.Message {
 		}
 		content := msg.Content
 		if msg.Role == string(providers.ToolRole) {
-			content = FenceToolResult(msg.Name, content)
+			// Replay the model-visible window, not the full persisted
+			// record: the originating run truncated this result to
+			// MaxModelToolResultChars before the model ever saw it, and
+			// resume must not silently widen that window (up to 48 KiB
+			// stays on disk for diagnostics and the transcript).
+			content = FenceToolResult(msg.Name, TruncateModelToolResult(content))
 		}
 		messages = append(messages, providers.Message{
 			Role:       providers.Role(msg.Role),
