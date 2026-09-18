@@ -129,6 +129,18 @@ powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -Version v1.0.0
 
 Run the installation command again.
 
+If the requested version is already installed, the installer reports it and exits without downloading anything. To reinstall the same version anyway:
+
+```bash
+sh scripts/install.sh --force
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -Force
+```
+
+(`FORCEFIELD_FORCE=1` works too.) Downgrading to an older version is refused unless forced.
+
 The installer replaces the existing binary in place. It does not modify `~/.forcefield` or project sessions.
 
 ### Uninstalling
@@ -158,6 +170,16 @@ irm https://raw.githubusercontent.com/fabledruns/forcefield/main/scripts/uninsta
 ```
 
 Uninstallation removes the Forcefield binary only. Configuration, sessions, memory, and other files under `~/.forcefield` are left untouched.
+
+On Windows, pass `-RemovePath` to also remove the installation directory from your user `PATH` (exact entry only; system `PATH` and profiles are never modified):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/uninstall.ps1 -RemovePath
+```
+
+### Non-interactive use
+
+The installers never prompt. When output is piped or `NO_COLOR` is set, output stays plain and log-friendly (no colors, no Unicode symbols). `FORCEFIELD_ASCII=1` forces ASCII output on a terminal.
 
 ### Supported platforms
 
