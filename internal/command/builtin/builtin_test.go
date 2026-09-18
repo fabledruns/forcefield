@@ -50,7 +50,7 @@ type fakeContext struct {
 	planErr    error
 	buildCalls int
 	buildErr   error
-	agentList []command.AgentSummary
+	agentList  []command.AgentSummary
 
 	effort   string
 	thinking *providers.ThinkingConfig
