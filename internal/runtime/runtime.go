@@ -14,6 +14,7 @@ import (
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
 	"forcefield/internal/memory"
+	"forcefield/internal/perfmark"
 	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
 	"forcefield/internal/redact"
@@ -148,8 +149,23 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load skill store: %w", err)
 	}
+	perfmark.Event("stage-skills")
 
-	projectMemory, err := memory.CurrentProjectStore(forcefieldHome)
+	// Resolve the project root once for both the memory store and the
+	// workspace policy below: each used to shell out to `git rev-parse`
+	// independently (~60-80ms per spawn on Windows) for the same cwd.
+	// Error strings mirror memory.CurrentProjectStore wrapped by the
+	// historical "resolve project memory store" context.
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("resolve project memory store: resolve working directory: %w", err)
+	}
+	sharedRoot, rootErr := memory.ProjectRoot(cwd)
+	var projectMemory *memory.Store
+	if rootErr != nil {
+		return nil, fmt.Errorf("resolve project memory store: %w", rootErr)
+	}
+	projectMemory, err = memory.ProjectStore(forcefieldHome, sharedRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project memory store: %w", err)
 	}
@@ -158,13 +174,15 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 		return nil, fmt.Errorf("load project memory: %w", err)
 	}
 	memoryText := memory.FormatForPrompt(memoryEntries)
+	perfmark.Event("stage-memory")
 
 	provider, err := newProvider(cfg)
 	if err != nil {
 		return nil, err
 	}
+	perfmark.Event("stage-provider")
 
-	policy, err := newPolicy(cfg)
+	policy, err := newPolicyWithRoot(cfg, cwd, sharedRoot, rootErr)
 	if err != nil {
 		return nil, err
 	}
@@ -191,6 +209,7 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 	if err := fullManager.Register(newAddProjectMemoryTool(projectMemory)); err != nil {
 		return nil, fmt.Errorf("register add_project_memory tool: %w", err)
 	}
+	perfmark.Event("stage-tools")
 
 	// Build specialised agent registry with config overrides.
 	registry := agent.DefaultRegistry()
@@ -218,7 +237,8 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 
 	asker := permissions.NewStdinAsker()
 
-	cwd, _ := os.Getwd()
+	// cwd was resolved (with error) at the top for the single git
+	// lookup; reuse it here as the permissive-mode anchor.
 	r := &Runtime{
 		cfg:                 cfg,
 		provider:            provider,
@@ -253,6 +273,7 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 	if def.Model != "" && def.Model != r.cfg.Model.Name {
 		_ = r.SetModel(def.Model)
 	}
+	perfmark.Event("stage-agents")
 	return r, nil
 }
 
@@ -1392,6 +1413,48 @@ func (r *Runtime) applyReasoningTo(provider providers.ModelProvider, provName, m
 	if p, ok := provider.(providers.ReasoningAware); ok {
 		p.SetReasoning(effective)
 	}
+}
+
+// newPolicyWithRoot builds the sandbox policy for an already-resolved
+// project root, so callers that computed the root once (one git
+// invocation) do not pay for a second lookup. Behavior mirrors
+// ResolveWorkspace exactly: an explicit workspace.root wins, otherwise
+// the shared root, falling back to cwd when its resolution failed.
+func newPolicyWithRoot(cfg *config.Config, cwd, sharedRoot string, rootErr error) (sandbox.Policy, error) {
+	mode, err := sandbox.ParseMode(cfg.Sandbox.Mode)
+	if err != nil {
+		return sandbox.Policy{}, fmt.Errorf("invalid sandbox.mode: %w", err)
+	}
+	network, err := sandbox.ParseNetwork(cfg.Sandbox.WSL.Network)
+	if err != nil {
+		return sandbox.Policy{}, fmt.Errorf("invalid sandbox.wsl.network: %w", err)
+	}
+	root, err := resolveWorkspaceRoot(cfg, cwd, sharedRoot, rootErr)
+	if err != nil {
+		return sandbox.Policy{}, err
+	}
+	return sandbox.Policy{
+		Mode:      mode,
+		Workspace: root,
+		Strict:    cfg.Workspace.Mode == config.WorkspaceStrict,
+		Distro:    cfg.Sandbox.WSL.Distribution,
+		Network:   network,
+	}, nil
+}
+
+// resolveWorkspaceRoot mirrors ResolveWorkspace for a pre-resolved root:
+// explicit workspace.root wins (absolute, or relative to the startup
+// directory, and it must exist); otherwise the shared root, or cwd when
+// resolving it failed (ResolveWorkspace swallows that failure the same
+// way — the fallback chain never errors on missing git).
+func resolveWorkspaceRoot(cfg *config.Config, cwd, sharedRoot string, rootErr error) (string, error) {
+	if cfg != nil && strings.TrimSpace(cfg.Workspace.Root) != "" {
+		return resolveExplicitRoot(cfg.Workspace.Root)
+	}
+	if rootErr != nil {
+		return cwd, nil
+	}
+	return sharedRoot, nil
 }
 
 // newPolicy builds the sandbox policy for the resolved workspace root.

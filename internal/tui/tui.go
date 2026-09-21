@@ -4,6 +4,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"forcefield/internal/config"
+	"forcefield/internal/perfmark"
 	"forcefield/internal/session"
 )
 
@@ -12,12 +13,14 @@ func Start(sess *session.Session) error {
 	if err != nil {
 		return err
 	}
+	perfmark.Event("config-loaded")
 
 	asker := &tuiAsker{}
-	m, err := newModelWithConfig(cfg, sess, asker)
-	if err != nil {
-		return err
-	}
+	// TUI-first: render the first frame from the minimal startup model
+	// immediately; the runtime (skills, memory, provider, tools, agents,
+	// session alignment) initializes in the background via Init and
+	// installs itself through runtimeReadyMsg.
+	m := newStartingModel(cfg, sess, asker)
 
 	// notify routes background results (model discovery) back into the
 	// running event loop. The program variable is captured by reference

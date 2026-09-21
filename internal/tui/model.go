@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -15,12 +16,19 @@ import (
 
 	"forcefield/internal/command"
 	"forcefield/internal/config"
+	"forcefield/internal/perfmark"
 	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
 	"forcefield/internal/recovery"
 	"forcefield/internal/runtime"
 	"forcefield/internal/session"
 )
+
+// firstFrameMarked fires the first-frame startup marker exactly once per
+// process. View has a value receiver, so per-model state cannot persist
+// across calls; process-global once semantics are exactly right because
+// a benchmark measures one TUI run per process.
+var firstFrameMarked atomic.Bool
 
 // minTranscriptHeight is the smallest the scrollable transcript area is
 // ever allowed to shrink to, so a very short terminal window still shows
@@ -174,6 +182,18 @@ type model struct {
 	quitting      bool
 	ready         bool // true once the first WindowSizeMsg has arrived
 
+	// startupPhase tracks background runtime initialization (see
+	// startup.go): the first frame renders while starting, and input
+	// needing the runtime is held until ready or failed.
+	startupPhase startupPhase
+	startupErr   error
+	// initCfg/initSess/initAsker/initBuilder carry the background init
+	// inputs; installRuntime clears them once the runtime lands.
+	initCfg     *config.Config
+	initSess    *session.Session
+	initAsker   permissions.Asker
+	initBuilder runtimeBuilder
+
 	// following is true while the viewport should stick to the bottom of
 	// the transcript as new output streams in. Scrolling up pauses the
 	// auto-follow so older output stays put while reading; scrolling back
@@ -314,42 +334,17 @@ func newModel(cfg *config.Config, sess *session.Session, asker permissions.Asker
 }
 
 // newModelWithConfig builds the initial chat model reusing the already-
-// loaded Config instead of loading it a second time. This eliminates the
-// duplicate config.Load between tui.Start and runtime.New before the first
-// frame. runtime.New is kept for the non-TUI ff run path.
+// loaded Config instead of loading it a second time. It constructs the
+// runtime synchronously (used by tests and any caller that needs a ready
+// model immediately); the interactive path (tui.Start) uses
+// newStartingModel and installs the runtime in the background instead.
 func newModelWithConfig(cfg *config.Config, sess *session.Session, asker permissions.Asker) (model, error) {
-	input := newInput()
-
-	r, err := runtime.NewFromConfig(cfg)
+	m := newStartingModel(cfg, sess, asker)
+	rt, err := defaultRuntimeBuilder(cfg, sess)
 	if err != nil {
 		return model{}, fmt.Errorf("initialize runtime: %w", err)
 	}
-	r.SetPermissionAsker(asker)
-
-	// Align runtime's active agent with the session's persisted agent,
-	// healing turns stranded by an earlier quit/crash before the first
-	// replay so resuming can never send dangling tool calls. Shared with
-	// the headless resume driver (internal/recovery).
-	recovery.Heal(sess)
-	recovery.AlignAgent(r, sess)
-
-	entries := sessionEntries(sess)
-
-	return model{
-		agentName:    r.AgentDisplayName(),
-		providerName: r.CurrentProvider(),
-		modelName:    r.CurrentModel(),
-		input:        input,
-		viewport:     viewport.New(0, 0),
-		runtime:      r,
-		entries:      entries,
-		session:      sess,
-		registry:     newRegistry(),
-		activeTools:  make(map[string]int),
-		following:    true,
-		showActivity: true,
-		mouseEnabled: true,
-	}, nil
+	return m.installRuntime(runtimeReadyMsg{rt: rt}), nil
 }
 
 // sessionEntries converts a session's saved messages into the transcript
@@ -422,11 +417,11 @@ func sessionEntries(sess *session.Session) []chatEntry {
 	return entries
 }
 
-// Init satisfies tea.Model. There's nothing to load asynchronously at
-// startup — config was already loaded before the program started — so
-// this only starts the input cursor blinking.
+// Init satisfies tea.Model. The cursor blink starts immediately; runtime
+// construction runs as a second command so the first frame renders while
+// initialization continues in the background (see startup.go).
 func (m model) Init() tea.Cmd {
-	return textarea.Blink
+	return tea.Batch(textarea.Blink, m.initRuntimeCmd())
 }
 
 // Update satisfies tea.Model.
@@ -440,6 +435,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Startup marker: fires when this Update returns, i.e. after
+		// the key has been processed into state (async work, if any,
+		// may still follow). Registered only for key messages.
+		defer perfmark.Event("input-processed")
 		// Ctrl+C is run control while anything belonging to an agent turn is
 		// active, even if a permission modal currently owns keyboard focus.
 		// Once idle it falls through to the existing quit behavior below.
@@ -491,6 +490,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next := m
 		next.applyDiscoveredModels(msg)
 		return next, nil
+
+	case runtimeReadyMsg:
+		return m.installRuntime(msg), nil
 
 	case streamEventMsg:
 		if msg.gen != m.streamGen {
@@ -1067,6 +1069,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// a live session.
 			return m, nil
 		}
+		// While the runtime is still initializing (or failed), only the
+		// quit command goes through; everything else gets a notice
+		// instead of a stream that could never start.
+		if task := strings.TrimSpace(m.input.Value()); task != "" && m.startupPhase != startupReady && !isQuitCommand(task) {
+			m.status = startupBlocked(m.startupPhase, m.startupErr)
+			return m, nil
+		}
 		started, quit := m.acceptInput()
 		if quit {
 			return m, tea.Quit
@@ -1622,6 +1631,12 @@ func (m model) transcriptRegionAt(x, y int) (HitRegion, bool) {
 
 // View satisfies tea.Model.
 func (m model) View() string {
+	if firstFrameMarked.CompareAndSwap(false, true) {
+		perfmark.EventMem("first-frame")
+	}
+	if viewPhaseHook != nil {
+		viewPhaseHook(m.startupPhase)
+	}
 	if m.quitting {
 		return ""
 	}
