@@ -67,21 +67,10 @@ func (s *Stats) Tally(t runtime.EventType) {
 	}
 }
 
-// Classify maps a terminal runtime outcome to an exit code. It reuses
-// the existing provider classification (providers.IsTransient) — there
-// is no second retryability system. Precedence:
-//
-//	Done → OK (even with earlier denials; the run finished).
-//	Cancelled, or any context cancellation → NeedsHuman.
-//	Blocked/Error with zero autonomous progress (denied-only) → NeedsHuman.
-//	Blocked → Terminal.
-//	Error of transient class → Retryable.
-//	Anything else, including nil/unknown errors → Terminal (fail closed:
-//	never auto-restart what cannot be proven retryable).
-//
-// Quota/billing, auth, invalid requests, and protocol errors are never
-// transient per providers.IsTransient, so they land Terminal and can
-// never become automatic restart loops.
+// Classify maps a terminal runtime outcome to an exit code, reusing
+// providers.IsTransient (no second retryability system). See
+// docs/Recovery.md for precedence. Quota/billing, auth, invalid, and
+// protocol errors are never transient.
 func Classify(eventType runtime.EventType, err error, stats Stats) int {
 	if eventType == runtime.EventDone {
 		return ExitOK

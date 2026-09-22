@@ -29,14 +29,8 @@ type Model struct {
 	APIKey   string `yaml:"-"`
 }
 
-// ProviderConfig is one entry under "providers:" in config.yaml. It
-// describes how to reach one provider service; values left empty fall
-// back to that service's built-in defaults.
-//
-// Secrets are never stored here: APIKeyEnv names an environment variable
-// (or .env file key) holding the actual key, and the resolved value lives
-// only in memory. There is deliberately no literal api_key field, so a
-// saved config.yaml can never contain credentials.
+// ProviderConfig is one entry under "providers:". Empty fields fall back to
+// service defaults. Secrets never live here (see docs/Config.md).
 type ProviderConfig struct {
 	// Type selects the wire protocol or a known service preset:
 	// "ollama", "openai-compatible", "anthropic", "gemini", or a service
@@ -98,13 +92,7 @@ type Permissions struct {
 	Tools   map[string]string `yaml:"tools"`
 }
 
-// Sandbox configures the execution boundary for shell commands.
-//
-// Mode "" means "native": historical behavior with NO isolation, kept so
-// existing users are unaffected until they opt in. "wsl" executes shell
-// commands inside a WSL distribution under a restricted policy; see
-// internal/sandbox and docs/Sandbox.md for exactly what is enforced and
-// what is not.
+// Sandbox configures the shell execution boundary. See docs/Sandbox.md.
 type Sandbox struct {
 	Mode string     `yaml:"mode"`
 	WSL  SandboxWSL `yaml:"wsl"`
@@ -121,19 +109,9 @@ type SandboxWSL struct {
 	Network string `yaml:"network"`
 }
 
-// AgentConfig overrides a single built-in agent. Scalar fields: only
-// non-empty values replace the built-in. List fields (Tools, Skills,
-// Constraints): nil (field omitted) keeps the built-in; non-nil replaces
-// (verified: yaml.v3 decodes an explicit `skills: []` as non-nil, so it
-// means "no skills"). Unknown agent names are rejected at validation.
-// Unknown skill IDs are NOT rejected here (the skill store is user-local
-// and unavailable to this package); the runtime warns and omits them.
-//
-// Runtime settings (MaxIterations and friends) scope the shared run
-// bounds to one agent: positive values win over the global agent.*
-// block, zero keeps it. ContextSummary is a pointer so "unset" stays
-// distinct from an explicit false. Permissions are deliberately absent:
-// the permission system stays global and no profile may widen it.
+// AgentConfig overrides one built-in agent (non-empty scalars replace;
+// nil lists keep, explicit lists replace). Permissions stay global.
+// See docs/Config.md and docs/Agents.md.
 type AgentConfig struct {
 	Description  string   `yaml:"description,omitempty"`
 	SystemPrompt string   `yaml:"system_prompt,omitempty"`
@@ -162,19 +140,8 @@ type ToolLimits struct {
 	TimeoutSeconds float64 `yaml:"timeout_seconds,omitempty"`
 }
 
-// Workspace declares the project root all filesystem operations resolve
-// against, and how strictly it is enforced.
-//
-// An empty root resolves at startup to the Git top-level when available,
-// otherwise the current working directory. An explicit root may be
-// absolute or relative to the startup directory; it must exist.
-//
-// Mode "" and "permissive" both mean permissive: filesystem tools stay
-// confined to the root while the shell keeps historical unconfined
-// behavior. "strict" additionally pins the shell working directory to
-// the root. Filesystem confinement runs through the shared boundary
-// pipeline in every mode. Strict is opt-in for shell pinning; old
-// configs without this block keep working unchanged.
+// Workspace declares the project root and strictness. See docs/Sandbox.md;
+// empty root resolves to Git top-level else cwd, empty mode is permissive.
 type Workspace struct {
 	Root string `yaml:"root,omitempty"`
 	Mode string `yaml:"mode,omitempty"`
@@ -354,18 +321,10 @@ func Load() (*Config, error) {
 // per-provider keys are resolved through ResolveProvider instead.
 const apiKeyName = "NVIDIA_API_KEY"
 
-// ResolveEnvValue returns the value of a named environment variable,
-// falling back to .env files: .env in the current project directory
-// first, then ~/.forcefield/.env.
-//
-// A value found in .env is returned to the caller instead of being written
-// back into the process environment on purpose: everything in the process
-// environment is inherited by every command the shell tool runs, so
-// importing .env contents into os.Environ would hand secrets to every
-// subprocess.
-//
-// A .env file that contains malformed non-comment lines is rejected with
-// a named-file error rather than being partially applied.
+// ResolveEnvValue returns a credential value (env, then project .env, then
+// global .env). Found values stay in-memory only, never enter os.Environ,
+// so shell children cannot inherit them. Malformed .env fails closed.
+// See docs/Config.md.
 func ResolveEnvValue(name string) (value, source string, err error) {
 	if v := os.Getenv(name); v != "" {
 		v = strings.TrimSpace(v)
@@ -436,14 +395,8 @@ func parseDotEnv(body string) (map[string]string, error) {
 	return values, nil
 }
 
-// Save writes the config back to config.yaml. APIKey is never
-// round-tripped (it's tagged yaml:"-" and always sourced from the
-// environment), so it's never written to disk.
-//
-// The write is atomic (temp file + rename + flush), so a crash or kill
-// during a model/provider/permission switch can never leave a truncated
-// config.yaml behind; readers see either the old or the new complete
-// file.
+// Save writes config.yaml atomically (API keys never persisted).
+// See docs/Config.md.
 func (c *Config) Save() error {
 	path, err := Path()
 	if err != nil {

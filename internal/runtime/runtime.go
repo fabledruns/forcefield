@@ -1058,12 +1058,8 @@ func (r *Runtime) LoadSkill(id string) (string, error) {
 	return store.Load(id)
 }
 
-// SetModel switches the active model, keeping the current provider and
-// endpoint, and takes effect starting with the next request. The change is
-// in-memory only; it does not write config.yaml. This matches AGENTS.md's
-// contract that runtime switching is temporary unless explicitly persisted,
-// avoids silently stripping user comments via yaml.Marshal, and keeps the
-// TUI picker fast and non-destructive. Call SaveConfig to persist.
+// SetModel switches the active model for the next request (in-memory only
+// until SaveConfig). See docs/Runtime.md.
 func (r *Runtime) SetModel(name string) error {
 	if r == nil {
 		return fmt.Errorf("runtime not available")
@@ -1097,12 +1093,9 @@ func (r *Runtime) SetModel(name string) error {
 	return nil
 }
 
-// SetProvider switches the active provider, keeping the current model
-// name, and takes effect starting with the next request. If the provider
-// has a known default endpoint (from its configuration entry or the
-// built-in catalog), it is adopted too, so switching providers never
-// leaves the endpoint pointed at the previous one. The change is in-memory
-// only; it does not write config.yaml. See SetModel for rationale.
+// SetProvider switches the active provider for the next request (in-memory
+// only until SaveConfig), adopting its default endpoint. See
+// docs/Runtime.md.
 func (r *Runtime) SetProvider(name string) error {
 	if r == nil {
 		return fmt.Errorf("runtime not available")
@@ -1131,12 +1124,8 @@ func (r *Runtime) SetProvider(name string) error {
 	cfgCopy.Model.Endpoint = resolved.BaseURL
 	provider, err := providers.DefaultFactories().Create(resolved.Spec(cfgCopy.Model.Name))
 	if err != nil {
-		// Multi-protocol routers reject models outside their catalog, but
-		// the current model name still belongs to the previous provider
-		// at this point. Fall back to an unconfigured router so the
-		// switch succeeds and the model picker can open; any turn before
-		// a model is picked fails locally with guidance instead of
-		// sending a request down the wrong protocol.
+		// Unknown models fall back to an unconfigured router so the switch
+		// succeeds and the picker can open (see docs/Runtime.md).
 		if !errors.Is(err, providers.ErrUnknownModel) {
 			return fmt.Errorf("create provider %q: %w", name, err)
 		}
@@ -1498,16 +1487,8 @@ func newExecutor(cfg *config.Config) (sandbox.Executor, error) {
 	return executor, nil
 }
 
-// ResolveWorkspace resolves the effective workspace root for cfg. An
-// explicit workspace.root wins (absolute, or relative to the startup
-// directory, and it must exist). Otherwise the root is the Git
-// top-level when the process runs inside a repository, else the current
-// working directory. This is the single resolution point: the runtime
-// calls it once at construction and both the tool policy and the shell
-// executor inherit the result, so no second resolver can disagree.
-//
-// An explicit root that does not exist is an error (fail fast with a
-// named path); the fallback chain itself never errors on missing git.
+// ResolveWorkspace resolves the effective root (explicit root, else Git
+// top-level, else cwd). Single resolution point; see docs/Runtime.md.
 func ResolveWorkspace(cfg *config.Config) (string, error) {
 	if cfg != nil && strings.TrimSpace(cfg.Workspace.Root) != "" {
 		return resolveExplicitRoot(cfg.Workspace.Root)
@@ -1856,14 +1837,8 @@ func (r *Runtime) RunContext(ctx context.Context, messages []providers.Message) 
 // identical model-visible window as the originating run.
 const maxToolResultChars = session.MaxModelToolResultChars
 
-// maxTurnBytes caps how much content one model turn may stream before
-// terminating (text, thinking, and tool-call arguments combined). Model
-// output is bounded in practice by max-output-tokens, but a broken or
-// hostile endpoint could stream forever: without this, response.Content
-// would grow without bound and OOM the harness mid-run. 8 MiB is orders
-// of magnitude above any legitimate turn. Tripping it fails the turn
-// (non-transient: an endpoint that did this once is not proven safe to
-// immediately retry); the run surfaces EventError and stops.
+// maxTurnBytes caps one model turn (8 MiB); tripping it fails
+// non-transient. See docs/Runtime.md.
 const maxTurnBytes = 8 << 20
 
 // streamEventBytes estimates one stream event's contribution to the
@@ -1916,14 +1891,8 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 		cleanup.Wait()
 		r.emitCancelled(emit, state, err)
 	}
-	// A panic in the orchestration (provider, emit callback, history
-	// bookkeeping) must surface as a run error — never crash the whole
-	// process — with best-effort cleanup. Worker-goroutine panics are
-	// handled in the scheduler; this covers the run goroutine itself.
-	// The cleanup wait is bounded: with no background jobs it returns
-	// instantly, but live jobs owned by a live context would wedge
-	// error reporting if waited on forever (their watchers still
-	// terminate them on caller cancellation or their own deadline).
+	// Orchestration panics surface as run errors with bounded cleanup
+	// (see docs/Runtime.md).
 	defer func() {
 		if p := recover(); p != nil {
 			waitDone := make(chan struct{})

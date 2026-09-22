@@ -21,14 +21,9 @@ func newNativeExecutor(p Policy) (*nativeExecutor, error) {
 	return &nativeExecutor{policy: p}, nil
 }
 
-// Prepare builds the same command the shell tool historically built:
-//   - Unix:   bash -lc <command>, cmd.Dir set, os.Environ()+extras.
-//   - Windows: the WSL relay used purely for Bash availability, exactly
-//     as before (see wsl_windows.go in this package for why that relay
-//     is not a security boundary).
-//
-// Directory handling is existence-only, matching the old validWorkingDir
-// gate byte for byte: native mode has no workspace scope to enforce.
+// Prepare builds the historical shell command (Unix bash -lc; Windows WSL
+// relay for Bash availability, not isolation). Strict cages cwd via the
+// shared boundary pipeline; permissive keeps existence-only checks.
 func (n *nativeExecutor) Prepare(ctx context.Context, req Request) (*Prepared, error) {
 	if err := n.probePolicy(); err != nil {
 		return nil, err
@@ -63,12 +58,8 @@ func (n *nativeExecutor) probePolicy() error {
 	return nil
 }
 
-// Describe reports native honestly: nothing is confined or enforced for
-// shell command text in any mode. Strict pins the working directory and
-// confines filesystem tools to the workspace (same invariant as wsl), but
-// shell command text (e.g. cat /etc/passwd) remains unconfined by design —
-// see Enforcement.FilesystemConfined ("For shell, NO BACKEND SETS THIS
-// TRUE"). The full host environment reaches the command.
+// Describe reports native honestly: no shell-text confinement in any mode.
+// See docs/Sandbox.md and Enforcement.FilesystemConfined.
 func (n *nativeExecutor) Describe(context.Context) Enforcement {
 	if n.policy.Confines() {
 		return Enforcement{

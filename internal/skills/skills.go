@@ -1,16 +1,6 @@
-// Package skills implements Forcefield's on-demand skill system.
-//
-// Skills are global, filesystem-first Markdown files under
-// ~/.forcefield/skills/. They are indexed once at startup into an
-// in-memory Store. The model receives only a lightweight catalog (id,
-// name, description) and can load a skill's full Markdown body on
-// demand via the load_skill tool.
-//
-// Skill metadata is optional. YAML frontmatter is preferred, but plain
-// Markdown files are fully supported. Directory skills are also
-// supported: a subdirectory containing SKILL.md (e.g.
-// ~/.forcefield/skills/git-review/SKILL.md) is indexed as one skill
-// whose id defaults to the directory name.
+// Package skills implements on-demand Markdown skills (global store, startup
+// index, catalog-only prompting, full bodies via load_skill).
+// See docs/Skills.md.
 package skills
 
 import (
@@ -52,15 +42,8 @@ type Store struct {
 	byID    map[string]Skill
 }
 
-// New builds a Store by scanning the global skills directory once.
-// Skills are global-only (see skills.Dir). Supported layouts:
-//
-//   - File skill:   ~/.forcefield/skills/<name>.md
-//   - Directory:    ~/.forcefield/skills/<name>/SKILL.md
-//
-// Directory-based skills allow supporting files alongside the main
-// instructions; only SKILL.md is indexed and supporting files are never
-// executed automatically.
+// New builds a Store by scanning the global skills directory once
+// (file <name>.md or directory <name>/SKILL.md). See docs/Skills.md.
 func New(forcefieldHome string) (*Store, error) {
 	dir, err := Dir(forcefieldHome)
 	if err != nil {

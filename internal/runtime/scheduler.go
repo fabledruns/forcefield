@@ -406,12 +406,8 @@ func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCa
 	return result
 }
 
-// isSensitiveCall reports whether a tool call targets a sensitive file
-// that should require explicit permission even if the tool is otherwise
-// allowed. This is a defense-in-depth check that does not rely on the
-// model to recognize secrets. Both the raw path argument and the
-// canonical pre-flight path (when available) are matched, so a
-// suspicious name cannot hide behind an equivalent spelling.
+// isSensitiveCall reports whether a call targets a sensitive file and must
+// force Ask. Matches raw + canonical paths. See docs/Sandbox.md.
 func isSensitiveCall(call providers.ToolCall, resolvedPath string) bool {
 	candidates := make([]string, 0, 3)
 	switch call.Name {
@@ -458,11 +454,8 @@ func (s *scheduler) setSessionDecision(tool string, d permissions.Decision) {
 	s.sessionAllow[tool] = d
 }
 
-// sessionAllowKey returns the session-scoped Always-allow lookup key for a
-// call. Command-oriented tools (shell, shell_job) scope by normalized
-// command text, working directory, and environment; all other tools have
-// no meaningful operation identifier and preserve the historical
-// per-tool-name behavior.
+// sessionAllowKey returns the session Always-allow key: command-scoped for
+// shell/shell_job (command + cwd + env), per-tool-name otherwise.
 func sessionAllowKey(call providers.ToolCall) string {
 	switch call.Name {
 	case "shell", "shell_job":
@@ -547,12 +540,8 @@ func emptyEnvHash() string {
 	return strconv.FormatUint(h.Sum64(), 16)
 }
 
-// checkBoundary dry-runs the workspace boundary decision for call when
-// its tool exposes one (tools.BoundaryChecker). It returns the canonical
-// path the call would act on, or an error when the call would escape the
-// workspace. Tools without a boundary story (shell, pwd, memory tools)
-// and unknown tool names have nothing to check and return "", nil,
-// leaving them to their existing paths.
+// checkBoundary dry-runs the workspace boundary for tools exposing one.
+// See docs/Runtime.md.
 func checkBoundary(manager *tools.Manager, call providers.ToolCall) (string, error) {
 	if manager == nil {
 		return "", nil
@@ -568,15 +557,9 @@ func checkBoundary(manager *tools.Manager, call providers.ToolCall) (string, err
 	return bc.CheckBoundary(call.Arguments)
 }
 
-// checkPermissionWithManager resolves a tool call's permission before
-// execution against an explicit manager snapshot. See RunWithManager for
-// why the snapshot matters.
-//
-// The workspace boundary pre-flight runs first, before any stored
-// decision or prompt: an outside-workspace call is denied without
-// prompting, so neither a one-shot approval nor a session-scoped Always
-// allow can authorize it. The boundary is fail-closed and the tool's
-// own Execute re-checks it before touching the filesystem.
+// checkPermissionWithManager resolves permission against a manager snapshot.
+// Boundary pre-flight runs first and is fail-closed; Always allow cannot
+// authorize escapes. See docs/Runtime.md.
 func (s *scheduler) checkPermissionWithManager(ctx context.Context, call providers.ToolCall, emit func(Event) bool, manager *tools.Manager) (denied bool, result *ToolResult) {
 	if s.permissions == nil {
 		return false, nil // no permission manager configured: fail open
@@ -669,12 +652,9 @@ type executionEnforcementSource interface {
 	ExecutionEnforcement(ctx context.Context) (sandbox.Enforcement, bool)
 }
 
-// resolveAskWithManager prompts for a decision against an explicit manager
-// snapshot. It handles "always" as session-scoped and serializes concurrent
-// asks so the single TUI modal is never overwritten. resolvedPath carries
-// the boundary pre-flight's canonical path into the prompt so the approval
-// surface can display the real target; it is empty for tools with no
-// boundary story.
+// resolveAskWithManager prompts for a decision (session-scoped "always",
+// serialized). resolvedPath is the canonical pre-flight path for display.
+// Headless with no asker fails closed.
 func (s *scheduler) resolveAskWithManager(ctx context.Context, call providers.ToolCall, manager *tools.Manager, resolvedPath string) (permissions.Decision, error) {
 	asker := s.getAsker()
 	if asker == nil {

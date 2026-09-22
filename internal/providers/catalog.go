@@ -5,15 +5,9 @@ import (
 	"strings"
 )
 
-// Preset describes one known provider service: how it is displayed, which
-// wire protocol serves it, where it lives by default, and how it
-// authenticates. Presets are defaults only - every field they provide can
-// be overridden per configured provider in config.yaml.
-//
-// Services whose APIs genuinely speak the OpenAI Chat Completions protocol
-// share the "openai-compatible" transport; they get their own preset so
-// users write `type: openai` rather than repeating URLs and auth details,
-// not because they have separate code paths.
+// Preset describes one known service (display, protocol, endpoint, auth).
+// Presets are defaults; config.yaml may override any field. See
+// docs/Providers.md.
 type Preset struct {
 	ID          string
 	Name        string

@@ -138,6 +138,46 @@ are rejected at load.
 3. Keep the tool focused on one action.
 4. Return soft errors in `Result` when the model should continue and adapt.
 
+## Shell execution notes
+
+- The shell tool never touches `os.Stdout`/`os.Stderr`/`os.Stdin`;
+  everything is piped, sanitized, and returned as `Result`/stream
+  chunks for the TUI to render.
+- Commands needing a real TTY (editors, pagers, remote shells, REPLs)
+  are refused up front: stdin is `/dev/null` and stdout/stderr are
+  pipes, so they would only exit confusingly or emit fullscreen
+  escapes that corrupt the renderer.
+- Interactive-command detection is a deliberately simple heuristic
+  (split on shell operators, skip `VAR=` assignments and wrappers,
+  compare the first word), not a full shell parser.
+- Output sanitization strips ANSI/control sequences before events
+  reach the TUI; the child is isolated from the real terminal (stdin
+  EOF instead of stealing Bubble Tea keystrokes).
+- `shell_job` detaches lifetime from the starting tool-call context;
+  the absolute deadline governs it, not the caller's cancellation.
+- In WSL mode, obvious host-filesystem patterns (`/mnt/...`,
+  drive/UNC/`..`/interop spellings) are refused lexically. This is a
+  mitigation, not a boundary; see [Sandbox](Sandbox.md).
+- Process construction lives entirely in the sandbox executor; the
+  tool owns only validation, plumbing, sanitization, and teardown.
+
+## Filesystem and search notes
+
+- `BoundaryChecker` dry-runs the workspace decision without writes;
+  the scheduler denies escapes before prompting, and `Execute`
+  re-checks.
+- `search_files`/`find_files` share one root resolver, so both cage
+  to the workspace identically; traversal skips excluded, sensitive,
+  and binary files with match/output caps.
+- `search_code` spawns host `rg` directly (never through a shell),
+  with `.gitignore` support and built-in fallback when `rg` is absent.
+- `git` is read-only (fixed allowlist: status/diff/log/changed) with
+  bounded output that drains to completion so processes are reaped.
+- `secret_scan` is defensive and local-only: it reports redacted
+  candidates and never transmits, validates, or uses findings.
+- `ValidateArgs` runs before permission checks and rejects unknown
+  fields/types strictly, so prompts cannot hide intent.
+
 ## Design Notes
 
 - Tools are local. They run on the machine that runs Forcefield.

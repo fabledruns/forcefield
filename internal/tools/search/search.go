@@ -1,13 +1,5 @@
-// Package search provides the search_files tool: bounded literal/regex
-// content search under a directory.
-//
-// Security model mirrors read_file/list_files: the search root is always
-// caged to the workspace via sandbox.ResolveWithinWorkspace. On top of
-// that (because a recursive walker is a stronger primitive than a
-// single-file read), every visited file is symlink-resolved and required
-// to stay within the resolved root, sensitive files (see
-// filesystem.IsSensitivePath) are skipped, and the .git subtree is
-// skipped. Output, scope, and per-file size are all bounded.
+// Package search provides the search_files tool (bounded, workspace-caged;
+// skips sensitive/binary, bounded output). See docs/Tools.md.
 package search
 
 import (

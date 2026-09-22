@@ -1,35 +1,7 @@
 // Package sandbox defines Forcefield's execution boundary for shell
-// commands: an explicit policy describing what a command may do, and
-// executors that enforce (or honestly decline to enforce) that policy.
-//
-// The architectural rule is: tools request execution, executors enforce
-// policy, and the UI only displays what an executor reports about itself.
-// Nothing outside this package decides how a command reaches the OS.
-//
-// Two modes exist:
-//
-//	native - exactly the historical behavior: Bash on the host (Unix) or
-//	         the WSL relay used for Bash availability (Windows), with the
-//	         full host environment forwarded and NO isolation of any kind.
-//	wsl    - commands run inside a WSL distribution under an explicitly
-//	         restricted invocation: pinned working directory, no host
-//	         environment forwarding, and best-effort network isolation via
-//	         an in-distribution network namespace. See the package
-//	     documentation in wsl_windows.go for precisely what is and is
-//	         NOT isolated; the short version is that WSL alone does not
-//	         confine filesystems, and this package refuses to pretend it
-//	         does.
-//
-// Process-lifecycle note (Windows): every shell command here runs as a
-// Linux process inside the distribution, reached through a wsl.exe
-// relay. Killing the relay (taskkill, job objects — see
-// internal/process) stops the Windows side promptly, but Linux-side
-// descendants outlive it by platform design: no Windows primitive, and
-// no host-side kill strategy of any kind, can reach inside the
-// distribution. Terminating those requires distro cooperation (PID
-// tracking plus re-kill), which this package deliberately does not do:
-// PID reuse across the shared, long-lived distro makes blind re-kill
-// unsafe, and the bookkeeping would dwarf the executor itself.
+// commands: tools request execution, executors enforce policy, and the UI
+// only displays what an executor reports. See docs/Sandbox.md for modes,
+// guarantees, and limits.
 package sandbox
 
 import (
@@ -105,12 +77,8 @@ type Policy struct {
 	// confined to for working-directory purposes. Empty means the
 	// process's current working directory, resolved per request.
 	Workspace string
-	// Strict, when true, pins the shell working directory to Workspace
-	// in every mode, including native. Filesystem tools are confined to
-	// the workspace regardless of this flag; it runs the exact same
-	// resolve + canonicalize + boundary-check pipeline the wsl path
-	// uses (see policy.go) for the shell cwd. Default false preserves
-	// historical unconfined shell behavior.
+	// Strict pins the shell working directory to Workspace (same pipeline
+	// as wsl); filesystem tools are confined regardless. See docs/Sandbox.md.
 	Strict bool
 	// Distro selects a WSL distribution (mode wsl only). Empty means the
 	// system default distribution.
@@ -237,12 +205,8 @@ var (
 	ErrUnsupported = errors.New("execution mode unsupported on this platform")
 )
 
-// Enforcement states what a backend actually enforces for a given
-// policy. Approval UIs and doctor derive their wording exclusively from
-// this struct so the interface can never claim more than the executor
-// delivers. Booleans are used over free-form strings wherever a fact is
-// binary, so rendering stays consistent; Notes carry the honest fine
-// print.
+// Enforcement states what a backend actually enforces. Approval UIs and
+// doctor render exclusively from here. See docs/Sandbox.md.
 type Enforcement struct {
 	Mode    Mode
 	Distro  string // wsl mode: selected distribution, "" = default
@@ -251,13 +215,8 @@ type Enforcement struct {
 	// CwdPinned: the working directory is validated to lie inside the
 	// workspace before every run.
 	CwdPinned bool
-	// FilesystemConfined: general filesystem access beyond the working
-	// directory is prevented. For shell, NO BACKEND SETS THIS TRUE - WSL
-	// distributions reach all Windows drives through /mnt automounts.
-	// Filesystem tools (read_file, write_file, list_files, search,
-	// git, secret_scan) are confined to the workspace unconditionally
-	// at the tool layer (see internal/tools/...); shell remains not
-	// confined.
+	// FilesystemConfined is always false for shell backends (WSL reaches
+	// /mnt mounts); filesystem tools are confined at the tool layer.
 	FilesystemConfined bool
 	// NetworkEnforced: the requested Network policy is actually
 	// implemented by this backend.

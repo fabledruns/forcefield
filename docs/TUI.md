@@ -148,6 +148,19 @@ The `/sessions` command loads saved sessions and opens a picker modal.
 - Each entry shows a short title from the first user message.
 - Selecting a session switches the active conversation in the TUI.
 
+## Concurrency and teardown
+
+- Permission asks run on the scheduler goroutine and block only that
+  tool call; the UI goroutine keeps rendering. At most one prompt is
+  pending, and it renders inline (transcript line + footer UI) rather
+  than taking over the screen.
+- Stopping a stream cancels the generation, retires it, and repairs
+  stranded `tool_calls` via the shared session recovery; teardown
+  paths (`/clear`, agent/session switch, quit) mark open turns
+  `cancelled`.
+- Transcript rendering is cached and incremental; viewport follow
+  preserves scrolled-up position during streaming.
+
 ## Design Notes
 
 - The TUI is thin. Business logic stays in runtime, command, session, and tools.

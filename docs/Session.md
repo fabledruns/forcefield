@@ -72,6 +72,13 @@ Lifecycle (all additive, all persisted through the existing atomic `Save`):
 
 Old session files without `turn` load with a nil envelope; recovery is a no-op and replay is unchanged.
 
+### `SupervisorState`
+
+Persisted half of one supervised-restart episode (`supervisor`,
+`omitempty`): `restarts` spent and `exhausted_at` latch time. Nil means
+no episode in flight. Replay and the transcript ignore it; writes are
+whole-file atomic with no locking (see [Recovery](Recovery.md)).
+
 ## Storage Location
 
 Sessions are stored under the current working directory:
@@ -121,6 +128,12 @@ func (s *Session) Save() error
 Writes the session to disk as indented JSON. The function creates the sessions directory if needed and updates `UpdatedAt`.
 
 The write is atomic: data goes to a temporary file in the same directory, is flushed, and is then renamed over the real file. If Forcefield is killed during a save, readers see either the previous complete file or the new complete file — never a truncated one.
+
+A failed save restores the in-memory session (messages, timestamps,
+compaction count, and deep copies of the Turn/Supervisor/Plan
+envelopes) so memory never diverges from the file. The final rename
+retries briefly (bounded, ~450ms) to tolerate Windows antivirus/indexer
+holds; on Unix the first attempt succeeds.
 
 ### `Load`
 

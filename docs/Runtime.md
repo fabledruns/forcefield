@@ -188,6 +188,58 @@ never deleted, so an active or sibling run cannot lose its trace; every
 retention failure is skipped silently. Retention only unlinks closed
 old files, so a crash can only leave fewer complete files behind.
 
+## Scheduling, permissions, and idempotency
+
+Each tool batch runs through one scheduler pass:
+
+- The workspace boundary pre-flight (`BoundaryChecker`) runs first.
+  Outside-workspace calls are denied without prompting; no one-shot
+  approval or session `Always allow` can authorize them. `Execute`
+  re-checks before touching the filesystem.
+- Session `Always deny` stays per-tool-name (fail-closed).
+  Session `Always allow` is operation-scoped: shell commands scope by
+  normalized command text, cwd, and environment hash; other tools keep
+  per-tool-name scope.
+- Sensitive paths (`IsSensitivePath`) always force `Ask`, even under
+  `Allow` or `Always allow`. Both raw and canonical paths are matched.
+- Without an interactive asker (headless automation), `Ask` fails
+  closed. Concurrent asks are serialized so the single TUI modal is
+  never overwritten; cancellation during a prompt reports
+  `EventToolCancelled`.
+- Duplicate tool-call IDs reuse the recorded result and never append a
+  second pair; batches execute with idempotency so replays converge.
+
+## Loop detection
+
+A per-run detector stops the agent when consecutive identical tool
+batches repeat without progress (default: 3 in a row). Tool IDs are
+excluded (providers mint fresh IDs per turn); requests normalize JSON
+key order plus shell whitespace/CRLF, results ignore timing/attempts
+and whitespace-only differences, and independent calls sort so order
+alone can neither evade nor trigger the guard. Any differing tool,
+argument, or result resets the count. It never changes scheduling or
+execution; it only stops asking the model for another turn.
+
+## Workspace resolution
+
+The workspace root resolves once at startup from one place
+(`ResolveWorkspace`): explicit `workspace.root` (absolute or
+startup-relative, must exist), else Git top-level, else cwd. Shell and
+filesystem tools share the same boundary pipeline (see
+[Sandbox](Sandbox.md)).
+
+## Model catalog and robustness
+
+- `ModelCatalog` ordering is active model, configured defaults,
+  cached discovery (sorted), then fallbacks, de-duplicated. Discovery
+  fetches are single-flight, bounded, and never fatal; see
+  [Providers](Providers.md).
+- Multi-protocol routers fall back to an unconfigured router entry
+  rather than failing construction; unknown models fail fast at use.
+- Orchestration panics surface as run errors with bounded cleanup
+  waits; a turn streaming past 8 MiB without terminating fails as a
+  non-retryable runaway-stream error.
+
 ## Design Notes
 
 - The runtime owns the multi-turn tool loop. Providers stream only one turn.

@@ -1,9 +1,5 @@
-// Package tui implements Forcefield's interactive terminal chat interface,
-// built on Bubble Tea. It is a presentation layer only: every message the
-// user sends is answered by calling the exact same runtime.Run that `ff
-// run` uses. This package adds no memory, tools, or behavior the runtime
-// doesn't already have, it just makes talking to it feel like a chat
-// session instead of one command per question.
+// Package tui implements the interactive terminal chat interface (presentation
+// only; same runtime.Run as `ff run`). See docs/TUI.md.
 package tui
 
 import (

@@ -29,12 +29,8 @@ func Heal(sess *session.Session) bool {
 	return changed
 }
 
-// RecordToolStart persists one decided tool call before it runs: the
-// assistant tool_calls batch (intent) and the running pending-call
-// record (execution state) commit in the same Save, so a crash from
-// here on is recoverable, never ambiguous. content is accompanying
-// assistant text for the batch (already trimmed by the caller); empty
-// is fine. A nil session is a no-op.
+// RecordToolStart persists intent + running state in one Save, so a crash
+// from here on is recoverable, never ambiguous. Nil session is a no-op.
 func RecordToolStart(sess *session.Session, call providers.ToolCall, content string) {
 	if sess == nil {
 		return
@@ -83,15 +79,9 @@ func RecordToolResult(sess *session.Session, eventType runtime.EventType, result
 	_ = sess.Save()
 }
 
-// NoteTerminal records how a turn ended and persists it, so the file
-// says what happened even if the process dies before the next save:
-//   - Done / Blocked: the tool batch finished cleanly; Blocked means
-//     the runtime stopped itself before another model turn.
-//   - Cancelled, or an error caused by context cancellation: cancelled.
-//   - Any other error (provider failure, timeout, crash-adjacent):
-//     interrupted.
-//
-// A nil session is a no-op.
+// NoteTerminal records how a turn ended (done/blocked/cancelled/
+// interrupted) so the file is accurate even if the process dies before
+// the next save. Nil session is a no-op.
 func NoteTerminal(sess *session.Session, eventType runtime.EventType, err error) {
 	if sess == nil {
 		return

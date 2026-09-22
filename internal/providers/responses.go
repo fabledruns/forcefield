@@ -13,28 +13,9 @@ import (
 	"forcefield/internal/tools"
 )
 
-// OpenAIResponses talks to any server implementing the OpenAI Responses
-// API: POST {baseURL}/responses for turns (SSE) and GET {baseURL}/models
-// for discovery. It is a generic protocol adapter, not tied to any single
-// service: OpenCode Zen and OpenCode Go serve part of their catalogs over
-// this protocol, and any future Responses-compatible endpoint works by
-// setting `type: openai-responses` with its own base URL.
-//
-// Protocol notes the implementation depends on:
-//   - Requests are stateless: store:false is always sent and the full
-//     conversation is included as input items on every turn. No
-//     previous_response_id chaining, so no server-side state accumulates.
-//   - Function tools use {"type":"function",...} definitions; results come
-//     back as function_call items whose call_id is echoed in
-//     function_call_output items. The API's call_id is preserved verbatim
-//     as the internal ToolCall ID so multi-turn replay links correctly.
-//   - Reasoning arrives as reasoning summary deltas when requested via
-//     reasoning:{effort,summary:auto}; raw reasoning text deltas are also
-//     surfaced as Thinking when present.
-//
-// Like the Chat Completions adapter, this code assumes nothing beyond the
-// documented protocol: missing usage, truncated streams, split argument
-// deltas, and error bodies in several shapes all normalize here.
+// OpenAIResponses is the generic Responses-protocol adapter (stateless turns,
+// function tools, reasoning summaries). Assumes only the documented protocol.
+// See docs/Providers.md.
 type OpenAIResponses struct {
 	spec   Spec
 	client *http.Client

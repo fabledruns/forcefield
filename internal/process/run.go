@@ -14,19 +14,10 @@ import (
 // is not.
 var terminateGracePeriod = 5 * time.Second
 
-// Run starts exe and supervises its whole process tree until it exits:
-// the child is isolated (Configure) and tracked (Track, released after
-// Wait), so cancellation reaches descendants and a violent death of
-// Forcefield itself still reaps the Windows-side tree via the job
-// backstop. On ctx cancellation it terminates the tree, waits up to the
-// grace period for a cooperative exit, then kills.
-//
-// It returns the child's exit code, or the raw wait error when the
-// child never produced one; callers map that to their own contract
-// (e.g. the supervisor's exit codes: a cancelled wait surfaces here as
-// a signaled/killed error with a done context, which the supervisor
-// reports as cancellation). Stdio wiring is the caller's and is never
-// altered here. A nil ctx behaves like a live one.
+// Run starts exe and supervises its whole process tree until it exits.
+// Cancellation terminates cooperatively first, then kills after a grace
+// period. See docs/Recovery.md. Stdio wiring is the caller's; nil ctx
+// behaves like a live one.
 func Run(ctx context.Context, exe string, args []string, stdout, stderr io.Writer, stdin io.Reader) (int, error) {
 	if ctx == nil {
 		ctx = context.Background()

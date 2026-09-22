@@ -33,19 +33,9 @@ const (
 // endpoint can never leave a picker stuck in its loading state.
 const discoveryTimeout = 20 * time.Second
 
-// ModelCatalog returns the models to present for providerID, without any
-// network I/O, in deterministic order:
-//
-//  1. the explicitly active model (when providerID is the active one) -
-//     a manually configured model stays selectable even if discovery
-//     never heard of it;
-//  2. the provider entry's own default model, if configured;
-//  3. freshly cached discovered models, sorted by ID;
-//  4. otherwise (nothing discovered yet): configured/catalog fallback
-//     models, sorted, so offline use still offers sensible choices.
-//
-// Entries are de-duplicated by ID preserving this priority. The state
-// tells the caller whether triggering DiscoverModels is worthwhile.
+// ModelCatalog returns models to present, without network I/O, in priority
+// order (active, default, cached, fallback), de-duplicated. See
+// docs/Runtime.md and docs/Providers.md.
 func (r *Runtime) ModelCatalog(providerID string) ([]providers.Model, ModelListState) {
 	if r == nil {
 		return nil, ModelsUnsupported
@@ -125,12 +115,8 @@ func priorityModelsWithCfg(cfg *config.Config, resolved config.ResolvedProvider)
 	return out
 }
 
-// DiscoverModels performs live discovery for providerID through the
-// shared discovery service: resolve the configured spec, build that
-// transport's adapter, call ListModels once (single-flight), cache the
-// result. The request is bounded so a hung endpoint cannot stall callers.
-// Failures are returned, never fatal: callers keep whatever ModelCatalog
-// last provided.
+// DiscoverModels performs one bounded, single-flight discovery fetch.
+// Failures are returned, never fatal. See docs/Providers.md.
 func (r *Runtime) DiscoverModels(ctx context.Context, providerID string) ([]providers.Model, error) {
 	if r == nil {
 		return nil, fmt.Errorf("runtime not available")

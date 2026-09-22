@@ -52,21 +52,11 @@ type SuperviseEvent struct {
 	Final bool
 }
 
-// Supervise runs child attempts until one parks: success (0), terminal
-// failure (2), or cancellation/denial (4) stop immediately, as does any
-// spawn/wait failure or unrecognized exit code (fail closed — an unknown
-// outcome is never auto-retried). Only ExitRetryable (3) restarts, while
-// the budget allows; an exhausted budget stops with the last code (3).
-//
-// Supervise is deliberately dumb and stateless: it owns the attempt
-// counter and nothing else. The session file owns run state, the child
-// owns execution, and the budget owns the restart policy. It never
-// touches sessions, providers, or tools. emit may be nil.
-//
-// Exit codes returned are the Phase 0 contract codes (0/2/3/4), except
-// 1 for supervisor-level failure (nil child func, spawn/wait error,
-// unknown child code, cancelled wait). Code 1 is never a run outcome
-// and must never be interpreted as retryable.
+// Supervise runs child attempts until one parks; only ExitRetryable (3)
+// restarts while the budget allows. Unknown outcomes fail closed. It is
+// stateless (attempt counter only) and never touches sessions or tools.
+// Returned codes are the docs/Recovery.md contract, except 1 for
+// supervisor-level failure (never retryable).
 func Supervise(ctx context.Context, budget Budget, child ChildFunc, sleep SleepFunc, emit func(SuperviseEvent)) int {
 	return SuperviseFrom(ctx, budget, 0, child, sleep, emit)
 }

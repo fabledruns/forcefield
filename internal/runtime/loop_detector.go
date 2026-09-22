@@ -14,19 +14,9 @@ import (
 // intervening difference is evidence the agent is stuck.
 const repeatedToolExecutionLimit = 3
 
-// loopDetector identifies repeated work by its normalized tool request and
-// effective result. Tool IDs are deliberately excluded: providers assign a
-// fresh ID for each model turn, so they are not evidence of a changed plan.
-//
-// Only consecutive identical batches accumulate toward the limit. A batch
-// that differs from the previous one — a different tool, different
-// arguments, or a different result — is evidence the agent is still
-// making progress, so accumulated counts reset. A genuinely stuck agent
-// replays the identical operation every turn and still trips the limit.
-//
-// The detector is local to one agent run. It does not change scheduling or
-// tool execution semantics; it only decides when the runtime should stop
-// asking the model for another turn after an unchanged operation completed.
+// loopDetector stops the run when consecutive identical tool batches repeat
+// without progress. IDs excluded; differing batches reset counts. Local to
+// one run; scheduling/execution unchanged. See docs/Runtime.md.
 type loopDetector struct {
 	calls  map[string]repeatedOperation
 	cycles map[string]repeatedOperation

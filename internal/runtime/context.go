@@ -10,13 +10,8 @@ import (
 	"forcefield/internal/providers"
 )
 
-// EstimateTokens approximates the token cost of text. ASCII runs at ~4
-// runes per token; other BMP scripts at ~2 per token; CJK/emoji at ~1 per
-// token. It is deliberately conservative (overestimates) and deterministic:
-// the runtime uses it only to decide what fits, never to bill or report
-// usage. Empty text costs 0; non-empty text costs at least 1. Overcounting
-// CJK is safe (earlier truncation); undercounting would overshoot the
-// provider window.
+// EstimateTokens approximates token cost for context budgeting only
+// (never billing). Conservative and deterministic. See docs/Runtime.md.
 func EstimateTokens(text string) int {
 	if text == "" {
 		return 0
@@ -167,15 +162,8 @@ type contextSelection struct {
 	Summarized bool
 }
 
-// SelectContext windows history to fit budget, always preserving the
-// system prompt, the first user message (task goal), recent turns, and
-// tool call/result pairing. It never splits an assistant tool_calls
-// message from its following tool results: they form one atomic group.
-//
-// Layout: system + [goal, if outside the tail] + [digest, if evicted and
-// Summarize] + most-recent groups that fit both the token room and the
-// message cap. When the window is unknown (Limit<=0) only the message
-// cap applies — the historic behavior, now pair-aware.
+// SelectContext windows history to fit budget, preserving system, goal,
+// pairing, and recency. See docs/Runtime.md.
 func (b ContextBudget) SelectContext(system providers.Message, history []providers.Message) ([]providers.Message, contextSelection) {
 	sel := contextSelection{}
 	if len(history) == 0 {

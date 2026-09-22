@@ -10,6 +10,7 @@ You can find the index of the contents in this file.
 | [Getting Started](GettingStarted.md) | Install Forcefield, configure Ollama, and run your first session. |
 | [CLI](CLI.md)                        | Command-line entry points: `ff`, `ff chat`, `ff run`, and resume. |
 | [Audit](Audit.md)                    | Forensic hardening audit record: scope, confirmed findings and fixes, and intentionally unchanged areas. |
+| [Recovery](Recovery.md)              | Run recovery, supervision, and process-tree lifecycle. |
 
 ## Packages
 

@@ -1,18 +1,5 @@
-// Package search provides the search_code tool: fast repository code
-// search powered by the external ripgrep binary, with the built-in
-// search_files walker as the fallback when rg is unavailable.
-//
-// Security model mirrors search_files: the search root is always caged
-// to the workspace via resolveSearchRoot, every reported file is
-// symlink-resolved and required to stay within the root, sensitive
-// files (see filesystem.IsSensitivePath) are dropped from results, and
-// output, scope, and execution time are all bounded.
-//
-// The rg subprocess is spawned directly via exec.CommandContext with a
-// fixed argv built from validated parameters. The pattern travels via
-// "-e" and paths behind "--" so model input is always data, never
-// flags or shell text. There is deliberately no shell, no free-form
-// flags parameter, and no PCRE2/backtracking engine.
+// search_code runs host rg directly (argv-built, no shell) with the same
+// workspace cage as search_files, plus fallback. See docs/Tools.md.
 package search
 
 import (

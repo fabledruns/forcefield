@@ -36,13 +36,9 @@ const (
 	ScopeCloud Scope = "cloud"
 )
 
-// Capabilities states explicitly what a provider (and the Forcefield
-// adapter in front of it) supports. The runtime and TUI read these
-// instead of asking "if provider == ollama" anywhere.
-//
-// Vision is reported false by every current adapter on purpose: no
-// Forcefield message can carry image content yet, so claiming vision
-// support would overpromise regardless of what the remote API accepts.
+// Capabilities states what a provider adapter supports; runtime/TUI read
+// these instead of branching on provider names. Vision stays false until
+// messages can carry images. See docs/Providers.md.
 type Capabilities struct {
 	Streaming         bool
 	ToolCalling       bool

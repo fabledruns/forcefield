@@ -15,25 +15,9 @@ import (
 // model" from genuine construction failures.
 var ErrUnknownModel = errors.New("unknown model for this OpenCode service")
 
-// This file implements OpenCode Zen and OpenCode Go support on top of the
-// existing generic transports. Both services are multi-protocol gateways:
-// a single service hosts models that require different wire protocols
-// (OpenAI Responses, OpenAI Chat Completions, Anthropic Messages), with
-// the protocol determined per model by OpenCode's published endpoint
-// tables (https://opencode.ai/docs/zen, https://opencode.ai/docs/go).
-//
-// The architecture stays data-driven: each service has a static model
-// table mapping model IDs to protocols, and OpenCodeRouter resolves the
-// active model to a protocol once at construction, then delegates the
-// entire turn to the matching generic adapter. There is no per-provider
-// branching anywhere else — no trial-and-error requests, and a Chat
-// Completions request is never sent to a Responses-only model.
-//
-// Wire model IDs are the bare IDs from OpenCode's "Model ID" columns
-// (e.g. "gpt-5.5", not "opencode/gpt-5.5"); the opencode/ prefix in
-// OpenCode's own config format is their provider namespacing, not part
-// of the API model name. This is an assumption to verify against a live
-// key (see docs/Providers.md).
+// This file implements OpenCode Zen/Go multi-protocol gateways on the generic
+// transports (per-model protocol from OpenCode's published tables, resolved
+// once at construction). Wire IDs are bare model IDs. See docs/Providers.md.
 
 // opencodeProtocol names the wire protocols an OpenCode gateway serves.
 // Values reuse the registered factory type names so tables stay readable.
@@ -52,12 +36,8 @@ type opencodeModel struct {
 	Protocol    string
 }
 
-// zenModels is the OpenCode Zen catalog, covering the published endpoint
-// table (https://opencode.ai/docs/zen) as of implementation time. Every ID
-// below is docs-sourced; nothing is invented. Gemini models are
-// intentionally absent — Zen serves them on per-model native endpoints
-// (/v1/models/<id>) that no existing Forcefield transport speaks; see
-// docs/Providers.md.
+// zenModels is the docs-sourced Zen catalog. Gemini endpoints needing native
+// protocol support are excluded; see docs/Providers.md.
 var zenModels = []opencodeModel{
 	// Responses API.
 	{ID: "gpt-5.6-sol", Name: "GPT 5.6 Sol", Description: "OpenAI flagship via Zen.", Protocol: opencodeResponses},

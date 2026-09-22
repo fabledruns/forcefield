@@ -209,3 +209,28 @@ If you ever see stronger wording than this table allows, that is a bug.
 - Policy lives with the executor; tools send requests; the UI renders `Enforcement.SummaryLines()`.
 - Adding a backend means implementing `sandbox.Executor` and extending `NewExecutor`; nothing else changes.
 - The package depends only on the Go standard library.
+
+## Boundary algorithm notes
+
+All filesystem and shell-cwd checks share one pipeline: resolve +
+canonicalize (symlinks and Windows junctions included) + boundary
+check, then permission check, then execution.
+
+- Relative paths anchor at the workspace, never at Forcefield's cwd.
+  Absolute paths, drive letters, UNC paths, `..` traversal, and
+  symlinks resolving outside are rejected with
+  `ErrWorkspaceEscape`/`ErrInvalidDir` before anything runs.
+- The workspace has two valid spellings after resolution (for example
+  `/var/x` vs `/private/var/x` on macOS, long vs 8.3 names on
+  Windows). Containment accepts either known spelling and nothing
+  else; resolve first, classify second.
+- `EnsureWithinWorkspace` covers not-yet-existing creation targets by
+  walking existing ancestors for symlink escapes.
+- `EvalLinks` follows symlinks **and** NTFS junctions/mount points
+  (`filepath.EvalSymlinks` skips junctions; `os.Readlink` catches
+  what is left, leftmost-first with a depth guard).
+- On Windows, Linux-absolute (`/home/...`), drive-relative (`C:foo`),
+  and bare-drive (`C:`) forms are treated as absolute and refused as
+  escapes rather than guessed.
+- Comparisons are boundary-aware and case-insensitive on Windows
+  volumes, exact elsewhere.

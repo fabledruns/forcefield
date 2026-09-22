@@ -11,17 +11,8 @@ import (
 	"forcefield/internal/redact"
 )
 
-// permissionPrompt tracks a single pending "ask" permission decision the
-// user needs to answer before the scheduler can proceed. Only one is ever
-// pending at a time: the scheduler goroutine blocks on Ask() until the
-// respond channel receives an answer, so a second request can't arrive
-// while this one is still open.
-//
-// Unlike picker/selectPicker, a pending prompt does NOT take over the
-// screen: the transcript and header stay visible, the prompt appears as
-// a normal activity line in the transcript, and the footer's input box
-// is temporarily replaced by a selectable permission UI. See renderFooter
-// and View in model.go.
+// permissionPrompt tracks one pending "ask" (scheduler blocks until answered).
+// It renders inline, not fullscreen. See docs/TUI.md.
 type permissionPrompt struct {
 	request  permissions.Request
 	respond  chan<- permissions.Prompt

@@ -11,15 +11,8 @@ import (
 	"time"
 )
 
-// Model is one model as discovered (or configured) for a provider, with
-// whatever metadata the provider's listing endpoint actually exposed.
-//
-// Metadata is never fabricated: ContextWindow stays 0 unless the provider
-// reported one, and there is deliberately no per-model Capabilities field -
-// no supported list endpoint reports per-model capability data, and
-// guessing from the transport would overpromise. Provider-level
-// capabilities live on CapabilitiesProvider; model-level facts appear here
-// only when the wire protocol states them.
+// Model is one discovered/configured model. Metadata is never fabricated;
+// per-model capabilities are not guessed. See docs/Providers.md.
 type Model struct {
 	ID       string
 	Name     string
@@ -40,12 +33,8 @@ const DefaultDiscoveryTTL = 10 * time.Minute
 // failure of the provider itself.
 var ErrNoDiscovery = errors.New("provider does not support model discovery")
 
-// Discovery orchestrates ListModels across all registered transports:
-// it builds the right adapter from a Spec, performs the fetch with
-// single-flight de-duplication, caches results in memory for the process
-// lifetime, and leaves every failure to the caller to present. It knows
-// no specific provider - new transports gain discovery by implementing
-// ModelLister.
+// Discovery orchestrates ListModels with single-flight, in-memory caching.
+// New transports gain discovery via ModelLister. See docs/Providers.md.
 type Discovery struct {
 	factories *FactoryRegistry
 
@@ -78,12 +67,8 @@ func (d *Discovery) SetTTL(ttl time.Duration) {
 	}
 }
 
-// discoveryKey identifies one cache entry: which configured provider, at
-// which endpoint, speaking which protocol, authenticated as which
-// credential fingerprint. The API key itself is never part of the key -
-// only an irreversible SHA-256 fingerprint, so distinct accounts on the
-// same endpoint keep separate listings while no key material is ever
-// stored, logged, or displayable.
+// discoveryKey identifies one cache entry (provider + endpoint + protocol +
+// key fingerprint; raw keys never stored). See docs/Providers.md.
 type discoveryKey string
 
 func discoveryKeyFor(spec Spec) discoveryKey {

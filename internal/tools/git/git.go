@@ -1,18 +1,5 @@
-// Package git provides the read-only git inspection tool: status,
-// diffs, and history for repositories under the workspace.
-//
-// The tool is intentionally read-only: only a fixed allowlist of
-// inspection subcommands can run (status, diff, staged, log, changed).
-// Anything else — including commit, add, checkout, reset, and clean —
-// is rejected before any process starts. Destructive work stays in the
-// shell tool behind the permission system.
-//
-// Path arguments resolve through the shared workspace boundary
-// (sandbox.ResolveWithinWorkspace), and every git invocation runs with
-// the resolved workspace root as its working directory, scoped to it
-// via pathspec, so output never escapes the project. No destructive
-// flag can reach the command line because argv is built from constants
-// per action.
+// Package git provides the read-only inspection tool (fixed allowlist, no
+// destructive subcommands; workspace-scoped argv). See docs/Tools.md.
 package git
 
 import (

@@ -8,16 +8,9 @@ import (
 	"forcefield/internal/permissions"
 )
 
-// tuiAsker resolves "ask" permission decisions by handing them to the
-// running bubbletea program as a message and blocking until the user
-// answers via the permission modal (see permission.go). It runs on the
-// scheduler's goroutine, never on the UI goroutine, so blocking here is
-// safe: it doesn't stall rendering, only the one tool call awaiting an
-// answer.
-//
-// program is set after the tea.Program is constructed (see Start in
-// tui.go), since the program can't exist until the model - which needs
-// this asker wired into its runtime - already does.
+// tuiAsker hands "ask" decisions to the Bubble Tea program and blocks the
+// scheduler goroutine (never the UI goroutine) until answered. See
+// docs/TUI.md.
 type tuiAsker struct {
 	program *tea.Program
 }

@@ -6,12 +6,8 @@ import (
 	"time"
 )
 
-// thinkingRecord carries one model turn's streamed reasoning for the
-// lifetime of its transcript entry, so the compact "Thinking" line can be
-// expanded (ctrl+r) into the reasoning the provider sent. Forcefield only
-// ever displays reasoning the provider explicitly streamed as reasoning
-// deltas - it never generates, summarizes, or reconstructs any - and the
-// text is kept out of the assistant message and the saved session.
+// thinkingRecord carries one turn's streamed provider reasoning for display
+// only (expandable, never saved to the session). See docs/TUI.md.
 type thinkingRecord struct {
 	text      string
 	startedAt time.Time

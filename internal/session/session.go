@@ -42,24 +42,12 @@ type Session struct {
 	// silent: UIs and doctor can report how much history was summarized
 	// away, and tests can assert bounded growth without parsing content.
 	Compacted int `json:"compacted,omitempty"`
-	// Turn is the execution envelope for the latest tool-calling turn:
-	// which calls were decided, which are still running, and how the
-	// turn ended. It is what makes a crash between "model responded" and
-	// "tool results persisted" recoverable instead of ambiguous. Nil for
-	// old session files (which predate it) and for sessions that never
-	// ran a tool; every field is additive and omitempty.
+	// Turn is the crash-recovery envelope for the latest tool-calling turn.
+	// Nil for old files and tool-less sessions. See docs/Session.md.
 	Turn *TurnState `json:"turn,omitempty"`
-	// Supervisor tracks supervised-restart lifecycle for `ff supervise`
-	// so a restart budget survives the supervisor process itself being
-	// killed and restarted: how many restarts the current episode spent,
-	// and when its budget last exhausted. Nil means no supervised
-	// episode is in flight (old files, manual runs, or a cleared
-	// episode); the pointer plus omitempty keeps clean sessions
-	// serialized exactly as before. It is run-management metadata like
-	// Turn, never conversation: replay and the transcript ignore it.
-	// Writes are whole-file atomic like everything else, but there is
-	// no locking — concurrent supervisors race read-modify-write and
-	// may spend extra bounded restarts (see internal/recovery).
+	// Supervisor tracks supervised-restart lifecycle (see SupervisorState
+	// and docs/Recovery.md). Run metadata only; replay ignores it. No
+	// locking; concurrent supervisors must not share a session.
 	Supervisor *SupervisorState `json:"supervisor,omitempty"`
 	// Plan is the persisted /plan and /build state (see plan.go). Nil
 	// for old session files and sessions that never ran /plan; replay
@@ -75,13 +63,8 @@ type Session struct {
 	LastSaveTime time.Time `json:"-"`
 }
 
-// SupervisorState is the persisted half of one supervised-restart
-// episode. Restarts counts attempts spent (seeding the next supervisor
-// so a kill during backoff continues with remaining budget instead of
-// a fresh one). ExhaustedAt is Unix UTC seconds of the last budget
-// exhaustion, 0 when the episode may still spend restarts. A set
-// ExhaustedAt latches the episode: only an observed terminal child
-// outcome, a successful manual run, or an explicit reset clears it.
+// SupervisorState is the persisted half of one supervised-restart episode.
+// See docs/Session.md and docs/Recovery.md.
 type SupervisorState struct {
 	Restarts    int   `json:"restarts,omitempty"`
 	ExhaustedAt int64 `json:"exhausted_at,omitempty"`
@@ -497,26 +480,9 @@ func (s *Session) AddToolResult(toolCallID, name, content string) {
 	})
 }
 
-// RepairInterruptedTurn appends synthetic cancelled results for assistant
-// tool calls that have no matching tool result message. Cancellation (or
-// a crash/kill) can strand an assistant tool_calls batch: the batch is
-// persisted when the call starts, but the result never arrives because
-// the run was torn down first. Left alone, the session would replay an
-// assistant message with dangling tool calls, which strict provider APIs
-// reject — making the session unresumable.
-//
-// Repair keeps the session recoverable: every tool call gains a result,
-// the user can continue or resume, and the file stays a faithful record
-// (the content names the interruption explicitly). It returns how many
-// results were synthesized; 0 means the session was already consistent.
-// Callers should Save when the count is positive.
-//
-// Calls without an ID carry no identity, so they cannot be paired by ID:
-// completed ones are matched positionally against ID-less results, and
-// genuinely orphaned ones are dropped from their assistant batch (with an
-// explicit note when the batch would otherwise become an empty shell) so
-// replay never carries a dangling call. The drop count is included in the
-// return value since the session changed and should be saved.
+// RepairInterruptedTurn synthesizes cancelled results for dangling tool calls
+// (and drops unpairable ID-less calls) so the session stays resumable.
+// Returns the change count; callers Save when positive. See docs/Session.md.
 func (s *Session) RepairInterruptedTurn() int {
 	if s == nil {
 		return 0

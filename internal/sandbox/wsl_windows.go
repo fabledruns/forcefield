@@ -12,43 +12,11 @@ import (
 	"sync"
 )
 
-// wslExecutor runs commands inside a WSL distribution under an explicitly
-// restricted invocation. What it enforces, at boundaries this package
-// controls:
-//
-//   - Structured argv through wsl.exe --exec: agent text is never
-//     re-parsed by a host or distribution shell during invocation.
-//   - Working directory pinned inside the workspace: every request is
-//     resolved (symlinks included) against the workspace before the
-//     process exists; escapes are rejected, never expanded.
-//   - Host environment severed: wsl.exe receives only SystemRoot/TEMP/TMP
-//     plus an explicitly EMPTY WSLENV, so no host variable - API keys
-//     included - crosses into the distribution. Inside, the environment
-//     is the distribution's own defaults plus exactly the K=V pairs the
-//     caller asked for.
-//   - Network policy: "disabled" is enforced by launching the command in
-//     a fresh network namespace (in-distribution unshare with an
-//     unprivileged user namespace). When the kernel/distro refuses that,
-//     the executor FAILS CLOSED rather than running with host networking.
-//   - Process lifetime: timeout, context cancellation, and Windows-side
-//     process-tree teardown (the wsl.exe relay) remain fully effective.
-//     Linux-side processes inside the distribution may outlive the relay:
-//     no Windows host primitive used here reaches inside the
-//     distribution, so their cleanup is not guaranteed. A full
-//     distribution-level sweep requires `wsl --shutdown`.
-//
-// What it does NOT do, stated plainly:
-//
-//   - Filesystems are not confined. The distribution mounts every Windows
-//     drive under /mnt/*, so a command can read and write anywhere its OS
-//     identity allows, plus the whole Linux filesystem of the
-//     distribution. Only the working directory is validated. This package
-//     will not claim workspace confinement that plain wsl.exe cannot
-//     deliver.
-//   - CPU/memory/process-count limits are not enforced.
-//
-// Enforcement.Describe carries these facts to the approval UI and doctor;
-// nothing else gets to characterize the boundary.
+// wslExecutor runs commands inside a WSL distribution under a restricted
+// invocation. See docs/Sandbox.md for the enforced properties, the
+// explicit non-guarantees (no filesystem confinement, no resource limits,
+// Linux-side processes outlive the relay), and the fail-closed network
+// rule. Enforcement.Describe carries these facts to the approval UI.
 
 // restrictedHostEnvNames are the only host variables the launcher itself
 // receives: what wsl.exe needs to start reliably (its own staging uses

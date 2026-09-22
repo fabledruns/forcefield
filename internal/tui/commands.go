@@ -430,12 +430,8 @@ func (m *model) ToggleThinking() (bool, error) {
 	return m.runtime.ToggleThinking()
 }
 
-// chooseProvider switches to the provider with the given ID and prints
-// a confirmation. Unless the new provider has exactly one known model,
-// it also opens the model picker automatically, so picking a provider
-// never leaves the user stuck on a stale model. A stale listing starts
-// background discovery; the picker shows fallbacks plus "Fetching
-// models…" until the fresh list arrives.
+// chooseProvider switches provider and opens the model picker unless one model
+// is known. See docs/TUI.md.
 func (m model) chooseProvider(id string) (tea.Model, tea.Cmd) {
 	if err := m.SetProvider(id); err != nil {
 		m.entries = append(m.entries, chatEntry{Role: roleError, Content: err.Error()})

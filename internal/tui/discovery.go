@@ -23,12 +23,8 @@ type modelsFetchedMsg struct {
 // refreshOptionID marks the "Refresh models" row inside the model picker.
 const refreshOptionID = "__refresh_models__"
 
-// startDiscovery kicks off one background discovery for providerID and
-// reports the result via m.notify. The request itself is bounded by the
-// runtime; it never blocks the UI and never touches the transcript:
-// failures surface in the picker's status line while the previously
-// visible models stay listed. With force unset, an already-fresh cache
-// skips the network entirely.
+// startDiscovery kicks off background discovery; never blocks UI, failures stay
+// in the picker status line. See docs/TUI.md.
 func (m *model) startDiscovery(providerID string, force bool) {
 	if m.runtime == nil || m.notify == nil {
 		return

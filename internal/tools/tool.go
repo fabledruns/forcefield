@@ -102,18 +102,8 @@ type StreamingTool interface {
 	ExecuteStream(ctx context.Context, args map[string]any, onChunk func(StreamChunk)) (Result, error)
 }
 
-// BoundaryChecker is optionally implemented by tools that operate on a
-// user-supplied filesystem path. CheckBoundary dry-runs the workspace
-// boundary decision for args: it canonicalizes the requested path and
-// resolves it inside the tool's workspace root, performing no filesystem
-// writes and creating nothing. It returns the canonical absolute path
-// the operation would act on.
-//
-// The scheduler calls CheckBoundary before any permission prompt, so
-// outside-workspace calls are denied without prompting and approval can
-// never authorize them; the canonical path lets approval surfaces
-// display the real target instead of the raw model spelling. Tools that
-// take no path do not implement it.
+// BoundaryChecker dry-runs the workspace decision without writes; the
+// scheduler denies escapes before prompting. See docs/Tools.md.
 type BoundaryChecker interface {
 	CheckBoundary(args map[string]any) (resolved string, err error)
 }

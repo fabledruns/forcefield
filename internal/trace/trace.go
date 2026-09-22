@@ -1,15 +1,5 @@
-// Package trace records structured, local-only execution traces for
-// diagnosing agent runs. A trace is one JSON object per line
-// (append-oriented JSONL) under .forcefield/traces/<runID>.jsonl,
-// covering: run start, model turns, tool calls with permission
-// outcomes, tool results, and the terminal run event.
-//
-// Traces are disabled by default and never leave the machine: there is
-// no network, no sampling, and no telemetry. Every free-text field is
-// capped and passed through the centralized redaction before writing,
-// so secrets cannot land in trace files even when they flow through
-// tool output or errors. A per-run byte cap bounds disk use; session
-// history and crash recovery (internal/session) are untouched.
+// Package trace records structured, local-only JSONL execution traces
+// (disabled by default, redacted, capped). See docs/Runtime.md.
 package trace
 
 import (
@@ -30,25 +20,12 @@ const snippetCap = 1024
 // a single truncation line and drops the rest.
 const maxFileBytes = 4 << 20
 
-// maxTraceFiles bounds how many trace files one directory may hold
-// (worst case maxTraceFiles × maxFileBytes on disk). The per-file cap
-// alone cannot bound disk use over long unattended runs: every run
-// opens its own file, so without retention the directory grows without
-// bound. Retention runs once per StartRun — never on the per-event hot
-// path — and deletes oldest-first down to the cap. It never deletes a
-// file this process has open, never deletes files newer than
-// minTraceFileAge (a sibling process may still be appending to an old
-// file), and ignores every error: tracing must never fail the run it
-// observes, and a crash mid-prune only ever leaves a valid subset of
-// complete files behind.
+// maxTraceFiles bounds directory growth; retention runs once per StartRun,
+// oldest-first, never deleting open or recent files. See docs/Runtime.md.
 const maxTraceFiles = 64
 
-// minTraceFileAge protects recently-written files from retention. New
-// files are always younger, and any live run appends at least every few
-// minutes (turn boundaries), so an hour of quiet means no local run is
-// still writing that file. Files younger than this stay even when the
-// directory is over the cap; the next StartRun past the hour prunes
-// them, so the overshoot is bounded by one hour of file creation.
+// minTraceFileAge protects live/recent files from retention (bounded 1h
+// overshoot).
 const minTraceFileAge = time.Hour
 
 // defaultDir is used when no directory is configured. It is resolved

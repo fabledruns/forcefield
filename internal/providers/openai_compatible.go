@@ -13,17 +13,9 @@ import (
 	"forcefield/internal/tools"
 )
 
-// OpenAICompatible talks to any server that implements the OpenAI Chat
-// Completions wire protocol: /chat/completions for turns and /models for
-// discovery. One implementation serves NVIDIA NIM, LM Studio, llama.cpp
-// (llama-server), OpenAI,
-// xAI, OpenRouter, Groq, Mistral, Together, and arbitrary self-hosted
-// endpoints; only configuration (base URL, key, model, headers) differs.
-//
-// The adapter assumes nothing beyond the documented protocol: servers may
-// omit usage, end streams without a finish reason, split tool calls
-// across chunks, or answer with error bodies in several shapes. All of
-// that normalizes here so the runtime never sees vendor quirks.
+// OpenAICompatible is the generic Chat Completions adapter for all compatible
+// services (config differs; protocol shared). Normalizes vendor quirks.
+// See docs/Providers.md.
 type OpenAICompatible struct {
 	spec   Spec
 	client *http.Client

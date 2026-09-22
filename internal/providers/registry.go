@@ -1,15 +1,7 @@
 package providers
 
-// ModelInfo describes one selectable model: the friendly name shown in
-// the UI and the real model ID sent to the provider's API. The UI must
-// only ever display Name; ID is what actually gets stored in config and
-// sent over the wire.
-//
-// Protocol optionally names the wire protocol serving this model on a
-// multi-protocol gateway (one of the registered factory type names).
-// Empty means the preset's default transport. It is informational for
-// single-transport presets and authoritative for gateway presets, whose
-// router resolves it from the same table this is derived from.
+// ModelInfo is one selectable model (display Name, wire ID, optional gateway
+// Protocol). UI displays Name only. See docs/Providers.md.
 type ModelInfo struct {
 	Name        string
 	ID          string

@@ -35,23 +35,7 @@ func resolveExistingDir(dir string) (string, error) {
 }
 
 // resolveWithinWorkspace validates a requested working directory against
-// the workspace and returns the absolute directory to run in.
-//
-// Enforcement rules, applied before any process is constructed:
-//
-//   - An empty request resolves to the workspace itself.
-//   - The requested directory is made absolute against its own base
-//     (host semantics: relative paths are relative to the workspace, NOT
-//     to wherever Forcefield happens to be running) and then resolved
-//     through EvalSymlinks so a symlink pointing outside the workspace is
-//     caught as an escape rather than silently passing the prefix check.
-//   - The resolved path must equal the workspace or live underneath it.
-//     Scope is never expanded to make a request succeed.
-//
-// Windows and Linux path shapes differ (drive letters, backslashes,
-// case-insensitivity, UNC); every comparison goes through filepath
-// helpers plus an explicit case-insensitive boundary-aware prefix match,
-// never raw string math.
+// the workspace. See docs/Sandbox.md for the boundary algorithm.
 func resolveWithinWorkspace(workspace, dir string) (string, error) {
 	ws := workspace
 	if strings.TrimSpace(ws) == "" {
@@ -106,17 +90,8 @@ func resolveWithinWorkspace(workspace, dir string) (string, error) {
 		return "", fmt.Errorf("resolve working directory %s: %w", target, err)
 	}
 
-	// The workspace has two equally valid spellings after resolution
-	// (e.g. /var/x vs /private/var/x on macOS, or long vs 8.3 short user
-	// names on Windows); EvalSymlinks may return either depending on which
-	// components it walks. Containment therefore accepts any KNOWN
-	// spelling of the same root - and nothing else. Targets that resolve
-	// under some third path are escapes.
-	//
-	// Resolve first, classify second: symlinks can point INWARD (a
-	// differently-spelled alias of the workspace) or OUTWARD (an escape),
-	// and only the resolved form tells them apart. The unresolved path is
-	// used solely to classify failures for nonexistent directories.
+	// Accept either known spelling of the workspace root (see docs/Sandbox.md);
+	// anything else is an escape. Resolve first, classify second.
 	resolved, evalErr := EvalLinks(abs)
 	if evalErr != nil {
 		if !withinAny(wsAbs, wsResolved, abs) {
@@ -125,12 +100,7 @@ func resolveWithinWorkspace(workspace, dir string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrInvalidDir, abs)
 	}
 
-	// The workspace has two equally valid spellings after resolution
-	// (e.g. /var/x vs /private/var/x on macOS, or long vs 8.3 short user
-	// names on Windows); EvalSymlinks may return either depending on which
-	// components it walks. Containment therefore accepts any KNOWN
-	// spelling of the same root - and nothing else. A target that
-	// resolves under some third path is an escape.
+	// Same dual-spelling acceptance as above.
 	if !withinAny(wsAbs, wsResolved, resolved) {
 		return "", fmt.Errorf("%w: %s resolves outside %s", ErrWorkspaceEscape, resolved, wsResolved)
 	}
@@ -145,12 +115,9 @@ func ResolveWithinWorkspace(workspace, dir string) (string, error) {
 	return resolveWithinWorkspace(workspace, dir)
 }
 
-// EnsureWithinWorkspace validates a path intended for creation (the
-// file may not yet exist) against the workspace. It lexically ensures
-// the target is inside the workspace, follows symlinks for the full
-// path when it exists, and otherwise walks existing ancestors to catch
-// symlink escapes. The returned path is the absolute, cleaned location
-// safe to use when the check succeeds.
+// EnsureWithinWorkspace validates a creation target (which may not exist)
+// against the workspace, walking existing ancestors for symlink escapes.
+// See docs/Sandbox.md.
 func EnsureWithinWorkspace(workspace, path string) (string, error) {
 	ws := workspace
 	if strings.TrimSpace(ws) == "" {
@@ -230,15 +197,9 @@ func EnsureWithinWorkspace(workspace, path string) (string, error) {
 // maxLinkDepth bounds junction/symlink chasing in EvalLinks.
 const maxLinkDepth = 255
 
-// EvalLinks resolves path fully, following symlinks AND Windows
-// junctions/mount points. filepath.EvalSymlinks skips NTFS junctions
-// — Go does not report them as ModeSymlink, so it returns them
-// unresolved — and a junction pointing outside the workspace would
-// then pass containment. EvalLinks runs the standard resolver first
-// (preserving its case, 8.3, alias, and symlink handling) and then
-// resolves anything left behind via Readlink, which does report
-// junction targets. Missing paths error exactly like EvalSymlinks so
-// callers keep their exists/not-exists branching.
+// EvalLinks resolves symlinks AND Windows junctions/mount points
+// (EvalSymlinks skips junctions). Missing paths error like EvalSymlinks.
+// See docs/Sandbox.md.
 func EvalLinks(path string) (string, error) {
 	normalized, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -341,13 +302,9 @@ var runtimeCaseInsensitive = defaultCaseInsensitive
 
 func defaultCaseInsensitive() bool { return os.PathSeparator == '\\' && os.PathListSeparator == ';' }
 
-// isAbsLike catches absolute-looking paths that filepath.IsAbs misses:
-// Linux-style "/..." paths while running on Windows (a WSL cwd argument
-// like /home/user is already absolute inside the distribution), and
-// Windows drive-relative forms like "C:foo" whose meaning differs across
-// systems. Treating them as absolute keeps them out of the
-// join-with-workspace branch where they could masquerade as relative and
-// slip past containment checks.
+// isAbsLike catches absolute-looking paths filepath.IsAbs misses on the
+// host (Linux-absolute on Windows, drive-relative). They are treated as
+// absolute so they cannot masquerade as relative. See docs/Sandbox.md.
 func isAbsLike(p string) bool {
 	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
 		return true

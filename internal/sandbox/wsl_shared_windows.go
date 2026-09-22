@@ -15,23 +15,10 @@ import (
 	"unicode/utf16"
 )
 
-// Shared WSL machinery for both Windows execution modes:
-//
-//   - native mode relays through wsl.exe purely so GNU Bash exists on
-//     Windows; it grants no isolation and forwards the host environment.
-//   - wsl mode (see wsl_windows.go) uses the same low-level plumbing but
-//     under an explicitly restricted invocation.
-//
-// Every invocation is assembled as an argv, never as a command string, so
-// a command's text and environment values cannot be re-parsed or injected
-// on the way through:
-//
-//	wsl.exe [--distribution <name>] [--cd <dir>] --exec
-//	        [/usr/bin/env K=V ...] /bin/bash -lc <command>
-//
-// --exec runs the following argv inside the distribution without a shell;
-// each K=V pair and the whole command are single argv elements, so spaces,
-// quotes, newlines, pipes, and heredocs reach Bash verbatim.
+// Shared WSL machinery for both Windows modes (native relay for Bash
+// availability vs restricted wsl mode). Every invocation is argv-assembled
+// (wsl.exe --exec ...) so command text cannot be re-parsed on the way
+// through. See docs/Sandbox.md.
 
 // wslPreflightTimeout bounds the one-time backend probes (backend health,
 // network-isolation support, working-directory checks). A cold

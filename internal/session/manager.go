@@ -51,14 +51,8 @@ func validID(id string) bool {
 	return true
 }
 
-// Save persists the session to its JSON file.
-//
-// The write is atomic: the data lands in a temporary file in the same
-// directory which is then renamed over the real one, so a crash or kill
-// mid-write can never leave a truncated half-session behind - readers see
-// either the previous complete file or the new complete file. The
-// temporary file is flushed to disk before the rename so an OS-level
-// crash doesn't produce an empty replacement either.
+// Save persists the session atomically (temp file + flush + rename), so a
+// crash mid-write never leaves a truncated file. See docs/Session.md.
 func (s *Session) Save() (err error) {
 	if !validID(s.ID) {
 		// Recorded like any other save failure: callers gate on
@@ -70,13 +64,8 @@ func (s *Session) Save() (err error) {
 		return err
 	}
 
-	// Save original state so a write failure (disk-full, permission) does not
-	// leave the in-memory session diverged from the file on disk. The file
-	// remains the old valid version, and the in-memory session is restored
-	// to that same version on failure. Every lifecycle field Save can
-	// observe is covered: messages, timestamps, compaction count, plus
-	// deep copies of the Turn, Supervisor, and Plan envelopes so a failed
-	// save can never silently drop lifecycle state.
+	// Save original state so a failed write never diverges memory from disk
+	// (covers messages plus Turn/Supervisor/Plan envelopes).
 	origMessages := s.Messages
 	origUpdatedAt := s.UpdatedAt
 	origCompacted := s.Compacted
@@ -200,15 +189,8 @@ func cloneSupervisor(st *SupervisorState) *SupervisorState {
 // and the loop costs nothing.
 const renameAttempts = 10
 
-// replaceFile atomically replaces dst with src via rename.
-//
-// On Windows, renaming over a file that any thread or process still has
-// open fails with a transient "Access is denied" (the destination handle
-// hasn't been fully released yet - commonly antivirus, search indexing,
-// or another in-flight save of the same session). A short bounded retry
-// turns those spurious failures into success instead of surfacing them as
-// scary save errors; on Unix the first attempt simply always succeeds and
-// the loop costs nothing.
+// replaceFile atomically replaces dst with src, with bounded retry for
+// transient Windows "Access is denied" holds. See docs/Session.md.
 func replaceFile(src, dst string) error {
 	var err error
 	for attempt := 0; attempt < renameAttempts; attempt++ {

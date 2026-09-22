@@ -2,13 +2,8 @@ package tools
 
 import "fmt"
 
-// ValidateArgs checks that args conform to def's InputSchema before
-// permission is evaluated. It rejects unknown fields and wrong types so
-// the permission prompt cannot hide intent behind a silent default.
-//
-// It is intentionally strict and minimal: it only checks the JSON-schema
-// subset used by Forcefield's tools (type, required, enum, properties).
-// It does not attempt full JSON-schema validation.
+// ValidateArgs checks args against the tool's schema subset before permission,
+// rejecting unknown fields/types. See docs/Tools.md.
 func ValidateArgs(def Definition, args map[string]any) error {
 	if def.InputSchema == nil {
 		return nil

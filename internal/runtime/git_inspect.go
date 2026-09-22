@@ -8,12 +8,9 @@ import (
 	"strings"
 )
 
-// GitInspect runs a read-only git inspection (status, diff, staged, log,
-// changed) through the full tool manager, so workspace confinement, output
-// caps, and boundary checks apply exactly as they do for model-driven
-// calls. A human typing /diff or /git is explicit consent, so this path
-// executes the tool directly instead of going through permission prompts.
-// Soft tool errors surface as Go errors.
+// GitInspect runs read-only git through the full manager (same confinement
+// and caps as model calls). Human-typed /diff|/git is consent: no prompts.
+// See docs/Runtime.md.
 func (r *Runtime) GitInspect(ctx context.Context, action, path string) (string, error) {
 	if r == nil {
 		return "", fmt.Errorf("runtime not available")

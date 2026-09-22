@@ -117,23 +117,9 @@ func (o *shellOutput) droppedBytes() int {
 	return o.dropped
 }
 
-// Shell executes shell commands inside the current project directory (or
-// a caller-specified working directory), capturing stdout and stderr
-// separately and streaming output live as the command runs.
-//
-// Terminal ownership: Shell never touches os.Stdout/os.Stderr/os.Stdin or
-// prints anything itself. Bubble Tea is the only thing allowed to write to
-// the real terminal (see internal/tui). Everything a command produces is
-// captured through pipes, sanitized, and handed to the caller as plain
-// Result/StreamChunk data that flows through the runtime's event system;
-// the TUI decides how (and whether) to render it.
-//
-// Process construction is delegated entirely to a sandbox.Executor: this
-// tool requests execution, the executor enforces policy (working
-// directory scope, environment forwarding rules, backend selection), and
-// nothing here can bypass it because no other command-building path
-// exists. Shell owns only argument validation, output plumbing,
-// sanitization, and process teardown.
+// Shell executes commands with piped, sanitized output and live streaming.
+// Terminal ownership stays with the TUI; construction stays with the
+// sandbox executor. See docs/Tools.md.
 type Shell struct {
 	// executor builds validated commands. Nil means native mode with the
 	// historical unrestricted behavior; runtime.New wires the configured
@@ -287,12 +273,8 @@ func (s *Shell) Execute(ctx context.Context, args map[string]any) (tools.Result,
 	return s.ExecuteStream(ctx, args, nil)
 }
 
-// ExecuteStream runs command, invoking onChunk with each sanitized line of
-// stdout and stderr as it's produced. onChunk may be nil. It never writes
-// to the process's own stdout/stderr/stdin - all communication back to the
-// caller is through the returned Result and onChunk, which the runtime
-// scheduler turns into EventToolProgress/EventToolFinish/EventToolFailed
-// events for the TUI to render.
+// ExecuteStream runs command with per-line sanitized streaming. Never writes
+// to process stdio; results flow as Result/chunks. See docs/Tools.md.
 func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk func(tools.StreamChunk)) (tools.Result, error) {
 	command, err := tools.StringArg(args, "command")
 	if err != nil {
@@ -302,14 +284,8 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		return tools.Result{}, &tools.ArgumentError{Field: "command", Reason: "must not be empty"}
 	}
 
-	// Commands that need a real TTY (full-screen editors, pagers, remote
-	// shells, REPLs...) don't have one here: Stdin is /dev/null and
-	// Stdout/Stderr are pipes, not a terminal. Best case they exit
-	// immediately with a confusing error; worst case they still probe
-	// terminal ioctls or emit full-screen escape codes before noticing
-	// there's no tty, which is exactly the kind of stray control sequence
-	// that can corrupt the Bubble Tea renderer downstream. Refuse up
-	// front with a clear tool error instead of running them at all.
+	// No TTY here (stdin /dev/null, piped output): refuse interactive
+	// programs up front. See docs/Tools.md.
 	if prog, ok := detectInteractiveCommand(command); ok {
 		return tools.Result{
 			IsError: true,
@@ -322,11 +298,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		}, nil
 	}
 
-	// Conservative WSL mitigation: when in WSL mode, block obvious host
-	// filesystem escapes like /mnt/c/... and C:\... This is a mitigation,
-	// not a security boundary — it does not make WSL a filesystem sandbox.
-	// See internal/sandbox/wsl_windows.go for what WSL does and does not
-	// confine. The check is lexical and intentionally conservative.
+	// WSL lexical mitigation only, not a boundary (see docs/Sandbox.md).
 	if s.isWSLMode(ctx) && isWSLForbiddenPattern(command) {
 		return tools.Result{
 			IsError: true,
@@ -425,20 +397,10 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		defer cleanup()
 	}
 
-	// Explicitly isolate the child from the real terminal:
-	//   - Stdin: nil makes Go connect it to the null device, so a command
-	//     that tries to read interactive input gets an immediate EOF
-	//     instead of stealing keystrokes from Bubble Tea's raw-mode input.
-	//   - Stdout/Stderr: piped below, never the process's own os.Stdout/
-	//     os.Stderr, so nothing the command prints can land on the
-	//     terminal outside of Bubble Tea's control.
+	// Isolate the child from the real terminal (stdin EOF; piped output).
 	cmd.Stdin = nil
 
-	// Put the child in its own process tree and take over Cancel so that
-	// when runCtx is done (parent cancellation or our own timeout), we
-	// kill the whole subtree - not just the immediate `sh` process.
-	// (Unix process group via Configure, Windows job object via Track
-	// below; see internal/process for how the two cover each other.)
+	// Kill the whole subtree on cancel/timeout (see internal/process).
 	process.Configure(cmd)
 	cmd.Cancel = func() error { return process.Kill(cmd) }
 	cmd.WaitDelay = waitDelay

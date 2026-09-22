@@ -1,13 +1,5 @@
-// Package security provides the secret_scan tool: a strictly defensive,
-// deterministic, local-only heuristic scanner that REPORTS possible
-// hardcoded secrets. It never transmits anything, never uses the network,
-// never validates credentials against services, and never uses findings.
-//
-// Confinement mirrors read_file: paths are always canonicalized and
-// caged to the workspace root (the policy's Workspace, or the process
-// working directory when unset). Findings are reported with redacted
-// snippets (match middle masked) as defense-in-depth on top of the
-// scheduler's output scrubbing.
+// Package security provides secret_scan: defensive, local-only, redacted
+// reporting; never transmits/validates/uses findings. See docs/Tools.md.
 package security
 
 import (

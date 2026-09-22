@@ -7,23 +7,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// This file is Forcefield's centralized mouse interaction layer.
-//
-// Rendering and layout register hit regions (in a well-defined coordinate
-// space) whenever the UI changes; incoming tea.MouseMsg events are resolved
-// against those regions by routeMouse, which owns the input precedence:
-//
-//	1. active permission interaction
-//	2. active modal (session / provider / model pickers)
-//	3. wheel scrolling over the transcript
-//	4. interactive transcript regions (tool blocks, thinking blocks)
-//	5. footer regions (suggestions, input box)
-//	6. anything else falls through to the pre-mouse behavior untouched
-//
-// A handled event is consumed: it never ALSO triggers an unrelated state
-// change through the default forwarding path. Only press actions act;
-// releases and motion are ignored so a single physical click can't fire a
-// region twice.
+// Centralized mouse layer: rendering registers hit regions; routeMouse
+// resolves events in fixed precedence (permission → modal → wheel →
+// transcript → footer). Handled events are consumed; only presses act.
+// See docs/TUI.md.
 
 // Rect is an axis-aligned screen or content rectangle. X/Y are inclusive
 // origins; W/H are extents in cells/rows. Contains uses half-open bounds
