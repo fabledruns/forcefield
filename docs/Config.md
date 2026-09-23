@@ -160,6 +160,25 @@ tools:
 
 Unknown tool names are rejected at load.
 
+### `mcp`
+
+Optional local MCP server definitions. Each key names a server (1–32 characters: letters, digits, `_`, `-`); at most 8 servers may be enabled.
+
+```yaml
+mcp:
+  servers:
+    docs:
+      command: /usr/local/bin/docs-server
+      args: ["--root", "/srv/docs"]
+      cwd: ""                 # empty = workspace root
+      env: {DOCS_MODE: readonly}
+      env_passthrough: []
+      timeout_seconds: 30     # 0–300, 0 means the 30 s default
+      enabled: true           # false = never launched
+```
+
+Commands run directly (never through a shell) with a minimal environment: explicit `env` wins over `env_passthrough`, and nothing else is inherited. Inline values are plaintext configuration, not vault-backed secrets. Agents opt in per tool via `agents.<name>.tools` using `mcp__<server>__<tool>` names. See [MCP](MCP.md) for the trust model, lifecycle, and doctor status.
+
 ### `workspace`
 
 | Field   | Required | Description |

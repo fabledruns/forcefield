@@ -55,8 +55,8 @@ var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Diagnose common local problems",
 	Long: `Doctor checks the pieces Forcefield depends on - configuration,
-model providers, session storage, skills, project memory, and the shell
-backend - and reports anything that would break a session.
+model providers, session storage, skills, project memory, the shell
+backend, and MCP servers - and reports anything that would break a session.
 
 It never prints secret values such as API keys.`,
 	Args: cobra.NoArgs,
@@ -80,6 +80,7 @@ It never prints secret values such as API keys.`,
 		doctorShell(report)
 		doctorSearch(report)
 		doctorSandbox(cfg, report)
+		doctorMCP(cfg, report)
 
 		if failed {
 			fmt.Println("\nProblems found. Fix the [FAIL] items above and run `ff doctor` again.")

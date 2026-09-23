@@ -49,6 +49,7 @@ cue-check:
 	cd cue && cue vet . testdata/valid-config.yaml -d "#Config" -c
 	cd cue && cue vet . testdata/valid-minimal.yaml -d "#Config" -c
 	cd cue && cue vet . testdata/valid-providers.yaml -d "#Config" -c
+	cd cue && cue vet . testdata/valid-mcp.yaml -d "#Config" -c
 
 lint:
 	golangci-lint run

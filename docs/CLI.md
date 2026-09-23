@@ -68,6 +68,7 @@ Checks the local pieces Forcefield depends on and reports problems with actionab
 - project memory parses
 - the Bash execution backend (WSL on Windows) is usable
 - the configured sandbox mode is actually deliverable; WSL mode that cannot run fails doctor with exit code 1
+- MCP server configuration is valid, with last-known status from `.forcefield/mcp-status.json` (doctor never starts servers, so this does not prove reachability; see [MCP](MCP.md))
 
 Doctor never prints secret values such as API keys. It exits non-zero when a `[FAIL]` item is found.
 
