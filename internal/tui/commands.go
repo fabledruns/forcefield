@@ -39,6 +39,7 @@ func newRegistry() *command.Registry {
 	reg.Register(builtin.NewCancel())
 	reg.Register(builtin.NewPlan())
 	reg.Register(builtin.NewBuild())
+	reg.Register(builtin.NewMCP())
 	return reg
 }
 
@@ -380,6 +381,84 @@ func (m *model) LoadSkill(id string) (string, error) {
 		return "", fmt.Errorf("runtime not available")
 	}
 	return m.runtime.LoadSkill(id)
+}
+
+// MCPServers lists configured MCP servers with live or last-known
+// status for /mcp. It maps runtime state onto command DTOs; the command
+// layer never sees runtime internals.
+func (m *model) MCPServers() []command.MCPServerInfo {
+	if m.runtime == nil {
+		return nil
+	}
+	states := m.runtime.MCPServerStates()
+	out := make([]command.MCPServerInfo, 0, len(states))
+	for _, s := range states {
+		out = append(out, command.MCPServerInfo{
+			Name:           s.Name,
+			Enabled:        s.Enabled,
+			Command:        s.Command,
+			Args:           append([]string(nil), s.Args...),
+			Cwd:            s.Cwd,
+			TimeoutSeconds: s.TimeoutSeconds,
+			State:          s.State,
+			Tools:          append([]string(nil), s.Tools...),
+			Error:          s.Error,
+		})
+	}
+	return out
+}
+
+// MCPServer returns one configured MCP server for /mcp get.
+func (m *model) MCPServer(name string) (command.MCPServerInfo, error) {
+	if m.runtime == nil {
+		return command.MCPServerInfo{}, fmt.Errorf("runtime not available")
+	}
+	for _, s := range m.MCPServers() {
+		if s.Name == name {
+			return s, nil
+		}
+	}
+	return command.MCPServerInfo{}, fmt.Errorf("mcp server %q not found", name)
+}
+
+// MCPAddServer validates, stores, and persists a new MCP server for
+// /mcp add. It never starts the server.
+func (m *model) MCPAddServer(name, command string, args []string) error {
+	if m.runtime == nil {
+		return fmt.Errorf("runtime not available")
+	}
+	return m.runtime.MCPAddServer(name, command, args)
+}
+
+// MCPRemoveServer deletes one MCP server entry for /mcp remove.
+func (m *model) MCPRemoveServer(name string) error {
+	if m.runtime == nil {
+		return fmt.Errorf("runtime not available")
+	}
+	return m.runtime.MCPRemoveServer(name)
+}
+
+// MCPSetServerEnabled flips an MCP server's enabled state for /mcp
+// enable and /mcp disable.
+func (m *model) MCPSetServerEnabled(name string, enabled bool) error {
+	if m.runtime == nil {
+		return fmt.Errorf("runtime not available")
+	}
+	return m.runtime.MCPSetServerEnabled(name, enabled)
+}
+
+// MCPTestServer probes one MCP server ephemerally for /mcp test: start,
+// handshake, discover, report, shut down. All lifecycle work stays in
+// the runtime and mcp packages.
+func (m *model) MCPTestServer(name string) (command.MCPTestResult, error) {
+	if m.runtime == nil {
+		return command.MCPTestResult{}, fmt.Errorf("runtime not available")
+	}
+	res, err := m.runtime.MCPTestServer(name)
+	if err != nil {
+		return command.MCPTestResult{}, err
+	}
+	return command.MCPTestResult{Tools: append([]string(nil), res.Tools...)}, nil
 }
 
 // ReasoningCapabilities reports the active model's reasoning capabilities.

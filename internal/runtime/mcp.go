@@ -228,3 +228,269 @@ func (r *Runtime) Close() error {
 	_ = persistMCPStatus(host, workspace, cfg)
 	return host.Close()
 }
+
+// MCP management (slash commands).
+//
+// These methods let interactive commands inspect and edit MCP servers
+// without touching subprocesses, pipes, or protocol code: all lifecycle
+// work stays inside mcp.Host, all persistence inside config.Save, and
+// the frozen startup tool universe is never mutated here. Adding,
+// removing, or toggling a server changes configuration only; the running
+// session keeps its existing Host until restart.
+
+// MCPServerState is one configured server as the management UI sees it:
+// live Host truth when available, else last-known persisted state,
+// explicitly marked. State is one of "ready", "failed", "disabled", or
+// "unknown". Tools lists live adapters when ready, else last-known names
+// when a current persisted entry has them. Error carries the bounded
+// failure reason when failed.
+type MCPServerState struct {
+	Name           string
+	Enabled        bool
+	Command        string
+	Args           []string
+	Cwd            string
+	TimeoutSeconds float64
+	State          string
+	Tools          []string
+	Error          string
+}
+
+// MCPServerStates merges configuration, the live Host snapshot, and the
+// persisted status file into one deterministic (server-key sorted) view.
+// Live data wins when the Host exists; otherwise current persisted state
+// fills in, labeled by the caller as last-known. A server with neither is
+// "unknown" — never claimed reachable.
+func (r *Runtime) MCPServerStates() []MCPServerState {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	cfg := r.cfg
+	host := r.mcpHost
+	workspace := r.workspaceRoot
+	r.mu.RUnlock()
+	if cfg == nil {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.MCP.Servers))
+	for name := range cfg.MCP.Servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var live map[string]mcp.ServerSnapshot
+	if host != nil {
+		live = make(map[string]mcp.ServerSnapshot, len(names))
+		for _, ss := range host.Snapshot().Servers {
+			live[ss.Key] = ss
+		}
+	}
+	var persisted map[string]mcp.ServerStatus
+	if st, err := mcp.ReadStatusFile(workspace); err == nil && st.CurrentFor(cfg.MCP) {
+		persisted = make(map[string]mcp.ServerStatus, len(st.Servers))
+		for _, ss := range st.Servers {
+			persisted[ss.Key] = ss
+		}
+	}
+
+	out := make([]MCPServerState, 0, len(names))
+	for _, name := range names {
+		sc := cfg.MCP.Servers[name]
+		st := MCPServerState{
+			Name:           name,
+			Enabled:        sc.IsEnabled(),
+			Command:        sc.Command,
+			Args:           append([]string(nil), sc.Args...),
+			Cwd:            sc.Cwd,
+			TimeoutSeconds: sc.TimeoutSeconds,
+		}
+		if !st.Enabled {
+			st.State = "disabled"
+			out = append(out, st)
+			continue
+		}
+		if ss, ok := live[name]; ok {
+			switch {
+			case ss.Ready:
+				st.State = "ready"
+				for _, t := range ss.Tools {
+					if t != nil {
+						st.Tools = append(st.Tools, t.Name())
+					}
+				}
+			case ss.Started || ss.LastError != "":
+				st.State = "failed"
+				st.Error = ss.LastError
+			default:
+				st.State = "unknown"
+			}
+			out = append(out, st)
+			continue
+		}
+		if ps, ok := persisted[name]; ok {
+			if !ps.Ready {
+				st.State = "failed"
+				st.Error = ps.LastError
+			} else {
+				st.State = "unknown"
+				st.Tools = append([]string(nil), ps.Tools...)
+			}
+			out = append(out, st)
+			continue
+		}
+		st.State = "unknown"
+		out = append(out, st)
+	}
+	return out
+}
+
+// MCPAddServer validates and persists a new stdio server entry. Like
+// SetModel, the in-memory change applies first and a save failure is
+// returned rather than silently ignored. It never starts the server:
+// the running Host keeps its frozen universe until restart.
+func (r *Runtime) MCPAddServer(name, command string, args []string) error {
+	if r == nil {
+		return fmt.Errorf("runtime not available")
+	}
+	r.mu.RLock()
+	if r.cfg == nil {
+		r.mu.RUnlock()
+		return fmt.Errorf("no config to modify")
+	}
+	cfgCopy := *r.cfg
+	r.mu.RUnlock()
+	if cfgCopy.MCP.Servers == nil {
+		cfgCopy.MCP.Servers = make(map[string]mcp.ServerConfig)
+	}
+	if err := cfgCopy.AddMCPServer(name, mcp.ServerConfig{Command: command, Args: append([]string(nil), args...)}); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.cfg = &cfgCopy
+	r.mu.Unlock()
+	if err := r.SaveConfig(); err != nil {
+		return fmt.Errorf("save MCP server: %w", err)
+	}
+	return nil
+}
+
+// MCPRemoveServer deletes a server entry and persists. Only that entry
+// is touched. Like MCPAddServer, the live session is unchanged.
+func (r *Runtime) MCPRemoveServer(name string) error {
+	if r == nil {
+		return fmt.Errorf("runtime not available")
+	}
+	r.mu.RLock()
+	if r.cfg == nil {
+		r.mu.RUnlock()
+		return fmt.Errorf("no config to modify")
+	}
+	cfgCopy := *r.cfg
+	r.mu.RUnlock()
+	servers := make(map[string]mcp.ServerConfig, len(cfgCopy.MCP.Servers))
+	for k, v := range cfgCopy.MCP.Servers {
+		servers[k] = v
+	}
+	cfgCopy.MCP.Servers = servers
+	if err := cfgCopy.RemoveMCPServer(name); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.cfg = &cfgCopy
+	r.mu.Unlock()
+	if err := r.SaveConfig(); err != nil {
+		return fmt.Errorf("save MCP server: %w", err)
+	}
+	return nil
+}
+
+// MCPSetServerEnabled flips a server's enabled state and persists.
+// Disabling keeps the configuration; it never deletes anything.
+func (r *Runtime) MCPSetServerEnabled(name string, enabled bool) error {
+	if r == nil {
+		return fmt.Errorf("runtime not available")
+	}
+	r.mu.RLock()
+	if r.cfg == nil {
+		r.mu.RUnlock()
+		return fmt.Errorf("no config to modify")
+	}
+	cfgCopy := *r.cfg
+	r.mu.RUnlock()
+	servers := make(map[string]mcp.ServerConfig, len(cfgCopy.MCP.Servers))
+	for k, v := range cfgCopy.MCP.Servers {
+		servers[k] = v
+	}
+	cfgCopy.MCP.Servers = servers
+	if err := cfgCopy.SetMCPServerEnabled(name, enabled); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.cfg = &cfgCopy
+	r.mu.Unlock()
+	if err := r.SaveConfig(); err != nil {
+		return fmt.Errorf("save MCP server: %w", err)
+	}
+	return nil
+}
+
+// MCPTestResult is the outcome of probing one server: the discovered
+// qualified tool names on success.
+type MCPTestResult struct {
+	Tools []string
+}
+
+// MCPTestServer validates one configured server, starts it through an
+// ephemeral Host (never the session Host, whose frozen universe must not
+// change), runs the normal initialization handshake and tool discovery,
+// reports the discovered tools, and shuts the server down. It respects
+// the server's configured timeout plus the Host startup budget. Disabled
+// servers are refused: enable one before testing it.
+func (r *Runtime) MCPTestServer(name string) (MCPTestResult, error) {
+	if r == nil {
+		return MCPTestResult{}, fmt.Errorf("runtime not available")
+	}
+	r.mu.RLock()
+	if r.cfg == nil {
+		r.mu.RUnlock()
+		return MCPTestResult{}, fmt.Errorf("no config to read")
+	}
+	sc, ok := r.cfg.MCP.Servers[name]
+	workspace := r.workspaceRoot
+	r.mu.RUnlock()
+	if !ok {
+		return MCPTestResult{}, fmt.Errorf("mcp server %q not found", name)
+	}
+	if !sc.IsEnabled() {
+		return MCPTestResult{}, fmt.Errorf("mcp server %q is disabled (enable it before testing)", name)
+	}
+	timeout := sc.TimeoutSeconds
+	if timeout <= 0 {
+		timeout = mcp.DefaultServerTimeoutSeconds
+	}
+	single := mcp.Config{Servers: map[string]mcp.ServerConfig{name: sc}}
+	host, err := mcp.New(single, workspace)
+	if err != nil {
+		return MCPTestResult{}, err
+	}
+	defer func() { _ = host.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout*float64(time.Second)))
+	defer cancel()
+	if err := host.Start(ctx); err != nil {
+		return MCPTestResult{}, err
+	}
+	var tools []string
+	for _, ss := range host.Snapshot().Servers {
+		if ss.Key != name || !ss.Ready {
+			continue
+		}
+		for _, t := range ss.Tools {
+			if t != nil {
+				tools = append(tools, t.Name())
+			}
+		}
+	}
+	sort.Strings(tools)
+	return MCPTestResult{Tools: tools}, nil
+}

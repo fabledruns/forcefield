@@ -65,6 +65,29 @@ type JobSnapshot struct {
 	ExitCode int
 }
 
+// MCPServerInfo describes one configured MCP server for /mcp display.
+// State is one of "ready", "failed", "disabled", or "unknown" (never
+// claimed reachable). Tools lists live adapters when ready, else
+// last-known names. Error carries the bounded failure reason when
+// failed. Environment values are never exposed here.
+type MCPServerInfo struct {
+	Name           string
+	Enabled        bool
+	Command        string
+	Args           []string
+	Cwd            string
+	TimeoutSeconds float64
+	State          string
+	Tools          []string
+	Error          string
+}
+
+// MCPTestResult is the outcome of probing one server: the discovered
+// qualified tool names on success.
+type MCPTestResult struct {
+	Tools []string
+}
+
 // Context is the session-facing interface used by commands.
 type Context interface {
 	Println(format string, args ...any)
@@ -123,6 +146,23 @@ type Context interface {
 	SetAgent(name string) error
 	// Agents returns summaries for all known agents.
 	Agents() []AgentSummary
+	// MCPServers lists configured MCP servers with live or last-known
+	// status, in server-key order.
+	MCPServers() []MCPServerInfo
+	// MCPServer returns one configured server or an error when unknown.
+	MCPServer(name string) (MCPServerInfo, error)
+	// MCPAddServer validates, stores, and persists a new stdio server.
+	// It never starts the server.
+	MCPAddServer(name, command string, args []string) error
+	// MCPRemoveServer deletes one server entry, leaving the rest alone.
+	MCPRemoveServer(name string) error
+	// MCPSetServerEnabled flips a server's enabled state without
+	// deleting its configuration.
+	MCPSetServerEnabled(name string, enabled bool) error
+	// MCPTestServer starts one server ephemerally, runs the normal
+	// initialization handshake and tool discovery, reports the tools,
+	// and shuts the server down.
+	MCPTestServer(name string) (MCPTestResult, error)
 }
 
 // Command is a slash command.
