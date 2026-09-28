@@ -136,6 +136,8 @@ Forcefield sends the prompt to the local model, runs any requested tools, and sh
 | `/sessions`          | Open the saved session picker.              |
 | `/skills`            | List available skills.                      |
 | `/skills show <id>`  | Display one skill's full instructions.      |
+| `/mcp`               | List configured MCP servers.                |
+| `/mcp test <name>`   | Probe one MCP server and list its tools.    |
 | `/clear`             | Clear the visible transcript.               |
 | `/exit`              | End the session.                            |
 

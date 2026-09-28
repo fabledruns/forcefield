@@ -81,6 +81,26 @@ Permissions apply per qualified name through the standard system. Unlisted `mcp_
 
 Status is fingerprinted against the configuration that produced it. If the configuration changed since, doctor labels the status **stale** and shows it as history only; stale status is never deleted automatically and never presented as current. A missing file simply means no session has recorded state yet; an unreadable file is reported as a warning and rewritten on the next run.
 
+## Slash commands
+
+The interactive TUI manages servers through `/mcp`:
+
+| Command | Action |
+| ------- | ------ |
+| `/mcp`, `/mcp list` | List configured servers with status. |
+| `/mcp add` | Show the guided setup flow. |
+| `/mcp add <name> <command> [args...]` | Store a new stdio server (command plus argv, no shell). |
+| `/mcp get <name>` | Show one server's configuration and status. |
+| `/mcp remove <name>` | Delete one server entry, leaving the rest alone. |
+| `/mcp enable <name>`, `/mcp disable <name>` | Flip a server's enabled state without deleting its configuration. |
+| `/mcp test <name>` | Start one server ephemerally, run the normal handshake and tool discovery, report the tools, shut it down. |
+
+Status words: `connected` means live-connected at snapshot time; `failed` carries the bounded reason; `disabled` servers never launch; anything else is explicitly `unknown` and never claimed reachable — last-known tool names are labeled as such.
+
+Adding, removing, or toggling a server edits `config.yaml` (persisted immediately) but does not touch the running session: the new configuration takes effect on the next session, since the tool universe is frozen at startup. `/mcp test` blocks the TUI until the probe finishes or the server's configured timeout elapses; it never alters the session's tools.
+
+`/mcp add` covers command plus argv only. Optional fields (`cwd`, `timeout_seconds`, `enabled`, `env`, `env_passthrough`) live in `config.yaml` under `mcp.servers.<name>`. Environment values are never displayed by any subcommand; argument text is redacted before display.
+
 ## Excluded
 
 Remote HTTP/SSE transports, reconnect/respawn, live re-listing, resources, prompts, sampling, roots, elicitation, server-initiated requests, cloud status sync, and multi-agent orchestration are out of scope.

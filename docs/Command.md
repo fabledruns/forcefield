@@ -26,6 +26,7 @@ Slash commands control the chat session. Examples:
 - `/cancel` — cancel the current run
 - `/plan` — produce an implementation plan without modifying anything
 - `/build` — execute the accepted plan
+- `/mcp` — list and manage local MCP servers
 
 ## Core Interfaces
 
@@ -67,6 +68,10 @@ Commands act on the session through a small interface. The TUI is the production
 | `Tools`              | List one line per available tool.                |
 | `Skills`             | List global skills in catalog order.             |
 | `LoadSkill`          | Load one global skill's Markdown body by id.     |
+| `MCPServers` / `MCPServer` | List configured MCP servers / one server, with live or last-known status. |
+| `MCPAddServer` / `MCPRemoveServer` | Store or delete one stdio server entry (persisted, never started). |
+| `MCPSetServerEnabled` | Flip one server's enabled state without deleting it. |
+| `MCPTestServer`      | Probe one server ephemerally and report its tools. |
 
 ## Main Parts
 
@@ -110,6 +115,7 @@ Commands act on the session through a small interface. The TUI is the production
 | `cancel`     | —       | `/cancel`                | Cancel the current run (same as Ctrl+C).    |
 | `plan`       | —       | `/plan <task>`           | Produce an implementation plan without modifying anything. |
 | `build`      | —       | `/build`                 | Execute the accepted plan.                  |
+| `mcp`        | —       | `/mcp [list|add|get|remove|enable|disable|test] ...` | List and manage local MCP servers. |
 
 ## Plan and Build
 

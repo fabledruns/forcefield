@@ -177,7 +177,7 @@ mcp:
       enabled: true           # false = never launched
 ```
 
-Commands run directly (never through a shell) with a minimal environment: explicit `env` wins over `env_passthrough`, and nothing else is inherited. Inline values are plaintext configuration, not vault-backed secrets. Agents opt in per tool via `agents.<name>.tools` using `mcp__<server>__<tool>` names. See [MCP](MCP.md) for the trust model, lifecycle, and doctor status.
+Commands run directly (never through a shell) with a minimal environment: explicit `env` wins over `env_passthrough`, and nothing else is inherited. Inline values are plaintext configuration, not vault-backed secrets. Agents opt in per tool via `agents.<name>.tools` using `mcp__<server>__<tool>` names. The interactive `/mcp add`, `/mcp remove`, `/mcp enable`, and `/mcp disable` commands edit this block (command plus argv for `add`; the rest by hand) and persist immediately; changes take effect on the next session. See [MCP](MCP.md) for the trust model, lifecycle, and doctor status.
 
 ### `workspace`
 
