@@ -1,0 +1,27 @@
+# A config exercising the mcp.servers block: one enabled server with an
+# absolute command plus explicit limits, one disabled server without a
+# command (shape-checked but never spawned), and a namespaced tools:
+# override sharing the native limits mechanism. cue vet must accept this
+# file; Go validation owns the bounds CUE cannot express.
+model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ornith:9b
+
+mcp:
+  servers:
+    filesystem:
+      command: /usr/local/bin/mcp-filesystem
+      args:
+        - /data
+      cwd: ""
+      env: {}
+      env_passthrough: []
+      timeout_seconds: 30
+      enabled: true
+    disabled-example:
+      enabled: false
+
+tools:
+  mcp__filesystem__read_file:
+    timeout_seconds: 60

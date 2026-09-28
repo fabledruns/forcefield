@@ -1,0 +1,11 @@
+# INVALID: MCP per-server attempt timeouts share the scheduler's hard
+# ceiling, so values above 300 are rejected here and by Go validation.
+model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ornith:9b
+mcp:
+  servers:
+    filesystem:
+      command: /usr/local/bin/mcp-filesystem
+      timeout_seconds: 999

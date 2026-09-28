@@ -57,6 +57,31 @@ type fakeContext struct {
 
 	skillCatalog []skills.Skill
 	skillBodies  map[string]string
+
+	mcpServers []command.MCPServerInfo
+	mcpTest    command.MCPTestResult
+
+	mcpServerErr error
+	mcpAddErr    error
+	mcpRemoveErr error
+	mcpEnableErr error
+	mcpTestErr   error
+
+	mcpAdded   []mcpAddedCall
+	mcpRemoved []string
+	mcpEnables []mcpEnableCall
+	mcpTested  []string
+}
+
+type mcpAddedCall struct {
+	name    string
+	command string
+	args    []string
+}
+
+type mcpEnableCall struct {
+	name    string
+	enabled bool
 }
 
 func (f *fakeContext) Println(format string, args ...any) {
@@ -223,6 +248,52 @@ func (f *fakeContext) Agents() []command.AgentSummary {
 		return f.agentList
 	}
 	return []command.AgentSummary{{Name: "general", Description: "general"}, {Name: "coding", Description: "coding"}}
+}
+
+func (f *fakeContext) MCPServers() []command.MCPServerInfo { return f.mcpServers }
+
+func (f *fakeContext) MCPServer(name string) (command.MCPServerInfo, error) {
+	if f.mcpServerErr != nil {
+		return command.MCPServerInfo{}, f.mcpServerErr
+	}
+	for _, s := range f.mcpServers {
+		if s.Name == name {
+			return s, nil
+		}
+	}
+	return command.MCPServerInfo{}, fmt.Errorf("mcp server %q not found", name)
+}
+
+func (f *fakeContext) MCPAddServer(name, command string, args []string) error {
+	if f.mcpAddErr != nil {
+		return f.mcpAddErr
+	}
+	f.mcpAdded = append(f.mcpAdded, mcpAddedCall{name, command, append([]string(nil), args...)})
+	return nil
+}
+
+func (f *fakeContext) MCPRemoveServer(name string) error {
+	if f.mcpRemoveErr != nil {
+		return f.mcpRemoveErr
+	}
+	f.mcpRemoved = append(f.mcpRemoved, name)
+	return nil
+}
+
+func (f *fakeContext) MCPSetServerEnabled(name string, enabled bool) error {
+	if f.mcpEnableErr != nil {
+		return f.mcpEnableErr
+	}
+	f.mcpEnables = append(f.mcpEnables, mcpEnableCall{name, enabled})
+	return nil
+}
+
+func (f *fakeContext) MCPTestServer(name string) (command.MCPTestResult, error) {
+	f.mcpTested = append(f.mcpTested, name)
+	if f.mcpTestErr != nil {
+		return command.MCPTestResult{}, f.mcpTestErr
+	}
+	return f.mcpTest, nil
 }
 
 func TestExit(t *testing.T) {

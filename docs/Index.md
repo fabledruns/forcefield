@@ -26,6 +26,7 @@ You can find the index of the contents in this file.
 | [Session](Session.md)     | `session`   | Manages chat sessions, message history, persistence, and provider-specific message conversion.                  |
 | [Skills](Skills.md)       | `skills`    | Discovers, indexes, and loads agent skills on demand from the local skill store.                                |
 | [Tools](Tools.md)         | `tools`     | Defines the tool framework, including tool registration, execution, and built-in tool implementations.          |
+| [MCP](MCP.md)             | `mcp`       | Exposes local MCP servers as ordinary tools: configuration, trust model, lifecycle, and doctor status.          |
 | [TUI](TUI.md)             | `tui`       | Provides the interactive terminal interface built with Bubble Tea for chatting with Forcefield.                 |
 
 ## Installation

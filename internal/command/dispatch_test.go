@@ -120,6 +120,13 @@ func (f *fakeContext) Agents() []AgentSummary {
 	return []AgentSummary{{Name: "general", Description: "general"}, {Name: "coding", Description: "coding"}}
 }
 
+func (f *fakeContext) MCPServers() []MCPServerInfo                 { return nil }
+func (f *fakeContext) MCPServer(string) (MCPServerInfo, error)     { return MCPServerInfo{}, nil }
+func (f *fakeContext) MCPAddServer(string, string, []string) error { return nil }
+func (f *fakeContext) MCPRemoveServer(string) error                { return nil }
+func (f *fakeContext) MCPSetServerEnabled(string, bool) error      { return nil }
+func (f *fakeContext) MCPTestServer(string) (MCPTestResult, error) { return MCPTestResult{}, nil }
+
 // echoCommand records the args it was called with and can be told to fail.
 type echoCommand struct {
 	calledWith []string

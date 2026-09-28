@@ -39,6 +39,31 @@ package config
 // ToolName lists the tool names a tools: override block may address.
 #ToolName: "read_file" | "write_file" | "list_files" | "pwd" | "shell" | "shell_job" | "search_files" | "search_code" | "find_files" | "git" | "secret_scan" | "load_skill" | "update_task_state" | "add_project_memory"
 
+// MCPToolName matches namespaced MCP tool override keys
+// (mcp__server__tool). Overrides share the native limits mechanism;
+// existence of the tool is checked at MCP discovery time, not here.
+#MCPToolName: string & =~"^mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_-]+$"
+
+// MCPServerKey matches mcp.servers map keys: 1-32 characters keeping
+// qualified tool names predictable and within provider grammars.
+#MCPServerKey: string & =~"^[A-Za-z0-9_-]{1,32}$"
+
+// MCPServer is one local stdio MCP server definition under
+// mcp.servers. Every field is optional in the file; command is required
+// at runtime when the server is enabled, which Go validation enforces
+// (CUE cannot express that conditional, so the schema stays permissive
+// here and Go remains authoritative). Environment values are literal:
+// no variable expansion exists in v1.
+#MCPServer: {
+	command?:         string
+	args?:            [...string]
+	cwd?:             string
+	env?:             [string]: string
+	env_passthrough?: [...string]
+	timeout_seconds?: number & >= 0 & <= 300
+	enabled?:         bool
+}
+
 // AgentConfig is the per-agent override block under agents:. Scalars are
 // optional (non-empty replaces). Lists are optional (omitted keeps the
 // built-in; explicit replaces, and explicit empty means "none").
@@ -137,12 +162,30 @@ package config
 		dir?:     string // "" or omitted = .forcefield/traces
 	}
 
-	// Per-tool output/execution overrides. Keys are tool names; every
-	// field is optional and omitted values resolve to the tool default.
-	// timeout_seconds is capped at 300 (the scheduler's hard ceiling).
-	tools?: [#ToolName]: {
-		max_bytes?:       int & >= 0
-		max_lines?:       int & >= 0
-		timeout_seconds?: number & >= 0 & <= 300
+	// Per-tool output/execution overrides. Native keys are tool names;
+	// MCP keys are namespaced mcp__server__tool names checked for
+	// existence at discovery time. Every field is optional and omitted
+	// values resolve to the tool default. timeout_seconds is capped at
+	// 300 (the scheduler's hard ceiling). Limits can never disable
+	// validation, permissions, output bounds, or redaction.
+	tools?: {
+		[#ToolName]: {
+			max_bytes?:       int & >= 0
+			max_lines?:       int & >= 0
+			timeout_seconds?: number & >= 0 & <= 300
+		}
+		[#MCPToolName]: {
+			max_bytes?:       int & >= 0
+			max_lines?:       int & >= 0
+			timeout_seconds?: number & >= 0 & <= 300
+		}
+	}
+
+	// Local stdio MCP servers. Omitted means zero servers. Shape bounds
+	// beyond this schema (server count, command characters, arg/env
+	// sizes, key charset) are enforced by Go validation in
+	// internal/mcp, which remains authoritative.
+	mcp?: {
+		servers?: [#MCPServerKey]: #MCPServer
 	}
 }

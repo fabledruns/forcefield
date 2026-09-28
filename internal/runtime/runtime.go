@@ -13,6 +13,7 @@ import (
 
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
+	"forcefield/internal/mcp"
 	"forcefield/internal/memory"
 	"forcefield/internal/perfmark"
 	"forcefield/internal/permissions"
@@ -102,6 +103,16 @@ type Runtime struct {
 	// fullManager holds every tool (before filtering) so filtered managers
 	// can reuse the same Tool instances.
 	fullManager *tools.Manager
+	// mcpHost owns MCP server subprocesses when any MCP server is
+	// enabled, nil otherwise. Runtime owns Host lifecycle (Close); the
+	// Host owns process lifecycle. The adapters it registered stay in
+	// fullManager for the runtime lifetime (frozen universe, no per-turn
+	// teardown, no reconnect).
+	mcpHost *mcp.Host
+	// mcpStatusNote records a non-fatal MCP status persistence failure
+	// for MCPWarnings. Status writes are best-effort by design: they must
+	// never fail startup or shutdown.
+	mcpStatusNote string
 	// projectMemoryText is cached for rebuilding the agent prompt on
 	// switches without re-reading disk. Skill catalogs are computed per
 	// agent from the shared store via catalogFor (no cache: the catalog
@@ -211,6 +222,25 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 	}
 	perfmark.Event("stage-tools")
 
+	// Start MCP servers, if any are enabled, and fold healthy adapters
+	// into the full manager. Individual server failures warn-and-continue
+	// (see MCPWarnings): natives and healthy survivors always register.
+	var mcpHost *mcp.Host
+	mcpStatusNote := ""
+	if mcpHasEnabledServers(cfg) {
+		h, err := startMCPHost(cfg, policy.Workspace, fullManager)
+		if err != nil {
+			return nil, fmt.Errorf("start MCP host: %w", err)
+		}
+		mcpHost = h
+		// Best-effort last-known-state for `ff doctor`. A write failure
+		// warns via MCPWarnings; it never fails startup.
+		if err := persistMCPStatus(h, policy.Workspace, cfg); err != nil {
+			mcpStatusNote = fmt.Sprintf("mcp status not persisted: %v", err)
+		}
+		perfmark.Event("stage-mcp")
+	}
+
 	// Build specialised agent registry with config overrides.
 	registry := agent.DefaultRegistry()
 	if err := applyAgentOverrides(registry, cfg.Agents); err != nil {
@@ -225,7 +255,10 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 		activeName = "general"
 	}
 
-	filtered, err := fullManager.Filtered(def.Tools)
+	// Requested-but-missing mcp__* names are omitted (see MCPWarnings);
+	// unknown native names still fail strictly inside Filtered.
+	agentTools, _ := resolveAgentDefinitionTools(fullManager, def)
+	filtered, err := fullManager.Filtered(agentTools)
 	if err != nil {
 		return nil, fmt.Errorf("build tool set for agent %q: %w", def.Name, err)
 	}
@@ -244,6 +277,8 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 		provider:            provider,
 		manager:             filtered,
 		fullManager:         fullManager,
+		mcpHost:             mcpHost,
+		mcpStatusNote:       mcpStatusNote,
 		skills:              skillStore,
 		scheduler:           newScheduler(filtered, permManager, asker, DefaultSchedulerConfig),
 		limits:              limitsFromConfig(cfg),
@@ -856,8 +891,10 @@ func (r *Runtime) SetAgent(name string) error {
 	}
 
 	// Build new filtered manager and agent before mutating to ensure
-	// tool set is valid.
-	filtered, err := full.Filtered(def.Tools)
+	// tool set is valid. Missing mcp__* names are omitted (MCPWarnings);
+	// unknown natives still fail strictly.
+	agentTools, _ := resolveAgentDefinitionTools(full, def)
+	filtered, err := full.Filtered(agentTools)
 	if err != nil {
 		return fmt.Errorf("agent %q has invalid tool set: %w", def.Name, err)
 	}

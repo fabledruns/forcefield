@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"forcefield/internal/mcp"
 	"forcefield/internal/redact"
 	"forcefield/internal/sandbox"
 )
@@ -185,6 +186,11 @@ type Config struct {
 	Tools       map[string]ToolLimits     `yaml:"tools,omitempty"`
 	Workspace   Workspace                 `yaml:"workspace,omitempty"`
 	Tracing     Tracing                   `yaml:"tracing,omitempty"`
+	// MCP holds local stdio MCP server definitions. The shape and
+	// per-server bounds live in internal/mcp (the sole MCP owner); this
+	// package owns file I/O, error wording, and persistence. Omitted
+	// means zero servers and preserves existing behavior exactly.
+	MCP mcp.Config `yaml:"mcp,omitempty"`
 }
 
 const defaultConfigTemplate = `model:
@@ -532,6 +538,14 @@ func (c *Config) validate() error {
 		return err
 	}
 
+	// MCP server definitions are validated for shape only here: no
+	// executables are resolved and no processes start at config load, so
+	// doctor-without-spawning stays possible. Bounds live in internal/mcp;
+	// its errors already carry the mcp: field paths.
+	if err := c.MCP.Validate(); err != nil {
+		return err
+	}
+
 	if _, err := ParseWorkspaceMode(c.Workspace.Mode); err != nil {
 		return fmt.Errorf("workspace.mode: %w", err)
 	}
@@ -642,7 +656,11 @@ func validateRunLimits(prefix string, maxIter, maxCalls, maxFail, ctxWindow, ctx
 
 func validateTools(entries map[string]ToolLimits) error {
 	for name, lim := range entries {
-		if _, ok := knownTools[name]; !ok {
+		// Namespaced MCP tool overrides share the native limits
+		// mechanism (same fields, same ceilings). Existence of the tool
+		// is checked later at discovery time; limits can never disable
+		// validation, permissions, output bounds, or redaction.
+		if _, ok := knownTools[name]; !ok && !mcp.IsQualifiedToolName(name) {
 			return fmt.Errorf("tools.%s: unknown tool %q (available: add_project_memory, find_files, git, list_files, load_skill, pwd, read_file, search_code, search_files, secret_scan, shell, shell_job, update_task_state, write_file)", name, name)
 		}
 		if lim.MaxBytes < 0 {
