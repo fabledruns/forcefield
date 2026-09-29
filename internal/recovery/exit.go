@@ -27,6 +27,13 @@ const (
 	// permission denials: progress requires a human decision.
 	// Never auto-restarted.
 	ExitNeedsHuman = 4
+	// ExitUnverified is a run the model finished (EventDone) without
+	// establishing verification: tools ran but nothing recorded a
+	// passing verification, so the final status is partial (or
+	// blocked/failed). The output may still be printed, but the
+	// operating system must not report success. Needs human review;
+	// never auto-restarted.
+	ExitUnverified = 5
 )
 
 // RetryableForSupervisor reports whether an exit code permits an
@@ -71,9 +78,18 @@ func (s *Stats) Tally(t runtime.EventType) {
 // providers.IsTransient (no second retryability system). See
 // docs/Recovery.md for precedence. Quota/billing, auth, invalid, and
 // protocol errors are never transient.
-func Classify(eventType runtime.EventType, err error, stats Stats) int {
+//
+// The status parameter carries the EventDone verification outcome: only
+// StatusVerified completes with ExitOK. Any other Done status (partial,
+// blocked, failed, or empty from a hand-built event) completes
+// unverified. Plain chat is unaffected: with zero tool calls FinalStatus
+// reports verified, so ordinary answers keep exiting 0.
+func Classify(eventType runtime.EventType, err error, stats Stats, status runtime.Status) int {
 	if eventType == runtime.EventDone {
-		return ExitOK
+		if status == runtime.StatusVerified {
+			return ExitOK
+		}
+		return ExitUnverified
 	}
 	if eventType == runtime.EventCancelled {
 		return ExitNeedsHuman

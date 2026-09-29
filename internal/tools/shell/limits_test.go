@@ -3,6 +3,7 @@ package shell
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,6 +81,103 @@ func TestShell_StdoutStderrSeparation(t *testing.T) {
 	}
 	if !strings.Contains(result.Content, "out") || !strings.Contains(result.Content, "err") {
 		t.Errorf("Content = %q, want both streams visible", result.Content)
+	}
+}
+
+// TestShell_StreamBudgetBoundsLiveOutput pins the P1 stream-cap fix: a
+// command emitting far more than the byte bound must have its live
+// onChunk output bounded by the same budget as the accumulated result,
+// with exactly one truncation marker. Before the fix the stream path was
+// uncapped (every line forwarded), letting chatty processes grow the
+// event stream and TUI transcript without limit.
+func TestShell_StreamBudgetBoundsLiveOutput(t *testing.T) {
+	requireShellBackend(t)
+	s := NewShell()
+	const bound = 1024
+	s.SetLimits(tools.Limits{MaxBytes: bound})
+
+	var mu sync.Mutex
+	var streamed, chunks, markers int
+	onChunk := func(c tools.StreamChunk) {
+		mu.Lock()
+		defer mu.Unlock()
+		chunks++
+		streamed += len(c.Data)
+		if strings.Contains(c.Data, "truncated") {
+			markers++
+		}
+	}
+
+	// seq 1 1000 emits ~3.9 KiB, roughly 4x the bound.
+	result, err := s.ExecuteStream(context.Background(), map[string]any{
+		"command": "seq 1 1000",
+	}, onChunk)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// One marker chunk on top of the data budget, plus one line of slack
+	// for the line that trips the cap.
+	if streamed > bound+len(streamTruncateMarker)+256 {
+		t.Errorf("streamed %d bytes with bound %d: live output not capped", streamed, bound)
+	}
+	if markers != 1 {
+		t.Errorf("got %d truncation markers in %d chunks, want exactly 1", markers, chunks)
+	}
+	// The stream must stop early, not forward all ~1000 lines.
+	if chunks >= 1000 {
+		t.Errorf("got %d chunks for 1000 output lines: stream never stopped", chunks)
+	}
+	// The accumulated result keeps its existing cap behavior.
+	if combined := len(result.Stdout) + len(result.Stderr); combined > bound+128 {
+		t.Errorf("combined result %d exceeds bound %d", combined, bound)
+	}
+	if result.Metadata == nil || result.Metadata["truncated"] != true {
+		t.Errorf("Metadata = %v, want truncated record", result.Metadata)
+	}
+}
+
+// TestShell_SmallOutputStreamsFullyUnmarked pins that the stream budget
+// changes nothing for ordinary output: every line streams, no marker.
+func TestShell_SmallOutputStreamsFullyUnmarked(t *testing.T) {
+	requireShellBackend(t)
+	s := NewShell()
+
+	var mu sync.Mutex
+	var streamed, chunks int
+	var sawMarker bool
+	onChunk := func(c tools.StreamChunk) {
+		mu.Lock()
+		defer mu.Unlock()
+		chunks++
+		streamed += len(c.Data)
+		if strings.Contains(c.Data, "truncated") {
+			sawMarker = true
+		}
+	}
+
+	result, err := s.ExecuteStream(context.Background(), map[string]any{
+		"command": "echo hello-stream",
+	}, onChunk)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("result.IsError = true: %s", result.Content)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if chunks != 1 {
+		t.Errorf("got %d chunks, want 1", chunks)
+	}
+	if sawMarker {
+		t.Error("small output must not carry a truncation marker")
+	}
+	if streamed != len("hello-stream") {
+		t.Errorf("streamed %d bytes, want %d (line without newline)", streamed, len("hello-stream"))
 	}
 }
 

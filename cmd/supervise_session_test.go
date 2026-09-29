@@ -283,3 +283,113 @@ func TestSuperviseTwoEpisodeLifecycle(t *testing.T) {
 		t.Errorf("Supervisor = %+v, want nil after the reset episode succeeds", st)
 	}
 }
+
+// TestMirrorSuperviseEventSaveFailureDoesNotAdvance pins P1 Test B: when
+// the restart mirror write fails, the error is returned (never
+// swallowed) and the file does not advance as though the write
+// succeeded. The session seeds healthy (writes worked), then the write
+// path breaks — the late-onset 5-day failure mode — so the mirror must
+// report the failure while the persisted budget stays at its last good
+// value. (In-memory caller mutations predate the save and are not
+// rolled back; containment comes from the caller stopping supervision
+// on this error, pinned by TestDriveSupervisionStopsWhenMirrorFails.)
+func TestMirrorSuperviseEventSaveFailureDoesNotAdvance(t *testing.T) {
+	enterSuperviseTempDir(t)
+	id := seedSession(t, &session.SupervisorState{Restarts: 1})
+	sess := loadSupervisor(t, id)
+	// Break the write path after the healthy seed: an ID the saver
+	// always rejects makes every subsequent Save fail deterministically.
+	sess.ID = "bad/id"
+	err := mirrorSuperviseEvent(sess, id, 3, recovery.SuperviseEvent{Attempt: 3, Retry: true})
+	if err == nil {
+		t.Fatal("mirrorSuperviseEvent = nil, want the save failure surfaced")
+	}
+	if !strings.Contains(err.Error(), "record restart") {
+		t.Errorf("err = %v, want it to name the failed mirror write", err)
+	}
+	if sess.LastSaveError == "" {
+		t.Error("LastSaveError empty, want the sticky save error recorded")
+	}
+	// The file keeps its last good budget: a later supervisor resumes
+	// from restarts 1, not the unpersisted 3.
+	if st := loadSupervisor(t, id).Supervisor; st == nil || st.Restarts != 1 {
+		t.Errorf("file Supervisor = %+v, want restarts 1 (no advance on failed write)", st)
+	}
+}
+
+// TestMirrorSuperviseEventSuccessPersists pins P1 Test C for the
+// supervisor path: a healthy mirror write records the count, clears
+// any error, and survives a reload.
+func TestMirrorSuperviseEventSuccessPersists(t *testing.T) {
+	enterSuperviseTempDir(t)
+	sess := session.New()
+	sess.AddMessage("user", "supervised work")
+	if err := sess.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := mirrorSuperviseEvent(sess, sess.ID, 2, recovery.SuperviseEvent{Attempt: 2, Retry: true}); err != nil {
+		t.Fatalf("mirrorSuperviseEvent = %v, want nil on a healthy write", err)
+	}
+	if sess.LastSaveError != "" {
+		t.Errorf("LastSaveError = %q, want clean after success", sess.LastSaveError)
+	}
+	if st := loadSupervisor(t, sess.ID).Supervisor; st == nil || st.Restarts != 2 {
+		t.Errorf("file Supervisor = %+v, want restarts 2", st)
+	}
+}
+
+// TestPersistSuperviseEventSuccessPaths pins that the verified-write
+// wrapper preserves existing behavior on healthy storage across the
+// whole episode arc: retry records, exhaustion latches, terminal
+// outcome clears.
+func TestPersistSuperviseEventSuccessPaths(t *testing.T) {
+	enterSuperviseTempDir(t)
+	id := seedSession(t, nil)
+	retry := recovery.SuperviseEvent{Attempt: 1, Retry: true}
+	if err := persistSuperviseEvent(id, 0, retry); err != nil {
+		t.Fatalf("retry mirror = %v, want nil", err)
+	}
+	if st := loadSupervisor(t, id).Supervisor; st == nil || st.Restarts != 1 {
+		t.Fatalf("file Supervisor = %+v, want restarts 1", st)
+	}
+	if err := persistSuperviseEvent(id, 1, recovery.SuperviseEvent{Attempt: 2, Exhausted: true, Final: true}); err != nil {
+		t.Fatalf("exhaust mirror = %v, want nil", err)
+	}
+	if st := loadSupervisor(t, id).Supervisor; st == nil || st.ExhaustedAt == 0 {
+		t.Fatalf("file Supervisor = %+v, want a latched episode", st)
+	}
+	done := recovery.SuperviseEvent{Attempt: 3, Code: recovery.ExitOK, Final: true}
+	if err := persistSuperviseEvent(id, 1, done); err != nil {
+		t.Fatalf("clear mirror = %v, want nil", err)
+	}
+	if st := loadSupervisor(t, id).Supervisor; st != nil {
+		t.Errorf("file Supervisor = %+v, want nil after terminal clear", st)
+	}
+}
+
+// TestDriveSupervisionStopsWhenMirrorFails pins the fail-closed
+// consequence: when the restart mirror cannot be verified (the emit
+// layer reports the failure and cancels, exactly as
+// superviseSessionCommand does), supervision parks after the single
+// spent attempt instead of silently consuming further budget.
+func TestDriveSupervisionStopsWhenMirrorFails(t *testing.T) {
+	isolateSuperviseGlobals(t)
+	var calls [][2]any
+	superviseSpawn = scriptSpawn([]int{3, 3, 3}, &calls)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	emit := func(e recovery.SuperviseEvent) {
+		if e.Retry {
+			// Mirror write failed: stop spending restarts.
+			cancel()
+		}
+	}
+	got := driveSupervision(ctx, "sess-mirror-fail", 0, sessionTestBudget(), 0, emit)
+	if got != recovery.ExitNeedsHuman {
+		t.Errorf("driveSupervision = %d, want %d (parked after mirror failure)", got, recovery.ExitNeedsHuman)
+	}
+	if len(calls) != 1 {
+		t.Errorf("spawned %d children, want 1 (no restart after an unverified mirror write)", len(calls))
+	}
+}

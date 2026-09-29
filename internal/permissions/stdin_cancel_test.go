@@ -1,6 +1,7 @@
 package permissions
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"strings"
@@ -60,5 +61,36 @@ func TestStdinAsker_AnswerStillWorks(t *testing.T) {
 		if got.Decision() != tc.want {
 			t.Errorf("Ask(%q) decision = %v, want %v", tc.input, got.Decision(), tc.want)
 		}
+	}
+}
+
+// TestStdinAsker_ScrubsSecrets pins that the headless permission prompt
+// never prints credentials to stdout (where logs or pipes may capture
+// them). Regression test for the audit finding that Arguments were
+// marshaled and printed raw: string values, nested env objects, and
+// non-string values must all be display-scrubbed while the approval
+// decision itself is unaffected.
+func TestStdinAsker_ScrubsSecrets(t *testing.T) {
+	const secret = "sk-12345678901234567890abcdef"
+	var out bytes.Buffer
+	asker := &StdinAsker{In: strings.NewReader("n\n"), Out: &out}
+	got, err := asker.Ask(context.Background(), Request{
+		Tool: "shell",
+		Arguments: map[string]any{
+			"command": "deploy",
+			"env": map[string]any{
+				"DEPLOY_TOKEN": secret,
+				"RETRIES":      float64(3),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask error = %v", err)
+	}
+	if got.Decision() != Deny {
+		t.Fatalf("decision = %v, want Deny (answer was n)", got.Decision())
+	}
+	if rendered := out.String(); strings.Contains(rendered, secret) {
+		t.Errorf("headless prompt leaked secret:\n%s", rendered)
 	}
 }

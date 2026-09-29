@@ -89,7 +89,7 @@ func SuperviseFrom(ctx context.Context, budget Budget, used int, child ChildFunc
 			return 1
 		}
 		switch code {
-		case ExitOK, ExitTerminal, ExitNeedsHuman:
+		case ExitOK, ExitTerminal, ExitNeedsHuman, ExitUnverified:
 			emit(SuperviseEvent{Attempt: attempt, Code: code, Final: true})
 			return code
 		case ExitRetryable:

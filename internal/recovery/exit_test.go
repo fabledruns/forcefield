@@ -65,42 +65,47 @@ func TestClassifyExitCodes(t *testing.T) {
 	terminalErr := errors.New("stopped after 60 iterations (maximum reached)")
 
 	cases := []struct {
-		name  string
-		event runtime.EventType
-		err   error
-		stats Stats
-		want  int
+		name   string
+		event  runtime.EventType
+		err    error
+		stats  Stats
+		status runtime.Status
+		want   int
 	}{
-		{"done", runtime.EventDone, nil, Stats{}, ExitOK},
-		{"done with earlier denials still ok", runtime.EventDone, nil, Stats{Denied: 3}, ExitOK},
-		{"blocked iterations", runtime.EventBlocked, terminalErr, Stats{Done: 5}, ExitTerminal},
-		{"blocked with progress and denials", runtime.EventBlocked, terminalErr, Stats{Done: 1, Denied: 2}, ExitTerminal},
-		{"cancelled event", runtime.EventCancelled, nil, Stats{}, ExitNeedsHuman},
-		{"cancelled event with stats", runtime.EventCancelled, nil, Stats{Done: 4}, ExitNeedsHuman},
-		{"context canceled error", runtime.EventError, context.Canceled, Stats{}, ExitNeedsHuman},
-		{"wrapped cancel", runtime.EventError, fmt.Errorf("model call failed: %w", context.Canceled), Stats{}, ExitNeedsHuman},
-		{"deadline exceeded", runtime.EventError, context.DeadlineExceeded, Stats{}, ExitNeedsHuman},
+		{"done verified", runtime.EventDone, nil, Stats{}, runtime.StatusVerified, ExitOK},
+		{"done verified with earlier denials still ok", runtime.EventDone, nil, Stats{Denied: 3}, runtime.StatusVerified, ExitOK},
+		{"done partial is unverified", runtime.EventDone, nil, Stats{Done: 2}, runtime.StatusPartial, ExitUnverified},
+		{"done failed verification is unverified", runtime.EventDone, nil, Stats{}, runtime.StatusFailed, ExitUnverified},
+		{"done blocked status is unverified", runtime.EventDone, nil, Stats{}, runtime.StatusBlocked, ExitUnverified},
+		{"done with empty status is unverified", runtime.EventDone, nil, Stats{}, "", ExitUnverified},
+		{"blocked iterations", runtime.EventBlocked, terminalErr, Stats{Done: 5}, "", ExitTerminal},
+		{"blocked with progress and denials", runtime.EventBlocked, terminalErr, Stats{Done: 1, Denied: 2}, "", ExitTerminal},
+		{"cancelled event", runtime.EventCancelled, nil, Stats{}, "", ExitNeedsHuman},
+		{"cancelled event with stats", runtime.EventCancelled, nil, Stats{Done: 4}, "", ExitNeedsHuman},
+		{"context canceled error", runtime.EventError, context.Canceled, Stats{}, "", ExitNeedsHuman},
+		{"wrapped cancel", runtime.EventError, fmt.Errorf("model call failed: %w", context.Canceled), Stats{}, "", ExitNeedsHuman},
+		{"deadline exceeded", runtime.EventError, context.DeadlineExceeded, Stats{}, "", ExitNeedsHuman},
 		// A deadline wrapped by provider layers (but never classified
 		// transient by the runtime) is still an ordinary deadline: only
 		// the runtime transient mark promotes it to retryable. This
 		// guards against reordering IsTransient ahead of the shortcut,
 		// which would flip every bare deadline to ExitRetryable.
-		{"wrapped deadline without runtime mark stays human", runtime.EventError, fmt.Errorf("gateway timeout: %w", context.DeadlineExceeded), Stats{}, ExitNeedsHuman},
-		{"transient 429", runtime.EventError, transient429, Stats{}, ExitRetryable},
-		{"transient timeout class", runtime.EventError, transientNetError{}, Stats{}, ExitRetryable},
-		{"quota exhaustion", runtime.EventError, quota429, Stats{}, ExitTerminal},
-		{"auth failure", runtime.EventError, auth401, Stats{}, ExitTerminal},
-		{"plain failure", runtime.EventError, terminalErr, Stats{Failed: 1}, ExitTerminal},
-		{"nil error fails closed", runtime.EventError, nil, Stats{}, ExitTerminal},
-		{"denied-only blocked needs human", runtime.EventBlocked, terminalErr, Stats{Denied: 2}, ExitNeedsHuman},
-		{"denied-only error needs human", runtime.EventError, terminalErr, Stats{Denied: 1}, ExitNeedsHuman},
-		{"unknown event fails closed", runtime.EventType(999), terminalErr, Stats{}, ExitTerminal},
+		{"wrapped deadline without runtime mark stays human", runtime.EventError, fmt.Errorf("gateway timeout: %w", context.DeadlineExceeded), Stats{}, "", ExitNeedsHuman},
+		{"transient 429", runtime.EventError, transient429, Stats{}, "", ExitRetryable},
+		{"transient timeout class", runtime.EventError, transientNetError{}, Stats{}, "", ExitRetryable},
+		{"quota exhaustion", runtime.EventError, quota429, Stats{}, "", ExitTerminal},
+		{"auth failure", runtime.EventError, auth401, Stats{}, "", ExitTerminal},
+		{"plain failure", runtime.EventError, terminalErr, Stats{Failed: 1}, "", ExitTerminal},
+		{"nil error fails closed", runtime.EventError, nil, Stats{}, "", ExitTerminal},
+		{"denied-only blocked needs human", runtime.EventBlocked, terminalErr, Stats{Denied: 2}, "", ExitNeedsHuman},
+		{"denied-only error needs human", runtime.EventError, terminalErr, Stats{Denied: 1}, "", ExitNeedsHuman},
+		{"unknown event fails closed", runtime.EventType(999), terminalErr, Stats{}, "", ExitTerminal},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Classify(tc.event, tc.err, tc.stats); got != tc.want {
-				t.Errorf("Classify(%v, %v, %+v) = %d, want %d",
-					tc.event, tc.err, tc.stats, got, tc.want)
+			if got := Classify(tc.event, tc.err, tc.stats, tc.status); got != tc.want {
+				t.Errorf("Classify(%v, %v, %+v, %q) = %d, want %d",
+					tc.event, tc.err, tc.stats, tc.status, got, tc.want)
 			}
 		})
 	}
@@ -110,7 +115,7 @@ func TestRetryableForSupervisor(t *testing.T) {
 	if !RetryableForSupervisor(ExitRetryable) {
 		t.Error("ExitRetryable must permit supervised restart")
 	}
-	for _, code := range []int{ExitOK, ExitTerminal, ExitNeedsHuman, 1, 99} {
+	for _, code := range []int{ExitOK, ExitTerminal, ExitNeedsHuman, ExitUnverified, 1, 99} {
 		if RetryableForSupervisor(code) {
 			t.Errorf("code %d must not permit supervised restart", code)
 		}

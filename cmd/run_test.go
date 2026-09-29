@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	"forcefield/internal/providers"
+	"forcefield/internal/recovery"
+	"forcefield/internal/runtime"
+	"forcefield/internal/session"
 )
 
 func TestRunCommand_Success(t *testing.T) {
@@ -20,7 +23,7 @@ func TestRunCommand_Success(t *testing.T) {
 	}()
 
 	// Fake runtime that returns a deterministic response.
-	runtimeRun = func(_ context.Context, msgs []providers.Message) (providers.Response, error) {
+	runtimeRun = func(_ context.Context, msgs []providers.Message) (providers.Response, runtime.Status, error) {
 		if len(msgs) != 1 {
 			t.Errorf("expected 1 message, got %d", len(msgs))
 		}
@@ -30,7 +33,7 @@ func TestRunCommand_Success(t *testing.T) {
 		if msgs[0].Content != "hello world" {
 			t.Errorf("content = %q, want hello world", msgs[0].Content)
 		}
-		return providers.Response{Content: "fake response"}, nil
+		return providers.Response{Content: "fake response"}, runtime.StatusVerified, nil
 	}
 
 	// Capture stdout.
@@ -55,9 +58,9 @@ func TestRunCommand_JoinsArgs(t *testing.T) {
 	defer func() { runtimeRun = origRun }()
 
 	var gotContent string
-	runtimeRun = func(_ context.Context, msgs []providers.Message) (providers.Response, error) {
+	runtimeRun = func(_ context.Context, msgs []providers.Message) (providers.Response, runtime.Status, error) {
 		gotContent = msgs[0].Content
-		return providers.Response{Content: "ok"}, nil
+		return providers.Response{Content: "ok"}, runtime.StatusVerified, nil
 	}
 	// TrimSpace and Join should collapse multiple args with single space.
 	if err := runCommand([]string{"  hello ", "world  ", " test"}); err != nil {
@@ -76,8 +79,8 @@ func TestRunCommand_PropagatesError(t *testing.T) {
 	origRun := runtimeRun
 	defer func() { runtimeRun = origRun }()
 
-	runtimeRun = func(context.Context, []providers.Message) (providers.Response, error) {
-		return providers.Response{}, fmt.Errorf("model failure")
+	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, error) {
+		return providers.Response{}, "", fmt.Errorf("model failure")
 	}
 	err := runCommand([]string{"task"})
 	if err == nil {
@@ -94,8 +97,8 @@ func TestRunCommand_CobraValidation(t *testing.T) {
 	// Use a fake run to avoid real provider.
 	origRun := runtimeRun
 	defer func() { runtimeRun = origRun }()
-	runtimeRun = func(context.Context, []providers.Message) (providers.Response, error) {
-		return providers.Response{Content: "ok"}, nil
+	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, error) {
+		return providers.Response{Content: "ok"}, runtime.StatusVerified, nil
 	}
 	// Directly test the cobra Args validator.
 	if err := runCmd.Args(runCmd, []string{}); err == nil {
@@ -103,5 +106,90 @@ func TestRunCommand_CobraValidation(t *testing.T) {
 	}
 	if err := runCmd.Args(runCmd, []string{"one"}); err != nil {
 		t.Errorf("Args validator failed for 1 arg: %v", err)
+	}
+}
+
+// TestExitForRunStatus pins the P1 false-success fix at the process
+// boundary: verified completions (including plain chat, which FinalStatus
+// reports as verified) return nil (exit 0, no osExit call); any other
+// Done status exits unverified via osExit so supervisors and pipelines
+// never mistake output for success.
+func TestExitForRunStatus(t *testing.T) {
+	origExit := osExit
+	defer func() { osExit = origExit }()
+
+	if err := exitForRunStatus(runtime.StatusVerified); err != nil {
+		t.Errorf("verified exit = %v, want nil", err)
+	}
+	for _, status := range []runtime.Status{
+		runtime.StatusPartial,
+		runtime.StatusBlocked,
+		runtime.StatusFailed,
+		"",
+	} {
+		var exited *int
+		osExit = func(code int) { exited = &code }
+		if err := exitForRunStatus(status); err != nil {
+			t.Errorf("status %q exit returned error %v, want nil (osExit carries the code)", status, err)
+		}
+		if exited == nil || *exited != recovery.ExitUnverified {
+			t.Errorf("status %q exited %v, want osExit(%d)", status, exited, recovery.ExitUnverified)
+		}
+	}
+}
+
+// TestRunCommand_UnverifiedPartialExitsUnverified drives the whole
+// one-shot path: a fake runtime that finishes partial still prints its
+// response but exits with the unverified code instead of 0.
+func TestRunCommand_UnverifiedPartialExitsUnverified(t *testing.T) {
+	origRun, origExit, origStdout := runtimeRun, osExit, os.Stdout
+	defer func() {
+		runtimeRun, osExit, os.Stdout = origRun, origExit, origStdout
+	}()
+
+	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, error) {
+		return providers.Response{Content: "unreviewed work"}, runtime.StatusPartial, nil
+	}
+	var exited *int
+	osExit = func(code int) { exited = &code }
+
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	err := runCommand([]string{"do", "things"})
+	w.Close()
+	os.Stdout = origStdout
+	if err != nil {
+		t.Fatalf("runCommand error = %v, want nil (exit code carries the verdict)", err)
+	}
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	if out := strings.TrimSpace(buf.String()); out != "unreviewed work" {
+		t.Errorf("stdout = %q, want the response still printed", out)
+	}
+	if exited == nil || *exited != recovery.ExitUnverified {
+		t.Errorf("exited = %v, want osExit(%d)", exited, recovery.ExitUnverified)
+	}
+}
+
+// TestSaveGateError pins the P1 persistence gate: a sticky session-save
+// failure becomes a terminal run error naming the session, while healthy
+// (and nil) sessions pass. runResumeSession and finishResumeSession both
+// consult it, so adoption writes and lifecycle bookkeeping cannot fail
+// silently.
+func TestSaveGateError(t *testing.T) {
+	if err := saveGateError(nil, "ghost"); err != nil {
+		t.Errorf("nil session gate = %v, want nil", err)
+	}
+	if err := saveGateError(session.New(), "healthy"); err != nil {
+		t.Errorf("healthy session gate = %v, want nil", err)
+	}
+	broken := session.New()
+	broken.LastSaveError = "replace session file x after 10 attempts: access denied"
+	err := saveGateError(broken, "sess-7")
+	if err == nil {
+		t.Fatal("broken session gate = nil, want a terminal error")
+	}
+	if !strings.Contains(err.Error(), "sess-7") || !strings.Contains(err.Error(), "session save failed") {
+		t.Errorf("err = %v, want it to name the session and the save failure", err)
 	}
 }

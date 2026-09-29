@@ -203,9 +203,17 @@ func superviseSessionCommand(ctx context.Context, sessionID string, maxTurns int
 	}
 	fmt.Fprintf(os.Stderr, "ff supervise %s: running ff run --resume %s (max %d restarts)\n",
 		sessionID, sessionID, budget.MaxRestarts)
+	// The loop's mirror writes are lifecycle state: if one fails, the
+	// on-disk budget no longer reflects reality, so stop supervising
+	// (park) rather than spending restarts against an unverified file.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	return driveSupervision(ctx, sessionID, maxTurns, budget, used, func(e recovery.SuperviseEvent) {
 		reportSuperviseEvent(sessionID, budget, e)
-		persistSuperviseEvent(sessionID, used, e)
+		if err := persistSuperviseEvent(sessionID, used, e); err != nil {
+			fmt.Fprintf(os.Stderr, "ff supervise %s: %v; stopping\n", sessionID, err)
+			cancel()
+		}
 	})
 }
 
@@ -229,29 +237,50 @@ func driveSupervision(ctx context.Context, sessionID string, maxTurns int, budge
 //     the backoff wait, so a kill during backoff resumes with remaining
 //     budget.
 //   - Budget exhausted → latch the episode.
-//   - Terminal child outcome (0/2/4) → drop episode lifecycle so a later
+//   - Terminal child outcome (0/2/4/5) → drop episode lifecycle so a later
 //     episode starts clean. Terminal failures — including quota/auth and
 //     denials — therefore never accumulate retry state.
 //
 // Spawn failures and unknown codes record nothing (nothing ran) and fail
 // closed. Load failures are skipped silently: the in-memory budget still
 // bounds the invocation, and the startup line already warned when the
-// session was unloadable.
-func persistSuperviseEvent(sessionID string, startUsed int, e recovery.SuperviseEvent) {
+// session was unloadable. Save failures are returned (never swallowed):
+// the caller stops supervising rather than spending restarts the file
+// cannot account for.
+func persistSuperviseEvent(sessionID string, startUsed int, e recovery.SuperviseEvent) error {
 	switch {
 	case e.Retry:
 		if sess, err := session.Load(sessionID); err == nil {
-			recovery.NoteSupervisorRestart(sess, startUsed+e.Attempt)
+			return mirrorSuperviseEvent(sess, sessionID, startUsed+e.Attempt, e)
 		}
+		return nil
 	case e.Exhausted:
 		if sess, err := session.Load(sessionID); err == nil {
 			recovery.NoteSupervisorExhausted(sess)
+			return saveGateError(sess, sessionID)
 		}
-	case e.Final && (e.Code == recovery.ExitOK || e.Code == recovery.ExitTerminal || e.Code == recovery.ExitNeedsHuman):
+		return nil
+	case e.Final && (e.Code == recovery.ExitOK || e.Code == recovery.ExitTerminal || e.Code == recovery.ExitNeedsHuman || e.Code == recovery.ExitUnverified):
 		if sess, err := session.Load(sessionID); err == nil {
 			recovery.ClearSupervisor(sess)
+			return saveGateError(sess, sessionID)
 		}
+		return nil
 	}
+	return nil
+}
+
+// mirrorSuperviseEvent records one committed retry against an already
+// loaded session, verifying the write reached disk. The in-memory loop
+// has already spent the restart; this mirror only reports whether the
+// file agrees, so a failure stops supervision instead of letting the
+// budget and the file diverge silently.
+func mirrorSuperviseEvent(sess *session.Session, sessionID string, restarts int, e recovery.SuperviseEvent) error {
+	recovery.NoteSupervisorRestart(sess, restarts)
+	if err := saveGateError(sess, sessionID); err != nil {
+		return fmt.Errorf("cannot record restart for attempt %d: %w", e.Attempt, err)
+	}
+	return nil
 }
 
 // reportSuperviseEvent prints one terse lifecycle line to stderr. Retry
@@ -268,7 +297,8 @@ func reportSuperviseEvent(sessionID string, budget recovery.Budget, e recovery.S
 		fmt.Fprintf(os.Stderr, "%s: restart budget exhausted after attempt %d (%d restarts); last exit 3\n",
 			prefix, e.Attempt, budget.MaxRestarts)
 	case e.Code != recovery.ExitOK && e.Code != recovery.ExitTerminal &&
-		e.Code != recovery.ExitRetryable && e.Code != recovery.ExitNeedsHuman:
+		e.Code != recovery.ExitRetryable && e.Code != recovery.ExitNeedsHuman &&
+		e.Code != recovery.ExitUnverified:
 		fmt.Fprintf(os.Stderr, "%s: attempt %d exited %d (unexpected; not retrying)\n",
 			prefix, e.Attempt, e.Code)
 	default:

@@ -22,6 +22,7 @@ func TestSettleSupervisorEpisode(t *testing.T) {
 		recovery.ExitOK:         true,
 		recovery.ExitTerminal:   true,
 		recovery.ExitNeedsHuman: true,
+		recovery.ExitUnverified: true,
 		recovery.ExitRetryable:  false,
 		1:                       false,
 		99:                      false,

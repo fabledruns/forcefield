@@ -1842,34 +1842,45 @@ func (r *Runtime) Run(messages []providers.Message) (providers.Response, error) 
 
 // RunContext executes Run with caller-controlled cancellation.
 func (r *Runtime) RunContext(ctx context.Context, messages []providers.Message) (providers.Response, error) {
+	resp, _, err := r.RunContextWithStatus(ctx, messages)
+	return resp, err
+}
+
+// RunContextWithStatus executes the agent loop like RunContext and also
+// reports the terminal verification outcome. Callers that turn completion
+// into a process exit code (ff run, supervisors) must use the status:
+// only StatusVerified counts as success; StatusPartial (or any other
+// non-verified Done status) must exit non-zero even though a response
+// was produced.
+func (r *Runtime) RunContextWithStatus(ctx context.Context, messages []providers.Message) (providers.Response, Status, error) {
 	events, err := r.StreamChat(ctx, messages)
 	if err != nil {
-		return providers.Response{}, err
+		return providers.Response{}, "", err
 	}
 
 	for event := range events {
 		switch event.Type {
 		case EventDone:
 			if event.Response == nil {
-				return providers.Response{}, fmt.Errorf("runtime completed without a response")
+				return providers.Response{}, event.Status, fmt.Errorf("runtime completed without a response")
 			}
-			return *event.Response, nil
+			return *event.Response, event.Status, nil
 		case EventError:
-			return providers.Response{}, event.Err
+			return providers.Response{}, "", event.Err
 		case EventCancelled:
 			if event.Err != nil {
-				return providers.Response{}, event.Err
+				return providers.Response{}, "", event.Err
 			}
-			return providers.Response{}, context.Canceled
+			return providers.Response{}, "", context.Canceled
 		case EventBlocked:
-			return providers.Response{}, fmt.Errorf("task blocked: %w", event.Err)
+			return providers.Response{}, event.Status, fmt.Errorf("task blocked: %w", event.Err)
 		}
 	}
 
 	if err := ctx.Err(); err != nil {
-		return providers.Response{}, err
+		return providers.Response{}, "", err
 	}
-	return providers.Response{}, fmt.Errorf("runtime stopped without a completion event")
+	return providers.Response{}, "", fmt.Errorf("runtime stopped without a completion event")
 }
 
 // maxToolResultChars keeps verbose tool output from dominating later turns.

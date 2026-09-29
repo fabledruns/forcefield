@@ -27,6 +27,9 @@ import (
 const waitDelay = time.Second
 
 // shellOutput holds capped stdout/stderr buffers with a shared byte budget.
+// The same budget also bounds live streaming (see emitChunk): a chatty
+// process must not be able to push unbounded bytes into the event stream
+// and TUI transcript just because the accumulated result is capped.
 type shellOutput struct {
 	mu        sync.Mutex
 	stdout    strings.Builder
@@ -34,6 +37,11 @@ type shellOutput struct {
 	total     int
 	dropped   int
 	truncated bool
+	// streamed counts bytes already forwarded via onChunk, using the same
+	// per-line accounting as total. streamCapped latches once the budget
+	// is spent, after a single truncation marker is emitted.
+	streamed     int
+	streamCapped bool
 	// max is the shared byte budget; values <= 0 resolve to
 	// tools.DefaultShellMaxBytes on first append.
 	max int
@@ -101,6 +109,57 @@ func (o *shellOutput) isTruncated() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.truncated
+}
+
+// streamTruncateMarker is the single bounded chunk emitted once when live
+// streaming spends the output budget. It makes the cut observable on the
+// stream path itself (not just in the final result metadata) while adding
+// only a constant number of bytes.
+const streamTruncateMarker = "[stream truncated: live output budget reached; further progress suppressed, see result]"
+
+// emitChunk forwards one sanitized line to onChunk unless the shared byte
+// budget is already spent on streaming. The first line past the budget is
+// replaced by a single truncation marker; everything after is dropped.
+// Accounting matches append (line bytes plus newline) so the stream cap
+// and the result cap trip on the same line. The mutex is never held
+// across the onChunk call: chunk delivery can block on event backpressure
+// and must not stall the sibling pipe reader.
+func (o *shellOutput) emitChunk(stream, line string, onChunk func(tools.StreamChunk)) {
+	if onChunk == nil {
+		return
+	}
+	o.mu.Lock()
+	if o.max <= 0 {
+		o.max = tools.DefaultShellMaxBytes
+	}
+	n := len(line) + 1
+	if o.streamCapped {
+		o.mu.Unlock()
+		return
+	}
+	if o.streamed+n > o.max {
+		o.streamCapped = true
+		o.mu.Unlock()
+		onChunk(tools.StreamChunk{Stream: stream, Data: streamTruncateMarker})
+		return
+	}
+	o.streamed += n
+	o.mu.Unlock()
+	onChunk(tools.StreamChunk{Stream: stream, Data: line})
+}
+
+// streamBytes returns the total bytes forwarded via onChunk so far.
+func (o *shellOutput) streamBytes() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.streamed
+}
+
+// streamTruncated reports whether the stream budget was spent (marker sent).
+func (o *shellOutput) streamTruncated() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.streamCapped
 }
 
 // totalBytes returns the capped total for markers and metadata.
@@ -602,7 +661,10 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 // returned in the Result) and onChunk (live streaming), sanitizing ANSI
 // escape and other control sequences out of each line first so nothing
 // that could move the cursor, clear the screen, or switch to the
-// alternate screen buffer ever reaches the TUI's rendered content. It
+// alternate screen buffer ever reaches the TUI's rendered content. Live
+// streaming shares dst's byte budget (see emitChunk): once the budget is
+// spent the stream carries one truncation marker and then goes quiet, so
+// a chatty process cannot grow the event stream without bound. It
 // signals done when r is exhausted (EOF or the pipe was closed because
 // the process was killed).
 //
@@ -618,17 +680,13 @@ func streamPipe(r io.Reader, stream string, dst *shellOutput, onChunk func(tools
 		if raw != "" {
 			line := sanitizeOutput(strings.TrimSuffix(raw, "\n"))
 			dst.append(stream, line)
-			if onChunk != nil {
-				onChunk(tools.StreamChunk{Stream: stream, Data: line})
-			}
+			dst.emitChunk(stream, line, onChunk)
 		}
 		if err != nil {
 			if err != io.EOF {
 				line := sanitizeOutput(fmt.Sprintf("read error: %v", err))
 				dst.append(stream, line)
-				if onChunk != nil {
-					onChunk(tools.StreamChunk{Stream: stream, Data: line})
-				}
+				dst.emitChunk(stream, line, onChunk)
 			}
 			return
 		}

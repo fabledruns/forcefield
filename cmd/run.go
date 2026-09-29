@@ -21,13 +21,15 @@ import (
 // runtimeRun is a package var so tests can inject a fake without
 // redesigning the command architecture. Production creates a runtime and
 // runs with the caller's context so SIGINT/SIGTERM cancels the operation
-// instead of leaving tools or provider streams running.
-var runtimeRun = func(ctx context.Context, msgs []providers.Message) (providers.Response, error) {
+// instead of leaving tools or provider streams running. The status is
+// returned alongside the response so the process exit code reflects
+// verification: only a verified completion exits 0.
+var runtimeRun = func(ctx context.Context, msgs []providers.Message) (providers.Response, runtime.Status, error) {
 	rt, err := runtime.New()
 	if err != nil {
-		return providers.Response{}, err
+		return providers.Response{}, "", err
 	}
-	return rt.RunContext(ctx, msgs)
+	return rt.RunContextWithStatus(ctx, msgs)
 }
 
 // runtimeNew is a package var so tests can inject a fake runtime for
@@ -49,13 +51,19 @@ var runCmd = &cobra.Command{
 	Short: "Run a one-shot prompt",
 	Long: `Run a one-shot prompt through the agent loop and print the final response.
 
+The exit code reflects verification: 0 only when the run establishes a
+verified completion (plain answers count as verified); 5 when the model
+finished without verification. Supervisors and pipelines must treat 5
+as unreviewed output, not success.
+
 With --resume <session-id>, continue an existing session headlessly instead:
 the session is healed with the standard recovery semantics, its history is
 replayed, and the run continues without the TUI. The process exit code
-follows the recovery contract (internal/recovery): 0 completed, 2 terminal
-failure or runtime-enforced stop, 3 retryable interruption (safe for a
-future supervisor to restart), 4 cancelled or stalled on approvals. This
-command never restarts itself.`,
+follows the recovery contract (internal/recovery): 0 verified completion,
+2 terminal failure or runtime-enforced stop, 3 retryable interruption (safe
+for a future supervisor to restart), 4 cancelled or stalled on approvals,
+5 finished without verification (output printed, but unverified — needs
+human review, never auto-restarted). This command never restarts itself.`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if resumeSessionID != "" {
 			// Resume continues persisted history; there is no new task.
@@ -103,17 +111,17 @@ func runCommand(args []string) error {
 		if err := rt.SetAgent(agentFlag); err != nil {
 			return err
 		}
-		response, err := rt.RunContext(ctx, []providers.Message{
+		response, status, err := rt.RunContextWithStatus(ctx, []providers.Message{
 			{Role: providers.UserRole, Content: task},
 		})
 		if err != nil {
 			return mapRunError(err)
 		}
 		fmt.Println(response.Content)
-		return nil
+		return exitForRunStatus(status)
 	}
 
-	response, err := runtimeRun(ctx, []providers.Message{
+	response, status, err := runtimeRun(ctx, []providers.Message{
 		{
 			Role:    providers.UserRole,
 			Content: task,
@@ -124,6 +132,21 @@ func runCommand(args []string) error {
 	}
 
 	fmt.Println(response.Content)
+	return exitForRunStatus(status)
+}
+
+// exitForRunStatus maps the terminal verification outcome to the
+// process result. Verified completions (including plain chat, which
+// FinalStatus reports as verified) succeed; anything else the model
+// finished without verifying exits unverified so supervisors and
+// pipelines never mistake output for success. The content is already
+// printed; only the exit code carries the verdict.
+func exitForRunStatus(status runtime.Status) error {
+	if status == runtime.StatusVerified {
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "ff run finished without verification (status %q); output above is unverified\n", string(status))
+	osExit(recovery.ExitUnverified)
 	return nil
 }
 
@@ -183,18 +206,50 @@ func runResumeSession(ctx context.Context, resumeID string, maxTurns int) (int, 
 	}
 	recovery.Heal(sess)
 	recovery.AlignAgent(rt, sess)
+	// Adoption writes (heal + agent alignment) must reach disk before
+	// the run continues: replaying history the file does not contain
+	// would fork memory from durability on the first event.
+	if err := saveGateError(sess, resumeID); err != nil {
+		return recovery.ExitTerminal, err
+	}
 
-	events, err := rt.StreamChat(ctx, sess.ProviderMessages())
+	// The driver owns a cancel scoped to this run: the first
+	// lifecycle-save failure stops the runtime loop (which exits at its
+	// next cancellation check without starting new tools) instead of
+	// letting execution advance against a stale file. Signal teardown
+	// still propagates through the parent context.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	events, err := rt.StreamChat(runCtx, sess.ProviderMessages())
 	if err != nil {
 		return 1, err
 	}
 	driver := recovery.NewDriver(sess)
+	driver.OnPersistFailure(cancel)
 	for event := range events {
 		driver.HandleEvent(event)
 	}
 
-	code := driver.ExitCode(ctx.Err())
+	// A persistence failure anywhere in the run overrides the outcome:
+	// even a verified Done is unusable when its record never reached
+	// disk, and the supervisor must park rather than treat it as
+	// success or retryable progress.
+	if driver.PersistFailed() {
+		return recovery.ExitTerminal, fmt.Errorf("ff run --resume %s failed: session save failed (%s)", resumeID, driver.PersistErr())
+	}
+	code := driver.ExitCode(runCtx.Err())
 	return finishResumeSession(sess, driver, resumeID, code)
+}
+
+// saveGateError reports a session-persistence failure as a terminal run
+// error, or nil when the session file is healthy. It reads the sticky
+// LastSaveError (in-memory only, never loaded from disk), so it gates
+// exactly the saves this process attempted.
+func saveGateError(sess *session.Session, resumeID string) error {
+	if sess != nil && sess.LastSaveError != "" {
+		return fmt.Errorf("ff run --resume %s failed: session save failed (%s)", resumeID, sess.LastSaveError)
+	}
+	return nil
 }
 
 // finishResumeSession applies the save-health gate, settles supervisor
@@ -204,10 +259,15 @@ func runResumeSession(ctx context.Context, resumeID string, maxTurns int) (int, 
 // (or operator) retries instead of assuming success. A clean final
 // save preserves the existing settle/report behavior exactly.
 func finishResumeSession(sess *session.Session, driver *recovery.Driver, resumeID string, code int) (int, error) {
-	if sess.LastSaveError != "" {
-		return recovery.ExitTerminal, fmt.Errorf("ff run --resume %s failed: session save failed (%s)", resumeID, sess.LastSaveError)
+	if err := saveGateError(sess, resumeID); err != nil {
+		return recovery.ExitTerminal, err
 	}
 	settleSupervisorEpisode(sess, code)
+	// Lifecycle bookkeeping above saves too: re-check so a failed
+	// episode-clear cannot pass a success through on a stale file.
+	if err := saveGateError(sess, resumeID); err != nil {
+		return recovery.ExitTerminal, err
+	}
 	if code == recovery.ExitOK {
 		if response, ok := driver.FinalResponse(); ok {
 			fmt.Println(response.Content)
@@ -225,7 +285,7 @@ func finishResumeSession(sess *session.Session, driver *recovery.Driver, resumeI
 // manual retry) may legitimately continue it.
 func settleSupervisorEpisode(sess *session.Session, code int) {
 	switch code {
-	case recovery.ExitOK, recovery.ExitTerminal, recovery.ExitNeedsHuman:
+	case recovery.ExitOK, recovery.ExitTerminal, recovery.ExitNeedsHuman, recovery.ExitUnverified:
 		recovery.ClearSupervisor(sess)
 	}
 }
@@ -243,6 +303,14 @@ func resumeOutcomeError(resumeID string, driver *recovery.Driver) error {
 		return fmt.Errorf("%s stopped: %v", prefix, err)
 	case runtime.EventCancelled:
 		return fmt.Errorf("%s cancelled", prefix)
+	case runtime.EventDone:
+		// Reached only for non-zero codes: the run finished without
+		// verification (see Classify). Name the status so the operator
+		// knows the output needs review, not a retry.
+		if status, ok := driver.FinalStatus(); ok {
+			return fmt.Errorf("%s finished unverified (status %q): review the output before trusting it", prefix, string(status))
+		}
+		return fmt.Errorf("%s finished without verification", prefix)
 	case runtime.EventError:
 		if driver.Stats().DeniedOnly() {
 			return fmt.Errorf("%s stalled: every tool call was denied, resume after approving permissions", prefix)

@@ -198,6 +198,73 @@ type Driver struct {
 	termErr  error
 	hasTerm  bool
 	final    *providers.Response
+	// finalStatus is the EventDone verification outcome (verified vs
+	// partial/blocked/failed). It drives the exit code so an unverified
+	// completion can never report process success.
+	finalStatus runtime.Status
+	// persistFailed latches the first lifecycle-save failure observed
+	// while driving events, with the session's error text. A failed
+	// save means the file is stale: memory keeps advancing, so the run
+	// must stop starting new side-effecting work and exit non-zero
+	// rather than pretend state is durable. The latch never clears —
+	// only a later successful save proves durability again, and that
+	// is reported through a fresh observation, not by forgetting the
+	// failure. See notePersisted.
+	persistFailed bool
+	persistErr    string
+	// onPersistFailure runs once when the latch sets (e.g. cancel the
+	// run context so no further tools execute). Set via
+	// OnPersistFailure; nil by default.
+	onPersistFailure func()
+}
+
+// OnPersistFailure registers a hook invoked at most once, when the
+// driver first observes a session-save failure. Nil-safe; a nil hook
+// disables the callback. The hook must be non-blocking: it runs on the
+// event-consumer goroutine (context cancellation is the intended use).
+func (d *Driver) OnPersistFailure(fn func()) {
+	if d == nil {
+		return
+	}
+	d.onPersistFailure = fn
+}
+
+// PersistFailed reports whether a lifecycle save failed while driving
+// events. When true the session file is stale and the run must exit
+// non-zero without starting further side-effecting tools.
+func (d *Driver) PersistFailed() bool {
+	if d == nil {
+		return false
+	}
+	return d.persistFailed
+}
+
+// PersistErr returns the session-save error text that set the latch,
+// or "" when persistence is healthy.
+func (d *Driver) PersistErr() string {
+	if d == nil {
+		return ""
+	}
+	return d.persistErr
+}
+
+// notePersisted folds the latest save outcome into the latch. Every
+// persist-bearing record path calls it after saving: a failed save is
+// a first-class run condition, never a dropped error. A subsequent
+// successful save does not clear the latch — durability proven later
+// does not retroactively bless tools that already ran against a stale
+// file; the run still exits degraded.
+func (d *Driver) notePersisted() {
+	if d == nil || d.sess == nil || d.persistFailed {
+		return
+	}
+	if errText := d.sess.LastSaveError; errText != "" {
+		d.persistFailed = true
+		d.persistErr = errText
+		if d.onPersistFailure != nil {
+			d.onPersistFailure()
+		}
+	}
 }
 
 // NewDriver returns a Driver recording into sess. A nil session makes
@@ -229,11 +296,17 @@ func (d *Driver) HandleEvent(e runtime.Event) {
 			if content != "" {
 				d.text.Reset()
 			}
+			// Intent must reach disk before the tool's effects matter:
+			// a failed save stops the run (via the failure hook) so no
+			// further tools execute against a stale file.
+			d.notePersisted()
 		}
 	case runtime.EventToolFinish, runtime.EventToolFailed, runtime.EventToolCancelled, runtime.EventToolDenied:
 		if e.ToolResult != nil {
 			RecordToolResult(d.sess, e.Type, e.ToolResult)
 			d.stats.Tally(e.Type)
+			// Outcomes commit with resolution; same fail-closed rule.
+			d.notePersisted()
 		}
 	case runtime.EventDone, runtime.EventCancelled, runtime.EventBlocked, runtime.EventError:
 		// Close the turn before teardown so the persisted record is
@@ -245,6 +318,9 @@ func (d *Driver) HandleEvent(e runtime.Event) {
 		PersistAssistantText(d.sess, d.text.String())
 		d.text.Reset()
 		CancelAndRepair(d.sess)
+		// Terminal bookkeeping is lifecycle-critical too: an
+		// unpersisted terminal turn must still degrade the exit.
+		d.notePersisted()
 		if !d.hasTerm {
 			d.terminal = e.Type
 			d.termErr = e.Err
@@ -253,6 +329,9 @@ func (d *Driver) HandleEvent(e runtime.Event) {
 		if e.Type == runtime.EventDone && e.Response != nil {
 			cp := *e.Response
 			d.final = &cp
+		}
+		if e.Type == runtime.EventDone {
+			d.finalStatus = e.Status
 		}
 	}
 }
@@ -281,6 +360,16 @@ func (d *Driver) FinalResponse() (providers.Response, bool) {
 	return *d.final, true
 }
 
+// FinalStatus returns the EventDone verification outcome observed, if
+// any. Only StatusVerified counts as a verified completion; anything
+// else (partial, blocked, failed, or empty) must exit non-zero.
+func (d *Driver) FinalStatus() (runtime.Status, bool) {
+	if d == nil || !d.hasTerm || d.terminal != runtime.EventDone {
+		return "", false
+	}
+	return d.finalStatus, true
+}
+
 // ExitCode classifies the observed outcome under the Phase 0 contract.
 // With no terminal event (a channel that closed early), a cancelled
 // context is NeedsHuman; anything else is Terminal — never retryable
@@ -290,7 +379,8 @@ func (d *Driver) ExitCode(ctxErr error) int {
 		return ExitTerminal
 	}
 	if typ, err, ok := d.Outcome(); ok {
-		return Classify(typ, err, d.stats)
+		status, _ := d.FinalStatus()
+		return Classify(typ, err, d.stats, status)
 	}
 	if errors.Is(ctxErr, context.Canceled) || errors.Is(ctxErr, context.DeadlineExceeded) {
 		return ExitNeedsHuman

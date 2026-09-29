@@ -30,24 +30,28 @@ retry.
 
 | Code | Name | Meaning |
 | ---- | ---- | ------- |
-| 0 | `ExitOK` | Ran to `EventDone`. |
+| 0 | `ExitOK` | Ran to `EventDone` with verification established (`StatusVerified`, which includes plain chat with no tool calls). |
 | 2 | `ExitTerminal` | Runtime-enforced stop (`EventBlocked`) or non-transient failure. Needs a human fix. |
 | 3 | `ExitRetryable` | Transient interruption (rate limit, 5xx, timeout, connection). Safe for supervised restart. |
 | 4 | `ExitNeedsHuman` | Cancelled or stalled on denials. Never auto-restarted. |
+| 5 | `ExitUnverified` | Ran to `EventDone` without verification (`StatusPartial`, `StatusBlocked`, or `StatusFailed` on a finished turn). Output may be printed, but the process reports failure. Needs human review. Never auto-restarted. |
 | 1 | Supervisor failure | Spawn/wait failure or unknown child code. Never a run outcome. |
 
 Classification reuses `providers.IsTransient`; there is no second
 retryability system. Done wins over earlier denials; denied-only
 blocked/error runs report `ExitNeedsHuman`; unknown outcomes fail
 closed to `ExitTerminal`. Quota/billing, auth, invalid requests, and
-protocol errors are never transient.
+protocol errors are never transient. A finished-but-unverified run
+reports `ExitUnverified`, never `ExitOK`: supervisors and pipelines
+must treat output as unreviewed, not as success.
 
 ## Supervision
 
 `Supervise` runs child attempts until one parks. Only `ExitRetryable`
-restarts while the budget allows; success, terminal failure,
-cancellation/denial, spawn/wait failures, and unknown codes all stop
-immediately. An exhausted budget stops with the last code.
+restarts while the budget allows; verified success, terminal failure,
+unverified completion, cancellation/denial, spawn/wait failures, and
+unknown codes all stop immediately. An exhausted budget stops with the
+last code.
 
 The supervisor loop stays in-memory and exact. `NoteSupervisorRestart`,
 `NoteSupervisorExhausted`, and `ClearSupervisor` mirror its counter
@@ -57,7 +61,7 @@ process being killed and restarted:
 - Record a committed retry before the backoff wait, so a kill during
   backoff resumes with remaining budget.
 - Latch exhaustion; a latched episode refuses further restarts.
-- Clear on terminal child outcomes (0/2/4); terminal failures never
+- Clear on terminal child outcomes (0/2/4/5); terminal failures never
   accumulate retry state.
 
 Helpers are nil-session safe and set values absolutely so replay

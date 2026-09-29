@@ -235,7 +235,12 @@ func (p *permissionPrompt) formatToolBlock() string {
 			if err != nil || string(raw) == "null" {
 				raw = []byte("{}")
 			}
-			val = string(raw)
+			// Scrub before display (and before truncation, so a secret
+			// split by the cut still matches): non-string arguments
+			// such as env objects can carry credentials just like
+			// strings. Display only; the approval decision is
+			// unaffected.
+			val = redact.Scrub(string(raw))
 			if len(val) > 200 {
 				val = val[:200] + "…"
 			}

@@ -91,6 +91,7 @@ func TestDriverCompletedRunOrdering(t *testing.T) {
 	driver.HandleEvent(runtime.Event{
 		Type:     runtime.EventDone,
 		Response: &providers.Response{Content: "all set"},
+		Status:   runtime.StatusVerified,
 	})
 
 	done := reloadSession(t, sess.ID)
@@ -167,7 +168,7 @@ func TestDriverCrashBeforeResultThenHeal(t *testing.T) {
 	// Continuing records nothing new for the settled call: the resumed
 	// driver observes Done and exits OK with history intact.
 	driver2 := NewDriver(healed)
-	driver2.HandleEvent(runtime.Event{Type: runtime.EventDone, Response: &providers.Response{}})
+	driver2.HandleEvent(runtime.Event{Type: runtime.EventDone, Response: &providers.Response{}, Status: runtime.StatusVerified})
 	if code := driver2.ExitCode(context.Background().Err()); code != ExitOK {
 		t.Errorf("ExitCode after heal+done = %d, want %d", code, ExitOK)
 	}
@@ -586,5 +587,115 @@ func TestDriverMidStreamErrorWithPartialBatch(t *testing.T) {
 	}
 	if !paired {
 		t.Errorf("orphaned c1 has no synthesized result: %+v", converged.Messages)
+	}
+}
+
+// TestDriverExitCodeReflectsVerification pins the P1 false-success fix:
+// EventDone exits 0 only with a verified status. Partial, failed,
+// blocked, or empty Done statuses exit unverified (non-zero), and the
+// status is observable through FinalStatus. Plain chat is unaffected
+// because FinalStatus reports it as verified (see task/state.go).
+func TestDriverExitCodeReflectsVerification(t *testing.T) {
+	cases := []struct {
+		name   string
+		status runtime.Status
+		want   int
+	}{
+		{"verified success", runtime.StatusVerified, ExitOK},
+		{"partial is unverified", runtime.StatusPartial, ExitUnverified},
+		{"failed verification is unverified", runtime.StatusFailed, ExitUnverified},
+		{"blocked status is unverified", runtime.StatusBlocked, ExitUnverified},
+		{"empty status fails closed to unverified", "", ExitUnverified},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Nil session: observation only, no persistence involved.
+			driver := NewDriver(nil)
+			driver.HandleEvent(runtime.Event{
+				Type:     runtime.EventDone,
+				Response: &providers.Response{Content: "done"},
+				Status:   tc.status,
+			})
+			if got := driver.ExitCode(nil); got != tc.want {
+				t.Errorf("ExitCode = %d, want %d for status %q", got, tc.want, tc.status)
+			}
+			gotStatus, ok := driver.FinalStatus()
+			if !ok || gotStatus != tc.status {
+				t.Errorf("FinalStatus = (%q, %v), want (%q, true)", gotStatus, ok, tc.status)
+			}
+		})
+	}
+}
+
+// TestDriverPersistFailureLatchesAndNotifies pins the P1 persistence
+// fix: the first lifecycle-save failure while driving events becomes a
+// sticky degraded condition with exactly one hook invocation. The hook
+// is what stops the run (headless wiring cancels the run context, so
+// no further tools execute); the latch is what forces a non-zero exit.
+func TestDriverPersistFailureLatchesAndNotifies(t *testing.T) {
+	// An ID the saver always rejects: every Save fails deterministically
+	// without touching the filesystem.
+	sess := session.New()
+	sess.ID = "bad/id"
+	driver := NewDriver(sess)
+
+	var hookCalls int
+	driver.OnPersistFailure(func() { hookCalls++ })
+
+	// A lifecycle-critical save (tool intent) fails mid-run.
+	driver.HandleEvent(toolStart("c1", "shell"))
+	if !driver.PersistFailed() {
+		t.Fatal("PersistFailed = false after a failed tool-start save, want the degraded latch set")
+	}
+	if driver.PersistErr() == "" {
+		t.Error("PersistErr is empty, want the session save error text")
+	}
+	if hookCalls != 1 {
+		t.Fatalf("hook calls = %d, want exactly 1", hookCalls)
+	}
+
+	// The latch is sticky: later events (and their failed saves) neither
+	// clear it nor re-fire the hook, while in-memory recording continues
+	// so diagnostics still observe the run.
+	driver.HandleEvent(toolTerminal(runtime.EventToolFinish, "c1", "shell", "hi", nil))
+	driver.HandleEvent(runtime.Event{
+		Type:     runtime.EventDone,
+		Response: &providers.Response{Content: "done"},
+		Status:   runtime.StatusVerified,
+	})
+	if !driver.PersistFailed() {
+		t.Error("PersistFailed cleared by later events, want the latch to hold for the whole run")
+	}
+	if hookCalls != 1 {
+		t.Errorf("hook calls = %d, want exactly 1 (no re-fire)", hookCalls)
+	}
+}
+
+// TestDriverHealthyRunNeverLatches pins the unchanged success path: a
+// fully persisted run reports healthy, never calls the hook, and keeps
+// the verified exit.
+func TestDriverHealthyRunNeverLatches(t *testing.T) {
+	enterTempDir(t)
+	sess := newPersistedSession(t)
+	driver := NewDriver(sess)
+
+	var hookCalls int
+	driver.OnPersistFailure(func() { hookCalls++ })
+
+	driver.HandleEvent(toolStart("c1", "shell"))
+	driver.HandleEvent(toolTerminal(runtime.EventToolFinish, "c1", "shell", "hi", nil))
+	driver.HandleEvent(runtime.Event{
+		Type:     runtime.EventDone,
+		Response: &providers.Response{Content: "done"},
+		Status:   runtime.StatusVerified,
+	})
+	if driver.PersistFailed() {
+		t.Errorf("PersistFailed = true on a healthy run (save error: %q)", driver.PersistErr())
+	}
+	if hookCalls != 0 {
+		t.Errorf("hook calls = %d, want 0 on a healthy run", hookCalls)
+	}
+	if code := driver.ExitCode(nil); code != ExitOK {
+		t.Errorf("ExitCode = %d, want %d", code, ExitOK)
 	}
 }

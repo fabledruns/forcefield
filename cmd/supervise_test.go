@@ -267,6 +267,7 @@ func TestSuperviseCommandRouting(t *testing.T) {
 		{"success stops", []int{0}, 0, 1},
 		{"terminal stops", []int{2}, 2, 1},
 		{"denied stops", []int{4}, 4, 1},
+		{"unverified stops without restart", []int{5}, 5, 1},
 		{"retryable then success", []int{3, 0}, 0, 2},
 		{"exhausted keeps last code", []int{3, 3, 3, 3, 3, 3, 3}, 3, 6},
 		{"unknown code fails closed", []int{7}, 1, 1},

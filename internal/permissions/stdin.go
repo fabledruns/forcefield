@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"forcefield/internal/redact"
 )
 
 // StdinAsker prompts the user on a plain terminal - the default
@@ -44,7 +46,11 @@ func (a *StdinAsker) Ask(ctx context.Context, req Request) (Prompt, error) {
 		args = []byte("{}")
 	}
 
-	fmt.Fprintf(out, "\nTool wants permission\n\nTool:\n%s\n\nArguments:\n%s\n", req.Tool, args)
+	// Scrub before printing: arguments can carry credentials (notably
+	// shell env objects), and this prompt writes to stdout where it may
+	// be captured by logs or pipes. Display only; the approval decision
+	// itself is unaffected.
+	fmt.Fprintf(out, "\nTool wants permission\n\nTool:\n%s\n\nArguments:\n%s\n", req.Tool, redact.Scrub(string(args)))
 
 	// Execution facts come from the executor itself, so the prompt can
 	// never claim more isolation than exists. When absent (tools without

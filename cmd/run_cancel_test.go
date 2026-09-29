@@ -7,14 +7,15 @@ import (
 	"testing"
 
 	"forcefield/internal/providers"
+	"forcefield/internal/runtime"
 )
 
 func TestRunCommand_MapsCancellationToCancelledError(t *testing.T) {
 	origRun := runtimeRun
 	defer func() { runtimeRun = origRun }()
 
-	runtimeRun = func(context.Context, []providers.Message) (providers.Response, error) {
-		return providers.Response{}, context.Canceled
+	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, error) {
+		return providers.Response{}, "", context.Canceled
 	}
 	err := runCommand([]string{"task"})
 	if err == nil {
@@ -34,14 +35,14 @@ func TestRunCommand_PassesCancellableContext(t *testing.T) {
 
 	var errDuringCall error
 	var hasDoneChannel bool
-	runtimeRun = func(ctx context.Context, _ []providers.Message) (providers.Response, error) {
+	runtimeRun = func(ctx context.Context, _ []providers.Message) (providers.Response, runtime.Status, error) {
 		// Capture liveness during the call: runCommand's deferred stop()
 		// cancels the context after return, so everything must be
 		// observed here. A signal-wired context is live with a non-nil
 		// Done channel; context.Background would have a nil one.
 		errDuringCall = ctx.Err()
 		hasDoneChannel = ctx.Done() != nil
-		return providers.Response{Content: "ok"}, nil
+		return providers.Response{Content: "ok"}, runtime.StatusVerified, nil
 	}
 	if err := runCommand([]string{"task"}); err != nil {
 		t.Fatalf("runCommand error = %v", err)

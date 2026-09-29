@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"forcefield/internal/providers"
 	"forcefield/internal/tools"
+	"forcefield/internal/tools/shell"
 )
 
 // slowTool blocks on a channel until released, letting tests observe that
@@ -261,4 +263,54 @@ func (streamingTool) ExecuteStream(_ context.Context, _ map[string]any, onChunk 
 		onChunk(tools.StreamChunk{Stream: "stdout", Data: "line2"})
 	}
 	return tools.Result{Content: "line1\nline2\n"}, nil
+}
+
+// TestScheduler_ShellProgressBoundedByStreamBudget pins the P1 stream-cap
+// fix at the scheduler boundary: a chatty shell command's progress events
+// (what the TUI transcript consumes) stay within the tool's byte budget
+// plus one truncation marker. Before the fix every output line became an
+// event, so one execution could push unbounded bytes at the TUI.
+func TestScheduler_ShellProgressBoundedByStreamBudget(t *testing.T) {
+	sh := shell.NewShell()
+	if err := sh.CheckBackend(context.Background()); err != nil {
+		t.Skipf("shell backend unavailable: %v", err)
+	}
+	const bound = 1024
+	sh.SetLimits(tools.Limits{MaxBytes: bound})
+	manager := newTestManager(t, sh)
+	s := newScheduler(manager, nil, nil, SchedulerConfig{MaxConcurrency: 1, MaxRetries: 0, BaseBackoff: time.Millisecond})
+
+	var mu sync.Mutex
+	var progressBytes, progressEvents, markers int
+	emit := func(e Event) bool {
+		if e.Type == EventToolProgress && e.ToolProgress != nil {
+			mu.Lock()
+			progressBytes += len(e.ToolProgress.Data)
+			progressEvents++
+			if strings.Contains(e.ToolProgress.Data, "truncated") {
+				markers++
+			}
+			mu.Unlock()
+		}
+		return true
+	}
+
+	results := s.Run(context.Background(), []providers.ToolCall{
+		{ID: "1", Name: "shell", Arguments: map[string]any{"command": "seq 1 1000"}},
+	}, emit)
+	if len(results) != 1 {
+		t.Fatalf("results = %#v, want one shell result", results)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if progressBytes > bound+256 {
+		t.Errorf("progress events carried %d bytes with bound %d: scheduler stream not capped", progressBytes, bound)
+	}
+	if markers != 1 {
+		t.Errorf("got %d truncation markers in %d progress events, want exactly 1", markers, progressEvents)
+	}
+	if progressEvents >= 1000 {
+		t.Errorf("got %d progress events for 1000 output lines: stream never stopped", progressEvents)
+	}
 }

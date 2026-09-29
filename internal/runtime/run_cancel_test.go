@@ -193,3 +193,67 @@ func TestStreamChat_SerializesReplacementRunUntilCancellationCleanup(t *testing.
 		t.Errorf("concurrent provider requests = %d, want 1", got)
 	}
 }
+
+// cancelGatedTool blocks until its context is cancelled, modelling a
+// tool caught in-flight when the run is torn down. It returns the
+// cancellation itself so the scheduler reports cancellation, not a
+// tool failure.
+type cancelGatedTool struct{ name string }
+
+func (t cancelGatedTool) Name() string        { return t.name }
+func (t cancelGatedTool) Description() string { return "blocks until cancelled" }
+func (t cancelGatedTool) InputSchema() map[string]any {
+	return map[string]any{"type": "object"}
+}
+func (t cancelGatedTool) Execute(ctx context.Context, _ map[string]any) (tools.Result, error) {
+	<-ctx.Done()
+	return tools.Result{}, ctx.Err()
+}
+
+// TestRun_CancelDuringToolExecutionStartsNoFurtherTools pins the
+// execution half of the P1 persistence fix: once cancellation is
+// observed (in production, fired by the driver's persistence-failure
+// hook), the loop terminates without starting another model turn or
+// executing another tool. The in-flight tool is released by the cancel;
+// the second tool must record zero executions.
+func TestRun_CancelDuringToolExecutionStartsNoFurtherTools(t *testing.T) {
+	provider := &scriptedProvider{turns: [][]providers.StreamEvent{
+		toolCallTurn("call-1", "first"),
+		toolCallTurn("call-2", "second"),
+	}}
+	second := &countingTool{}
+	rt := newTestRuntimeWithLimits(provider, DefaultLimits, cancelGatedTool{name: "first"}, second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events, err := rt.StreamChat(ctx, []providers.Message{{Role: providers.UserRole, Content: "do it"}})
+	if err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
+	}
+
+	var cancelled bool
+	var done bool
+	for e := range events {
+		switch e.Type {
+		case EventToolStart:
+			// Persistence failed (or the user hit Ctrl+C): stop now.
+			cancel()
+		case EventCancelled:
+			cancelled = true
+		case EventDone:
+			done = true
+		}
+	}
+	if done {
+		t.Error("run reported EventDone after cancellation, want termination without completion")
+	}
+	if !cancelled {
+		t.Error("run did not report EventCancelled after cancellation")
+	}
+	if provider.calls != 1 {
+		t.Errorf("provider.calls = %d, want 1 (no second model turn after cancel)", provider.calls)
+	}
+	if got := second.calls.Load(); got != 0 {
+		t.Errorf("second tool executions = %d, want 0 (cancel must precede any further tool)", got)
+	}
+}
