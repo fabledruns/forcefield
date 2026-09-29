@@ -94,10 +94,27 @@ func (s *Session) Save() (err error) {
 	s.UpdatedAt = time.Now()
 
 	dir := filepath.Join(".", filepath.FromSlash(sessionsDir))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create sessions directory: %w", err)
+	// Fast path: the sessions directory normally exists with correct
+	// permissions, so one stat replaces the mkdir+chmod pair on every
+	// save (saves happen per tool event). Creation and repair keep the
+	// exact behavior below.
+	if info, err := os.Stat(dir); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("create sessions directory: %s is not a directory", dir)
+		}
+		if info.Mode().Perm() != 0o700 {
+			// Best-effort repair, as before: a chmod failure must
+			// not fail the save itself.
+			_ = os.Chmod(dir, 0o700)
+		}
+	} else if os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create sessions directory: %w", err)
+		}
+		_ = os.Chmod(dir, 0o700)
+	} else {
+		return fmt.Errorf("stat sessions directory: %w", err)
 	}
-	_ = os.Chmod(dir, 0o700)
 
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {

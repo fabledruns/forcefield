@@ -398,7 +398,11 @@ func TestWriteStatusFailureBlockedDir(t *testing.T) {
 	if err == nil {
 		t.Fatal("write through a blocked dir succeeded")
 	}
-	if _, statErr := os.Stat(StatusFilePath(dir)); !os.IsNotExist(statErr) {
+	// Any stat error means no usable file exists at the final path. In
+	// particular, stat through the blocker reports ENOTDIR on Linux
+	// (os.IsNotExist is false for ENOTDIR) and ENOENT on Windows; only
+	// a successful stat proves a partial file was left behind.
+	if _, statErr := os.Stat(StatusFilePath(dir)); statErr == nil {
 		t.Error("partial status file left behind after failed write")
 	}
 }

@@ -263,10 +263,14 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 		return nil, fmt.Errorf("build tool set for agent %q: %w", def.Name, err)
 	}
 
-	permManager, err := permissions.NewManager(permissions.NewConfigStore())
+	// The Config is already loaded: parse its permissions section
+	// directly instead of loading config.yaml a second time through
+	// the store. Persistence (Update/Save) still uses the store.
+	permRules, err := permissions.RulesFromConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("load permissions: %w", err)
 	}
+	permManager := permissions.NewManagerWithRules(permRules, permissions.NewConfigStore())
 
 	asker := permissions.NewStdinAsker()
 
@@ -1957,6 +1961,12 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 	executed := make(map[string]executedCall)
 	loops := newLoopDetector()
 
+	// The agent and plan overlay are fixed for the run: build the base
+	// prompt (contract + catalog + memory, several KB) once instead of
+	// rebuilding it on every iteration. Only the task-state suffix
+	// changes per iteration; see refreshSystemPrompt.
+	promptBase, hasPromptBase := buildPromptBase(snap)
+
 	for {
 		if err := ctx.Err(); err != nil {
 			cancelled(err)
@@ -1968,7 +1978,7 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 			return
 		}
 
-		refreshSystemPrompt(messages, snap.agent, state, snap.mode.planOverlay())
+		refreshSystemPrompt(messages, promptBase, hasPromptBase, state)
 
 		// Window the provider view every turn so conversation/tool
 		// history can never grow past the model's context budget. The
@@ -2251,18 +2261,29 @@ func snapshotPtr(state *task.State) *task.Snapshot {
 	return &snap
 }
 
+// buildPromptBase renders the run-fixed part of the system prompt: the
+// agent's base prompt plus the mode overlay (so plan-mode runs keep
+// their constraint on every iteration). The second result is false when
+// there is no agent, in which case refreshSystemPrompt leaves the
+// system message untouched, exactly as before.
+func buildPromptBase(snap runSnapshot) (string, bool) {
+	if snap.agent == nil {
+		return "", false
+	}
+	return snap.agent.BuildSystemPrompt() + snap.mode.planOverlay(), true
+}
+
 // refreshSystemPrompt adds the current task digest to the system message.
-// overlay, when non-empty, is appended to the rebuilt base prompt so
-// plan-mode runs keep their constraint on every iteration.
-func refreshSystemPrompt(messages []providers.Message, a *agent.Agent, state *task.State, overlay string) {
+// base is the run-fixed prompt from buildPromptBase; only the digest
+// suffix is recomputed per iteration.
+func refreshSystemPrompt(messages []providers.Message, base string, ok bool, state *task.State) {
 	if len(messages) == 0 || messages[0].Role != providers.SystemRole {
 		return
 	}
-	if a == nil {
+	if !ok {
 		return
 	}
 
-	base := a.BuildSystemPrompt() + overlay
 	summary := state.Summary()
 	if summary == "" {
 		messages[0].Content = base
@@ -2397,6 +2418,7 @@ func (r *Runtime) streamOneTurn(ctx context.Context, messages []providers.Messag
 	}
 
 	var response providers.Response
+	var content strings.Builder
 	emitted := false
 	sawDone := false
 	turnBytes := 0
@@ -2420,6 +2442,7 @@ func (r *Runtime) streamOneTurn(ctx context.Context, messages []providers.Messag
 				if !sawDone {
 					return providers.Response{}, emitted, fmt.Errorf("model stream ended without a terminal marker (incomplete response)")
 				}
+				response.Content = content.String()
 				return response, emitted, nil
 			}
 			if event.Done {
@@ -2443,7 +2466,9 @@ func (r *Runtime) streamOneTurn(ctx context.Context, messages []providers.Messag
 
 			if event.Text != "" {
 				emitted = true
-				response.Content += event.Text
+				// Accumulate in a Builder (amortized append) instead of
+				// += on the result string (realloc+copy per chunk).
+				content.WriteString(event.Text)
 				if !emit(Event{Type: EventText, Text: event.Text}) {
 					return providers.Response{}, emitted, context.Canceled
 				}

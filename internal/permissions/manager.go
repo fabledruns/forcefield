@@ -32,6 +32,18 @@ func NewManager(store Store) (*Manager, error) {
 	return &Manager{rules: rules, store: store}, nil
 }
 
+// NewManagerWithRules builds a Manager from already-parsed rules,
+// skipping the store Load. The store is retained for later persistence
+// (Update/Save still go through it), so only the initial read is
+// elided. Callers that already hold the rules (e.g. from a loaded
+// Config) use this to avoid a redundant reload at startup.
+func NewManagerWithRules(rules Rules, store Store) *Manager {
+	if rules.Tools == nil {
+		rules.Tools = make(map[string]Decision)
+	}
+	return &Manager{rules: rules, store: store}
+}
+
 // shippedAllowTools names read-only built-ins whose documented shipped
 // default is allow. Config files created before such a tool existed
 // have no per-tool entry; resolving those installs to

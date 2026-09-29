@@ -23,6 +23,18 @@ func (configStore) Load() (Rules, error) {
 	return rulesFromConfig(cfg.Permissions)
 }
 
+// RulesFromConfig parses the permissions section of an already-loaded
+// Config, reporting the same errors as a store Load without re-reading
+// config.yaml. Startup uses this so the runtime's Config load is not
+// repeated just to extract one section; later persistence still goes
+// through the store (which reloads, preserving its no-clobber merge).
+func RulesFromConfig(cfg *config.Config) (Rules, error) {
+	if cfg == nil {
+		return Rules{}, fmt.Errorf("permissions: nil config")
+	}
+	return rulesFromConfig(cfg.Permissions)
+}
+
 // Save reloads config.yaml, overwrites just its permissions section, and
 // writes it back. Reloading first (rather than caching the Config from
 // Load) means concurrent edits to other sections of config.yaml - e.g. a

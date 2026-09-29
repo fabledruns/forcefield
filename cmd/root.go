@@ -66,6 +66,13 @@ func Execute() {
 }
 
 func init() {
+	// Disable cobra's Windows Explorer mousetrap splash. With the
+	// default text, every Execute walks the full OS process list
+	// (Toolhelp32 snapshot) to detect an Explorer double-click launch
+	// — ~19ms of CPU on every invocation, including headless runs,
+	// for a splash a terminal tool never needs. Blank text skips the
+	// detection entirely (see cobra/command_win.go preExecHook).
+	cobra.MousetrapHelpText = ""
 	// Sync Version field in case ldflags sets it after var initialization.
 	rootCmd.Version = Version
 	rootCmd.Flags().StringVar(

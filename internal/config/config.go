@@ -255,11 +255,28 @@ func Dir() (string, error) {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 	dir := filepath.Join(home, ".forcefield")
+	if info, err := os.Stat(dir); err == nil {
+		// Fast path: the directory already exists, so skip the
+		// create+chmod syscalls. Permissions are still repaired when
+		// they actually differ (e.g. a directory from an older
+		// version with a more permissive mode).
+		if !info.IsDir() {
+			return "", fmt.Errorf("create forcefield home %s: not a directory", dir)
+		}
+		if info.Mode().Perm() != 0o700 {
+			if err := os.Chmod(dir, 0o700); err != nil {
+				return "", fmt.Errorf("set permissions on %s: %w", dir, err)
+			}
+		}
+		return dir, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat forcefield home %s: %w", dir, err)
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create forcefield home %s: %w", dir, err)
 	}
-	// Ensure restrictive permissions even if the directory already existed
-	// with a more permissive mode (e.g. from an older version).
+	// Ensure restrictive permissions even if the umask left the fresh
+	// directory more permissive.
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return "", fmt.Errorf("set permissions on %s: %w", dir, err)
 	}
@@ -306,17 +323,18 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parse config file %s: %w", path, err)
 	}
 
-	if err := cfg.validate(); err != nil {
+	// validate resolves the active provider once (also surfacing
+	// unknown types and missing endpoints early) and returns it, so
+	// Load does not resolve the same provider a second time just to
+	// populate the legacy APIKey convenience field.
+	resolved, err := cfg.validate()
+	if err != nil {
 		return nil, fmt.Errorf("invalid config at %s: %w", path, err)
 	}
 
 	// Populate the legacy convenience field with the active provider's
 	// resolved key (if any). The authoritative per-provider resolution is
 	// ResolveProvider; this only keeps existing readers working.
-	resolved, err := cfg.ResolveProvider(cfg.Model.Provider, cfg.Model.Name)
-	if err != nil {
-		return nil, fmt.Errorf("invalid config at %s: %w", path, err)
-	}
 	cfg.Model.APIKey = resolved.APIKey
 
 	return &cfg, nil
@@ -475,67 +493,70 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 }
 
 // validate performs minimal sanity checks so failures surface early with a
-// clear message instead of deep inside an HTTP call.
-func (c *Config) validate() error {
+// clear message instead of deep inside an HTTP call. It returns the
+// resolved active provider so Load can populate the legacy APIKey field
+// without resolving (and re-reading .env files) a second time.
+func (c *Config) validate() (ResolvedProvider, error) {
 	if c.Model.Provider == "" {
-		return fmt.Errorf("model.provider is required (e.g. \"ollama\")")
+		return ResolvedProvider{}, fmt.Errorf("model.provider is required (e.g. \"ollama\")")
 	}
 	if c.Model.Name == "" {
-		return fmt.Errorf("model.name is required (e.g. \"llama3\")")
+		return ResolvedProvider{}, fmt.Errorf("model.name is required (e.g. \"llama3\")")
 	}
 	if c.Model.Endpoint != "" {
 		u, err := url.Parse(c.Model.Endpoint)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-			return fmt.Errorf("model.endpoint %q must be an absolute http:// or https:// URL", c.Model.Endpoint)
+			return ResolvedProvider{}, fmt.Errorf("model.endpoint %q must be an absolute http:// or https:// URL", c.Model.Endpoint)
 		}
 	}
 
 	for id, entry := range c.Providers {
 		if err := validateEntry(id, entry); err != nil {
-			return err
+			return ResolvedProvider{}, err
 		}
 	}
 
 	// Resolve the active provider now so unknown types and missing
 	// endpoints fail at startup with a clear pointer at the offending
 	// field instead of on the first request.
-	if _, err := c.ResolveProvider(c.Model.Provider, ""); err != nil {
-		return fmt.Errorf("model.provider %q: %w", c.Model.Provider, err)
+	resolved, err := c.ResolveProvider(c.Model.Provider, "")
+	if err != nil {
+		return ResolvedProvider{}, fmt.Errorf("model.provider %q: %w", c.Model.Provider, err)
 	}
 
 	if err := validatePermissionValue("permissions.default", c.Permissions.Default); err != nil {
-		return err
+		return ResolvedProvider{}, err
 	}
 	for tool, value := range c.Permissions.Tools {
 		if err := validatePermissionValue(fmt.Sprintf("permissions.tools.%s", tool), value); err != nil {
-			return err
+			return ResolvedProvider{}, err
 		}
 	}
 
 	if _, err := sandbox.ParseMode(c.Sandbox.Mode); err != nil {
-		return fmt.Errorf("sandbox.mode: %w", err)
+		return ResolvedProvider{}, fmt.Errorf("sandbox.mode: %w", err)
 	}
 	if _, err := sandbox.ParseNetwork(c.Sandbox.WSL.Network); err != nil {
-		return fmt.Errorf("sandbox.wsl.network: %w", err)
+		return ResolvedProvider{}, fmt.Errorf("sandbox.wsl.network: %w", err)
 	}
 	if c.Sandbox.Mode == string(sandbox.ModeWSL) &&
 		c.Sandbox.WSL.Distribution != "" && !sandbox.ValidDistroName(c.Sandbox.WSL.Distribution) {
-		return fmt.Errorf("sandbox.wsl.distribution %q is invalid (allowed: letters, digits, '.', '_', '-', and it may not start with '-')",
+		return ResolvedProvider{}, fmt.Errorf("sandbox.wsl.distribution %q is invalid (allowed: letters, digits, '.', '_', '-', and it may not start with '-')",
 			c.Sandbox.WSL.Distribution)
 	}
 
 	if err := validateAgents(c.Agents); err != nil {
-		return err
+		return ResolvedProvider{}, err
 	}
 
 	if err := validateRunLimits("agent",
 		c.Agent.MaxIterations, c.Agent.MaxToolCalls, c.Agent.MaxConsecutiveFailures,
 		c.Agent.ContextWindow, c.Agent.ContextReserve, c.Agent.MaxContextMessages); err != nil {
-		return err
+		return ResolvedProvider{}, err
 	}
 
 	if err := validateTools(c.Tools); err != nil {
-		return err
+		return ResolvedProvider{}, err
 	}
 
 	// MCP server definitions are validated for shape only here: no
@@ -543,14 +564,14 @@ func (c *Config) validate() error {
 	// doctor-without-spawning stays possible. Bounds live in internal/mcp;
 	// its errors already carry the mcp: field paths.
 	if err := c.MCP.Validate(); err != nil {
-		return err
+		return ResolvedProvider{}, err
 	}
 
 	if _, err := ParseWorkspaceMode(c.Workspace.Mode); err != nil {
-		return fmt.Errorf("workspace.mode: %w", err)
+		return ResolvedProvider{}, fmt.Errorf("workspace.mode: %w", err)
 	}
 
-	return nil
+	return resolved, nil
 }
 
 // knownAgents is the set of built-in agent names for config validation.

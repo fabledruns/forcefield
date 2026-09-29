@@ -300,7 +300,10 @@ func (o *OpenAIResponses) StreamChat(ctx context.Context, messages []Message, de
 		return nil, err
 	}
 
-	events := make(chan StreamEvent)
+	// Buffered so the network reader stays ahead of the consumer by a
+	// few dozen events instead of rendezvousing per token. Order is
+	// unchanged (single producer); cancellation still preempts via ctx.
+	events := make(chan StreamEvent, 32)
 
 	go func() {
 		defer resp.Body.Close()

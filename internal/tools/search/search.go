@@ -284,7 +284,10 @@ func (s SearchFiles) Execute(ctx context.Context, args map[string]any) (tools.Re
 			return nil
 		}
 		// Never follow symlinked directories (WalkDir doesn't), and
-		// require symlinked files to resolve inside the root.
+		// require symlinked files to resolve inside the root. The
+		// resolution is reused by the containment check below so a
+		// symlinked file is resolved once, not twice.
+		resolvedLink, isLink := "", false
 		if d.Type()&os.ModeSymlink != 0 {
 			resolved, err := sandbox.EvalLinks(p)
 			if err != nil {
@@ -296,11 +299,14 @@ func (s SearchFiles) Execute(ctx context.Context, args map[string]any) (tools.Re
 			if fi, err := os.Stat(resolved); err != nil || fi.IsDir() {
 				return nil
 			}
+			resolvedLink, isLink = resolved, true
 		}
 		// Containment: resolve (links and junctions) and require within
 		// root (both modes).
 		resolved := p
-		if eval, err := sandbox.EvalLinks(p); err == nil {
+		if isLink {
+			resolved = resolvedLink
+		} else if eval, err := sandbox.EvalLinks(p); err == nil {
 			resolved = eval
 		}
 		if !within(resolvedRoot, resolved) {

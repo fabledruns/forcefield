@@ -372,6 +372,12 @@ func (m *model) runRegionAction(region HitRegion) {
 // wheel notch. It never bypasses boundaries (viewport clamps internally)
 // and keeps auto-follow semantics identical to keyboard scrolling: leaving
 // the bottom pauses follow, returning to it resumes.
+//
+// It deliberately does not call refreshTranscript: scrolling changes only
+// the viewport offset while spans live in content coordinates (see
+// transcriptRegionAt), so a refresh would redo the full O(N) entry
+// fingerprint only to hit the clean early-exit without touching the
+// viewport. Wheel bursts would pay that scan per notch for no effect.
 func (m *model) scrollViewport(direction int) {
 	const wheelLinesPerNotch = 3
 	switch direction {
@@ -381,7 +387,6 @@ func (m *model) scrollViewport(direction int) {
 		m.viewport.LineDown(wheelLinesPerNotch)
 	}
 	m.following = m.viewport.AtBottom()
-	m.refreshTranscript()
 }
 
 // wheel direction values.

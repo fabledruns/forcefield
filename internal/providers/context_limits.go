@@ -61,13 +61,13 @@ func ContextLimitsForModel(modelID string) (contextWindow, maxOutput int) {
 	if lower == "" {
 		return 0, 0
 	}
-	for _, key := range sortedKeys(knownContextWindows) {
+	for _, key := range sortedContextWindowKeys {
 		if strings.Contains(lower, key) {
 			contextWindow = knownContextWindows[key]
 			break
 		}
 	}
-	for _, key := range sortedKeys(knownMaxOutput) {
+	for _, key := range sortedMaxOutputKeys {
 		if strings.Contains(lower, key) {
 			maxOutput = knownMaxOutput[key]
 			break
@@ -139,3 +139,12 @@ func sortedKeys(m map[string]int) []string {
 	sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
 	return keys
 }
+
+// sortedContextWindowKeys and sortedMaxOutputKeys are the longest-first
+// orderings of the static tables above, computed once. ContextLimitsForModel
+// runs on the per-turn path (via snapshotting and budgeting), so it must
+// not reallocate and re-sort both tables on every lookup.
+var (
+	sortedContextWindowKeys = sortedKeys(knownContextWindows)
+	sortedMaxOutputKeys     = sortedKeys(knownMaxOutput)
+)

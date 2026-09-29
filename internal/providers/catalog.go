@@ -3,6 +3,7 @@ package providers
 import (
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Preset describes one known service (display, protocol, endpoint, auth).
@@ -265,12 +266,41 @@ func KnownTypes() []string {
 	return out
 }
 
+// capabilitiesCache memoizes CapabilitiesFor by normalized protocol
+// type. DefaultFactories is immutable after init and every adapter's
+// Capabilities() is constant for its transport, so a probe result cannot
+// change within a process. Without this, every picker open and status
+// query constructs a throwaway adapter (plus its http.Transport) per
+// provider — roughly a dozen per open — defeating transport pooling.
+var (
+	capabilitiesMu    sync.Mutex
+	capabilitiesCache = make(map[string]Capabilities)
+)
+
 // CapabilitiesFor reports what a given transport type supports by asking
 // its registered adapter. Unknown types report nothing. The probe model
 // is deliberately empty: construction must never depend on a real model
 // selection (multi-protocol routers resolve transports per model and
 // accept an empty model for capability reporting).
 func CapabilitiesFor(protocolType string) Capabilities {
+	// Key matches Create's lookup normalization (lowercase, no trim)
+	// so cached results are bit-identical to uncached ones for every
+	// input, including unknown or whitespace-padded types.
+	key := strings.ToLower(protocolType)
+	capabilitiesMu.Lock()
+	if caps, ok := capabilitiesCache[key]; ok {
+		capabilitiesMu.Unlock()
+		return caps
+	}
+	capabilitiesMu.Unlock()
+	caps := probeCapabilities(protocolType)
+	capabilitiesMu.Lock()
+	capabilitiesCache[key] = caps
+	capabilitiesMu.Unlock()
+	return caps
+}
+
+func probeCapabilities(protocolType string) Capabilities {
 	spec := Spec{
 		ID:      "capability-probe",
 		Type:    protocolType,

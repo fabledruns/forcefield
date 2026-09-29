@@ -34,7 +34,22 @@ func ProjectRoot(dir string) (string, error) {
 // failure (git not installed, not a repo, etc.) is treated as "no git
 // root" rather than a hard error, since falling back to the working
 // directory is an explicit part of the contract.
+//
+// A pure-Go upward `.git` search (gitRootFast, see gitroot.go) answers
+// the definitive cases without spawning git (~75ms per spawn on
+// Windows): hits return the root, definitive misses return not-found,
+// and only genuine ambiguity falls back to the subprocess below, so
+// observable behavior is unchanged.
 func gitRoot(dir string) (string, bool) {
+	if root, ok, certain := gitRootFast(dir); certain {
+		return root, ok
+	}
+	return gitRootSpawner(dir)
+}
+
+// gitRootSpawn is the historical implementation: one `git rev-parse`
+// subprocess per call.
+func gitRootSpawn(dir string) (string, bool) {
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 	cmd.Dir = dir
 
