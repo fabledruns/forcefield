@@ -68,6 +68,54 @@ func TestShell_InvalidEnvIsArgumentError(t *testing.T) {
 	if _, ok := err.(*tools.ArgumentError); !ok {
 		t.Fatalf("env with non-string value: error = %v, want ArgumentError", err)
 	}
+
+	// Malformed keys never reach process setup: flag-like, assignment-
+	// like, empty, whitespace, and leading-digit names are all rejected
+	// here (validation precedes the backend probe, so no shell backend
+	// is needed for these cases).
+	for _, key := range []string{"-u", "--split-string", "A=B", "", "HAS SPACE", "LEAD SPACE", "9LIVES", "FOO-BAR", "FOO.BAR"} {
+		_, err = s.Execute(context.Background(), map[string]any{
+			"command": "echo hi",
+			"env":     map[string]any{key: "x"},
+		})
+		argErr, ok := err.(*tools.ArgumentError)
+		if !ok {
+			t.Fatalf("env key %q: error = %v, want ArgumentError", key, err)
+		} else if argErr.Field != "env" {
+			t.Errorf("env key %q: ArgumentError.Field = %q, want env", key, argErr.Field)
+		}
+	}
+}
+
+// TestExtraEnvArgsValidatesKeys pins the P1 env-key fix at the unit
+// level: every extra env key is checked against the shared shell-name
+// pattern before pairs are built, so no backend (native, WSL small-path
+// /usr/bin/env, WSL large-path script) can ever receive a malformed
+// key. Well-formed names - including PATH-style and LD_* names the
+// security model does not forbid - keep working exactly as before.
+func TestExtraEnvArgsValidatesKeys(t *testing.T) {
+	for _, key := range []string{"-u", "A=B", "", "HAS SPACE", "9LIVES", "FOO-BAR"} {
+		if _, err := extraEnvArgs(map[string]any{"env": map[string]any{key: "x"}}); err == nil {
+			t.Errorf("extraEnvArgs accepted invalid key %q, want ArgumentError", key)
+		} else if argErr, ok := err.(*tools.ArgumentError); !ok || argErr.Field != "env" {
+			t.Errorf("extraEnvArgs(%q) error = %v, want env ArgumentError", key, err)
+		}
+	}
+
+	for _, key := range []string{"FOO", "FOO_BAR", "PATH", "_x9", "LD_PRELOAD", "LD_LIBRARY_PATH", "a"} {
+		pairs, err := extraEnvArgs(map[string]any{"env": map[string]any{key: "v"}})
+		if err != nil {
+			t.Errorf("extraEnvArgs rejected valid key %q: %v", key, err)
+			continue
+		}
+		if len(pairs) != 1 || pairs[0] != key+"=v" {
+			t.Errorf("extraEnvArgs(%q) = %q, want %q", key, pairs, key+"=v")
+		}
+	}
+
+	if pairs, err := extraEnvArgs(map[string]any{}); err != nil || pairs != nil {
+		t.Errorf("extraEnvArgs without env = %q, %v; want nil, nil", pairs, err)
+	}
 }
 
 func TestShell_StderrIncludedInContentOnSuccess(t *testing.T) {

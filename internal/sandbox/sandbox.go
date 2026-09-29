@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -146,6 +147,19 @@ func ValidDistroName(name string) bool {
 		}
 	}
 	return true
+}
+
+// envNamePattern matches the identifiers shells accept as variable
+// names. It is shared (not duplicated per backend) so native, WSL
+// small-path, and WSL large-path validation agree exactly.
+var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// IsValidEnvName reports whether name is a valid shell environment
+// variable name. Tool layers validate extra env keys through here so a
+// malformed key (flag-like "-u", "A=B", empty, whitespace) fails closed
+// before reaching process or sandbox setup on any backend.
+func IsValidEnvName(name string) bool {
+	return envNamePattern.MatchString(name)
 }
 
 // effectiveNetwork returns the policy's network request with the empty

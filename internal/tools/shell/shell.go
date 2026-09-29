@@ -1000,9 +1000,13 @@ func isAssignment(field string) bool {
 // extras are returned: how they merge into the child's environment is a
 // backend decision (appended to os.Environ natively; passed to `env` inside
 // WSL, since WSL does not forward arbitrary Windows variables into the
-// distribution). A malformed env argument is an argument error rather than
-// being silently dropped: the caller asked for variables the command would
-// then run without.
+// distribution). Keys must be valid shell variable names (see
+// sandbox.IsValidEnvName, the same check the WSL large-payload path
+// applies): a flag-like "-u", "A=B", empty, or whitespace-containing key
+// would otherwise alter process setup - notably the WSL small path, which
+// passes pairs to /usr/bin/env. A malformed env argument is an argument
+// error rather than being silently dropped: the caller asked for variables
+// the command would then run without.
 func extraEnvArgs(args map[string]any) ([]string, error) {
 	raw, ok := args["env"]
 	if !ok {
@@ -1015,6 +1019,9 @@ func extraEnvArgs(args map[string]any) ([]string, error) {
 
 	pairs := make([]string, 0, len(extra))
 	for k, v := range extra {
+		if !sandbox.IsValidEnvName(k) {
+			return nil, &tools.ArgumentError{Field: "env", Reason: fmt.Sprintf("key %q is not a valid environment variable name (must match [A-Za-z_][A-Za-z0-9_]*)", k)}
+		}
 		s, ok := v.(string)
 		if !ok {
 			return nil, &tools.ArgumentError{Field: "env", Reason: fmt.Sprintf("value for %q must be a string", k)}

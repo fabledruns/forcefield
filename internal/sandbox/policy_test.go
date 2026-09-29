@@ -256,3 +256,20 @@ func TestSummaryLinesHonestWSL(t *testing.T) {
 		t.Errorf("limitation note missing:\n%s", lines)
 	}
 }
+
+// TestIsValidEnvName pins the single shared shell-variable-name check
+// that every backend agrees on: tool-layer validation and the WSL
+// large-payload spill must accept and reject exactly the same keys, so
+// behavior never diverges by payload size or platform.
+func TestIsValidEnvName(t *testing.T) {
+	for _, key := range []string{"FOO", "FOO_BAR", "PATH", "_x9", "LD_PRELOAD", "a", "A1_"} {
+		if !IsValidEnvName(key) {
+			t.Errorf("IsValidEnvName(%q) = false, want true", key)
+		}
+	}
+	for _, key := range []string{"", "-u", "--split-string", "A=B", "HAS SPACE", "9LIVES", "FOO-BAR", "FOO.BAR", "FOO/BAR"} {
+		if IsValidEnvName(key) {
+			t.Errorf("IsValidEnvName(%q) = true, want false", key)
+		}
+	}
+}

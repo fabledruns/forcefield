@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -130,7 +129,7 @@ func writeWslScript(extraEnv []string, command string) (string, func(), error) {
 	var b strings.Builder
 	for _, kv := range extraEnv {
 		k, v, _ := strings.Cut(kv, "=")
-		if !envNameRe.MatchString(k) {
+		if !envNamePattern.MatchString(k) {
 			_ = f.Close()
 			remove()
 			return "", nil, fmt.Errorf("env key %q is not a valid shell variable name", k)
@@ -151,9 +150,6 @@ func writeWslScript(extraEnv []string, command string) (string, func(), error) {
 	}
 	return wslPathFromWindows(f.Name()), remove, nil
 }
-
-// envNameRe matches the identifiers Bash accepts as variable names.
-var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // shellQuote wraps s in single quotes - the one form of Bash quoting with
 // no nested interpretation - so a staged value can never break out of the
