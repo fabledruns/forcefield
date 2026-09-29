@@ -85,9 +85,9 @@ func TestRunCommand_AgentFlagUnknownAgentErrors(t *testing.T) {
 	origRun := runtimeRun
 	defer func() { runtimeRun = origRun }()
 	called := false
-	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, error) {
+	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, []string, error) {
 		called = true
-		return providers.Response{Content: "ok"}, runtime.StatusVerified, nil
+		return providers.Response{Content: "ok"}, runtime.StatusVerified, nil, nil
 	}
 	err := runCommand([]string{"hello"})
 	// With an unknown agent the command must fail (either via real

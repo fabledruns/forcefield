@@ -23,7 +23,7 @@ func TestRunCommand_Success(t *testing.T) {
 	}()
 
 	// Fake runtime that returns a deterministic response.
-	runtimeRun = func(_ context.Context, msgs []providers.Message) (providers.Response, runtime.Status, error) {
+	runtimeRun = func(_ context.Context, msgs []providers.Message) (providers.Response, runtime.Status, []string, error) {
 		if len(msgs) != 1 {
 			t.Errorf("expected 1 message, got %d", len(msgs))
 		}
@@ -33,7 +33,7 @@ func TestRunCommand_Success(t *testing.T) {
 		if msgs[0].Content != "hello world" {
 			t.Errorf("content = %q, want hello world", msgs[0].Content)
 		}
-		return providers.Response{Content: "fake response"}, runtime.StatusVerified, nil
+		return providers.Response{Content: "fake response"}, runtime.StatusVerified, nil, nil
 	}
 
 	// Capture stdout.
@@ -58,9 +58,9 @@ func TestRunCommand_JoinsArgs(t *testing.T) {
 	defer func() { runtimeRun = origRun }()
 
 	var gotContent string
-	runtimeRun = func(_ context.Context, msgs []providers.Message) (providers.Response, runtime.Status, error) {
+	runtimeRun = func(_ context.Context, msgs []providers.Message) (providers.Response, runtime.Status, []string, error) {
 		gotContent = msgs[0].Content
-		return providers.Response{Content: "ok"}, runtime.StatusVerified, nil
+		return providers.Response{Content: "ok"}, runtime.StatusVerified, nil, nil
 	}
 	// TrimSpace and Join should collapse multiple args with single space.
 	if err := runCommand([]string{"  hello ", "world  ", " test"}); err != nil {
@@ -79,8 +79,8 @@ func TestRunCommand_PropagatesError(t *testing.T) {
 	origRun := runtimeRun
 	defer func() { runtimeRun = origRun }()
 
-	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, error) {
-		return providers.Response{}, "", fmt.Errorf("model failure")
+	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, []string, error) {
+		return providers.Response{}, "", nil, fmt.Errorf("model failure")
 	}
 	err := runCommand([]string{"task"})
 	if err == nil {
@@ -97,8 +97,8 @@ func TestRunCommand_CobraValidation(t *testing.T) {
 	// Use a fake run to avoid real provider.
 	origRun := runtimeRun
 	defer func() { runtimeRun = origRun }()
-	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, error) {
-		return providers.Response{Content: "ok"}, runtime.StatusVerified, nil
+	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, []string, error) {
+		return providers.Response{Content: "ok"}, runtime.StatusVerified, nil, nil
 	}
 	// Directly test the cobra Args validator.
 	if err := runCmd.Args(runCmd, []string{}); err == nil {
@@ -147,8 +147,8 @@ func TestRunCommand_UnverifiedPartialExitsUnverified(t *testing.T) {
 		runtimeRun, osExit, os.Stdout = origRun, origExit, origStdout
 	}()
 
-	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, error) {
-		return providers.Response{Content: "unreviewed work"}, runtime.StatusPartial, nil
+	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, []string, error) {
+		return providers.Response{Content: "unreviewed work"}, runtime.StatusPartial, nil, nil
 	}
 	var exited *int
 	osExit = func(code int) { exited = &code }
@@ -191,5 +191,79 @@ func TestSaveGateError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sess-7") || !strings.Contains(err.Error(), "session save failed") {
 		t.Errorf("err = %v, want it to name the session and the save failure", err)
+	}
+}
+
+// captureStderr runs fn with os.Stderr redirected to a pipe and returns
+// what was written.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = origStderr }()
+	fn()
+	_ = w.Close()
+	os.Stderr = origStderr
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	return buf.String()
+}
+
+// TestReportMCPWarnings pins that headless runs surface pull-based MCP
+// integration warnings (dead servers, missing tools) on stderr: without
+// the TUI's /mcp surface they would otherwise stay invisible outside
+// .forcefield/mcp-status.json. Empty warnings print nothing so clean
+// runs and piped stdout are unaffected.
+func TestReportMCPWarnings(t *testing.T) {
+	if out := captureStderr(t, func() { reportMCPWarnings(nil) }); out != "" {
+		t.Errorf("no warnings printed %q, want silence", out)
+	}
+	out := captureStderr(t, func() {
+		reportMCPWarnings([]string{
+			`mcp server "dead" failed to start: dial refused`,
+			`agent "general" requests missing tool "mcp__dead__x"`,
+		})
+	})
+	for _, want := range []string{`mcp server "dead" failed to start`, `mcp__dead__x`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stderr = %q, want it to contain %q", out, want)
+		}
+	}
+}
+
+// TestRunCommand_ReportsMCPWarnings drives the one-shot path with a fake
+// runtime that reports MCP warnings: the response still prints to stdout
+// while the warnings land on stderr.
+func TestRunCommand_ReportsMCPWarnings(t *testing.T) {
+	origRun, origStdout := runtimeRun, os.Stdout
+	defer func() { runtimeRun, os.Stdout = origRun, origStdout }()
+
+	runtimeRun = func(context.Context, []providers.Message) (providers.Response, runtime.Status, []string, error) {
+		return providers.Response{Content: "ok"},
+			runtime.StatusVerified,
+			[]string{`mcp server "dead" failed to start: boom`},
+			nil
+	}
+
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	stderr := captureStderr(t, func() {
+		if err := runCommand([]string{"task"}); err != nil {
+			t.Fatalf("runCommand error = %v", err)
+		}
+	})
+	_ = w.Close()
+	os.Stdout = origStdout
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	if out := strings.TrimSpace(buf.String()); out != "ok" {
+		t.Errorf("stdout = %q, want the response untouched", out)
+	}
+	if !strings.Contains(stderr, `mcp server "dead" failed to start`) {
+		t.Errorf("stderr = %q, want the MCP warning", stderr)
 	}
 }

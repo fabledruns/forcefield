@@ -23,13 +23,16 @@ import (
 // runs with the caller's context so SIGINT/SIGTERM cancels the operation
 // instead of leaving tools or provider streams running. The status is
 // returned alongside the response so the process exit code reflects
-// verification: only a verified completion exits 0.
-var runtimeRun = func(ctx context.Context, msgs []providers.Message) (providers.Response, runtime.Status, error) {
+// verification: only a verified completion exits 0. The warnings carry
+// pull-based MCP integration notes (dead servers, missing tools) for
+// stderr reporting; headless runs have no /mcp surface.
+var runtimeRun = func(ctx context.Context, msgs []providers.Message) (providers.Response, runtime.Status, []string, error) {
 	rt, err := runtime.New()
 	if err != nil {
-		return providers.Response{}, "", err
+		return providers.Response{}, "", nil, err
 	}
-	return rt.RunContextWithStatus(ctx, msgs)
+	resp, status, err := rt.RunContextWithStatus(ctx, msgs)
+	return resp, status, rt.MCPWarnings(), err
 }
 
 // runtimeNew is a package var so tests can inject a fake runtime for
@@ -117,11 +120,12 @@ func runCommand(args []string) error {
 		if err != nil {
 			return mapRunError(err)
 		}
+		reportMCPWarnings(rt.MCPWarnings())
 		fmt.Println(response.Content)
 		return exitForRunStatus(status)
 	}
 
-	response, status, err := runtimeRun(ctx, []providers.Message{
+	response, status, warns, err := runtimeRun(ctx, []providers.Message{
 		{
 			Role:    providers.UserRole,
 			Content: task,
@@ -131,8 +135,20 @@ func runCommand(args []string) error {
 		return mapRunError(err)
 	}
 
+	reportMCPWarnings(warns)
 	fmt.Println(response.Content)
 	return exitForRunStatus(status)
+}
+
+// reportMCPWarnings surfaces pull-based MCP integration warnings on
+// stderr for headless runs: without the TUI's /mcp surface, a dead
+// server or a requested-but-missing tool would otherwise stay invisible
+// (only .forcefield/mcp-status.json records it). Stdout stays clean for
+// piping; no warnings means no output.
+func reportMCPWarnings(warns []string) {
+	for _, w := range warns {
+		fmt.Fprintf(os.Stderr, "ff run: mcp warning: %s\n", w)
+	}
 }
 
 // exitForRunStatus maps the terminal verification outcome to the
@@ -204,6 +220,10 @@ func runResumeSession(ctx context.Context, resumeID string, maxTurns int) (int, 
 	if err != nil {
 		return 1, err
 	}
+	// MCP servers start with the runtime: surface any startup failures
+	// now, before model output, so a dead server is visible even though
+	// headless runs have no /mcp surface.
+	reportMCPWarnings(rt.MCPWarnings())
 	recovery.Heal(sess)
 	recovery.AlignAgent(rt, sess)
 	// Adoption writes (heal + agent alignment) must reach disk before
