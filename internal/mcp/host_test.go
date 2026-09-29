@@ -343,6 +343,36 @@ func TestHostArgvSeparate(t *testing.T) {
 	}
 }
 
+// stderrCwd extracts the helper's reported working directory (the
+// "cwd=<dir>" line) from captured stderr, or "" when absent.
+func stderrCwd(stderr string) string {
+	for _, line := range strings.Split(stderr, "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "cwd="); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return ""
+}
+
+// sameDir reports whether two paths name the same directory, resolving
+// symlinks first. Processes observe the physical path via os.Getwd,
+// while callers may hold an unresolved spelling (macOS t.TempDir
+// returns /var/... for /private/var/...); comparing canonical forms
+// keeps the assertion about the working directory, not its spelling.
+// Unresolvable paths compare literally, so a missing cwd line never
+// matches a real workspace.
+func sameDir(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ca, errA := filepath.EvalSymlinks(a)
+	cb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return ca == cb
+}
+
 func TestHostCwdApplied(t *testing.T) {
 	h, ws := newTestHost(t, map[string]ServerConfig{
 		"s": helperServerConfig(t, map[string]string{"MCP_HELPER_STDERR_PWD": "1"}),
@@ -357,8 +387,38 @@ func TestHostCwdApplied(t *testing.T) {
 	if ss.Dir != ws {
 		t.Errorf("Dir = %q, want workspace %q", ss.Dir, ws)
 	}
-	if !strings.Contains(ss.Stderr, "cwd="+ws) {
-		t.Errorf("helper cwd not observed in stderr: %q", ss.Stderr)
+	if got := stderrCwd(ss.Stderr); !sameDir(got, ws) {
+		t.Errorf("helper cwd %q is not the workspace %q (stderr %q)", got, ws, ss.Stderr)
+	}
+}
+
+// TestHostCwdSymlinkedWorkspace runs the same cwd proof through a
+// symlinked workspace spelling. POSIX kernels report the physical path
+// via getwd while the Host holds the unresolved spelling (the macOS
+// /var vs /private/var shape); the canonical comparison must accept
+// both spellings of the same directory on every platform.
+func TestHostCwdSymlinkedWorkspace(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	h, err := New(Config{Servers: map[string]ServerConfig{
+		"s": helperServerConfig(t, map[string]string{"MCP_HELPER_STDERR_PWD": "1"}),
+	}}, link)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	if err := h.Start(context.Background()); err != nil {
+		t.Fatalf("Start error = %v", err)
+	}
+	ss := snapshotOf(h, "s")
+	if !ss.Ready {
+		t.Fatalf("not ready: %s", ss.LastError)
+	}
+	if got := stderrCwd(ss.Stderr); !sameDir(got, link) {
+		t.Errorf("helper cwd %q is not the workspace %q (stderr %q)", got, link, ss.Stderr)
 	}
 }
 
