@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"forcefield/internal/mcp"
 	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
 	"forcefield/internal/redact"
@@ -407,9 +408,12 @@ func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCa
 }
 
 // isSensitiveCall reports whether a call targets a sensitive file and must
-// force Ask. Matches raw + canonical paths. See docs/Sandbox.md.
+// force Ask. Matches raw + canonical paths. Shell commands and MCP
+// arguments are inspected with the same filesystem.IsSensitivePath
+// definition - no second notion of "sensitive" exists anywhere on this
+// path. See docs/Sandbox.md.
 func isSensitiveCall(call providers.ToolCall, resolvedPath string) bool {
-	candidates := make([]string, 0, 3)
+	candidates := make([]string, 0, 4)
 	switch call.Name {
 	case "read_file", "write_file", "list_files", "search_files", "search_code", "find_files", "git", "secret_scan":
 		if v, ok := call.Arguments["path"]; ok {
@@ -417,14 +421,33 @@ func isSensitiveCall(call providers.ToolCall, resolvedPath string) bool {
 				candidates = append(candidates, s)
 			}
 		}
-	case "shell_job":
-		// Jobs scope through cwd rather than path.
+	case "shell", "shell_job":
+		// Jobs scope through cwd rather than path, and both shell forms
+		// carry free-text commands that can name sensitive files, so the
+		// working directory and the command's path tokens are all
+		// candidates. Without this, an allow-ruled shell silently reads
+		// anything the command names.
 		if v, ok := call.Arguments["cwd"]; ok {
 			if s, ok := v.(string); ok && s != "" {
 				candidates = append(candidates, s)
 			}
 		}
+		if v, ok := call.Arguments["command"]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				candidates = append(candidates, shellPathTokens(s)...)
+			}
+		}
 	default:
+		// MCP tools take opaque arguments with no BoundaryChecker, so a
+		// path-typed argument would otherwise never escalate. Strings
+		// the shared definition flags still force Ask; everything else
+		// passes through exactly as before.
+		if mcp.IsQualifiedToolName(call.Name) {
+			if mcpArgsTargetSensitive(call.Arguments) {
+				return true
+			}
+			break
+		}
 		return false
 	}
 	if resolvedPath != "" {
@@ -436,6 +459,87 @@ func isSensitiveCall(call providers.ToolCall, resolvedPath string) bool {
 		}
 	}
 	return false
+}
+
+// maxShellPathTokens bounds command tokenization so a hostile command
+// cannot turn a permission check into a resource sink. Normal commands
+// have a handful of tokens; the cap only bites pathological input, and
+// biting means skipping later tokens (fail-open for far-tail paths is
+// acceptable: the permission default for shell is Ask, and an attacker
+// who controls 4096 leading tokens already owns the prompt).
+const maxShellPathTokens = 4096
+
+// shellPathTokens splits shell command text into candidate path tokens:
+// whitespace and common shell separators delimit, surrounding quotes are
+// stripped. Each token is tested with filesystem.IsSensitivePath by the
+// caller, keeping the definition of "sensitive" in exactly one place.
+func shellPathTokens(command string) []string {
+	fields := strings.FieldsFunc(command, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\n', '\r', ';', '&', '|', '(', ')', '<', '>', '`', '$':
+			return true
+		}
+		return false
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if len(out) >= maxShellPathTokens {
+			break
+		}
+		if len(f) >= 2 {
+			if (f[0] == '\'' && f[len(f)-1] == '\'') || (f[0] == '"' && f[len(f)-1] == '"') {
+				f = f[1 : len(f)-1]
+			}
+		}
+		if f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+const (
+	// maxMCPSensitiveScanDepth bounds recursion into nested MCP
+	// arguments (the remote-schema depth cap is 5; one extra level of
+	// tolerance costs nothing).
+	maxMCPSensitiveScanDepth = 6
+	// maxMCPSensitiveScanStrings bounds how many argument strings one
+	// permission check inspects. Model arguments are already
+	// turn-byte-capped; the bound only bites hostile shapes.
+	maxMCPSensitiveScanStrings = 256
+)
+
+// mcpArgsTargetSensitive reports whether any string inside MCP tool
+// arguments matches the shared sensitive-path definition, recursing
+// into nested objects and arrays. Non-string values are ignored: the
+// walk never invents path syntax, it only asks IsSensitivePath about
+// strings the server will receive as data.
+func mcpArgsTargetSensitive(args map[string]any) bool {
+	budget := maxMCPSensitiveScanStrings
+	var found bool
+	var walk func(v any, depth int)
+	walk = func(v any, depth int) {
+		if found || budget <= 0 || depth < 0 {
+			return
+		}
+		switch t := v.(type) {
+		case string:
+			budget--
+			if filesystem.IsSensitivePath(t) {
+				found = true
+			}
+		case map[string]any:
+			for _, item := range t {
+				walk(item, depth-1)
+			}
+		case []any:
+			for _, item := range t {
+				walk(item, depth-1)
+			}
+		}
+	}
+	walk(args, maxMCPSensitiveScanDepth)
+	return found
 }
 
 func (s *scheduler) getSessionDecision(tool string) (permissions.Decision, bool) {
