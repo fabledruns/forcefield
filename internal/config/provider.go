@@ -242,6 +242,9 @@ func validateEntry(id string, p ProviderConfig) error {
 		if !isValidHeaderName(name) {
 			return fmt.Errorf("providers.%s has an invalid header name %q", id, name)
 		}
+		if isReservedAuthHeader(name) {
+			return fmt.Errorf("providers.%s header %q is reserved for authentication and would silently override the resolved API key - remove it and provide the key via api_key_env instead", id, name)
+		}
 	}
 	for i, m := range p.Models {
 		if strings.TrimSpace(m) == "" {
@@ -280,6 +283,26 @@ func isEnvVarName(s string) bool {
 		}
 	}
 	return true
+}
+
+// reservedAuthHeaders are request headers the provider adapters set
+// from the resolved credential (Authorization Bearer, x-api-key,
+// x-goog-api-key). A custom header with one of these names - in any
+// casing, since HTTP header names are case-insensitive - would silently
+// replace the API key on every request, and would persist a live
+// credential in config.yaml, defeating env-only secrets.
+var reservedAuthHeaders = []string{"authorization", "x-api-key", "x-goog-api-key", "api-key"}
+
+// isReservedAuthHeader reports whether name collides
+// case-insensitively with an authentication header.
+func isReservedAuthHeader(name string) bool {
+	lower := strings.ToLower(name)
+	for _, h := range reservedAuthHeaders {
+		if lower == h {
+			return true
+		}
+	}
+	return false
 }
 
 // isValidHeaderName reports whether name is a valid HTTP header token.

@@ -290,6 +290,42 @@ func TestValidationRejectsBadProviderEntries(t *testing.T) {
 			"model:\n  provider: x\n  name: m\nproviders:\n  x:\n    type: openai-compatible\n    headers:\n      \"Bad Header\": v\n",
 			"header",
 		},
+		"authorization header": {
+			"model:\n  provider: x\n  name: m\nproviders:\n  x:\n    type: openai-compatible\n    headers:\n      Authorization: Bearer sk-live\n",
+			"reserved for authentication",
+		},
+		"authorization header uppercase": {
+			"model:\n  provider: x\n  name: m\nproviders:\n  x:\n    type: openai-compatible\n    headers:\n      AUTHORIZATION: Bearer sk-live\n",
+			"reserved for authentication",
+		},
+		"authorization header mixed case": {
+			"model:\n  provider: x\n  name: m\nproviders:\n  x:\n    type: anthropic\n    headers:\n      AuThOrIzAtIoN: Bearer sk-live\n",
+			"reserved for authentication",
+		},
+		"x-api-key header": {
+			"model:\n  provider: x\n  name: m\nproviders:\n  x:\n    type: anthropic\n    headers:\n      x-api-key: sk-live\n",
+			"reserved for authentication",
+		},
+		"x-api-key header case variant": {
+			"model:\n  provider: x\n  name: m\nproviders:\n  x:\n    type: anthropic\n    headers:\n      X-API-KEY: sk-live\n",
+			"reserved for authentication",
+		},
+		"x-goog-api-key header": {
+			"model:\n  provider: x\n  name: m\nproviders:\n  x:\n    type: gemini\n    headers:\n      x-goog-api-key: sk-live\n",
+			"reserved for authentication",
+		},
+		"x-goog-api-key header case variant": {
+			"model:\n  provider: x\n  name: m\nproviders:\n  x:\n    type: gemini\n    headers:\n      X-Goog-Api-Key: sk-live\n",
+			"reserved for authentication",
+		},
+		"api-key header": {
+			"model:\n  provider: x\n  name: m\nproviders:\n  x:\n    type: openai-compatible\n    headers:\n      api-key: sk-live\n",
+			"reserved for authentication",
+		},
+		"api-key header case variant": {
+			"model:\n  provider: x\n  name: m\nproviders:\n  x:\n    type: openai-compatible\n    headers:\n      Api-Key: sk-live\n",
+			"reserved for authentication",
+		},
 		"empty model entry": {
 			"model:\n  provider: x\n  name: m\nproviders:\n  x:\n    type: ollama\n    models:\n      - \"\"\n",
 			"models",
@@ -315,6 +351,45 @@ func TestValidationRejectsBadProviderEntries(t *testing.T) {
 				t.Errorf("error = %q, want it to mention %q", err, tc.wantText)
 			}
 		})
+	}
+}
+
+// TestValidationAllowsNonAuthHeaders pins that the auth-header deny-list
+// is an exact (case-insensitive) match: legitimate custom headers,
+// including ones that merely contain a reserved name, still load and
+// reach the provider spec untouched.
+func TestValidationAllowsNonAuthHeaders(t *testing.T) {
+	isolateHome(t)
+	body := `model:
+  provider: local
+  name: qwen
+
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:1234/v1/
+    headers:
+      X-Custom: "1"
+      X-Request-Id: abc
+      Authorization-Extra: Bearer not-a-collision
+      api-key-id: internal-ref
+      my-x-api-key: internal-ref
+`
+	writeProvidersConfig(t, body)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v, want non-auth headers accepted", err)
+	}
+	resolved, err := cfg.ResolveProvider("local", cfg.Model.Name)
+	if err != nil {
+		t.Fatalf("ResolveProvider(local) error = %v", err)
+	}
+	spec := resolved.Spec(cfg.Model.Name)
+	for _, k := range []string{"X-Custom", "X-Request-Id", "Authorization-Extra", "api-key-id", "my-x-api-key"} {
+		if _, ok := spec.Headers[k]; !ok {
+			t.Errorf("spec.Headers missing %q: %#v", k, spec.Headers)
+		}
 	}
 }
 
