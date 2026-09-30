@@ -220,6 +220,13 @@ func doWithRetry(
 		}
 
 		if resp.StatusCode == http.StatusOK {
+			// Guard the body with an idle deadline that resets on every
+			// delivered byte: headers arrived (so the header timeout is
+			// satisfied), but a stalled body must still fail instead of
+			// holding the turn forever. Active streams are unaffected
+			// no matter how long the whole response takes; the error
+			// classifies as a retryable timeout downstream.
+			resp.Body = newIdleTimeoutReader(resp.Body, defaultBodyIdleTimeout)
 			return resp, nil
 		}
 
