@@ -463,20 +463,29 @@ func doctorSandbox(cfg *config.Config, report func(verdict, string, ...any)) {
 	// SummaryLines; limits render as warnings from Limitations. No
 	// substring matching: the executor owns both wordings.
 	enc := executor.Describe(context.Background())
+	reportSandboxEnforcement(enc, cfg.Sandbox.WSL.Distribution, report)
+	doctorInteropCanary(executor, enc, report)
+}
+
+// reportSandboxEnforcement renders one Enforcement report: facts as
+// info, configured distro explicitly, structured limits as warnings.
+// Split out so the verdict split is unit-testable without a live
+// backend (native probing needs WSL on Windows, which CI runners
+// lack).
+func reportSandboxEnforcement(enc sandbox.Enforcement, configuredDistro string, report func(verdict, string, ...any)) {
 	for _, line := range enc.SummaryLines() {
 		report(vOK, "sandbox %s", line)
 	}
 	if enc.Mode == sandbox.ModeWSL {
-		if strings.TrimSpace(cfg.Sandbox.WSL.Distribution) == "" {
+		if strings.TrimSpace(configuredDistro) == "" {
 			report(vOK, "sandbox distribution: default distribution (no explicit sandbox.wsl.distribution configured)")
 		} else {
-			report(vOK, "sandbox distribution: configured %q", cfg.Sandbox.WSL.Distribution)
+			report(vOK, "sandbox distribution: configured %q", configuredDistro)
 		}
 	}
 	for _, lim := range enc.Warnings() {
 		report(vWarn, "sandbox limitation [%s]: %s", lim.ID, lim.Detail)
 	}
-	doctorInteropCanary(executor, enc, report)
 }
 
 // doctorInteropCanary runs the safe .exe-resolution probe when the

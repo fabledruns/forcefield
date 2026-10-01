@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
 	"forcefield/internal/config"
 	"forcefield/internal/mcp"
+	"forcefield/internal/sandbox"
 )
 
 // Phase 1: doctor renders sandbox facts from SummaryLines as info and
@@ -14,35 +16,30 @@ import (
 // These tests pin that split plus the configured-distro and MCP
 // UNSANDBOXED states.
 
-func collectDoctorSandbox(t *testing.T, cfg *config.Config) ([]string, []verdict) {
-	t.Helper()
+func TestDoctorSandbox_StructuredVerdicts(t *testing.T) {
+	// Synthetic strict-native enforcement: the Filesystem fact carries
+	// "(other paths are NOT blocked)" while shell-open warns. Rendered
+	// directly so the verdict split never depends on a live backend
+	// (native probing needs WSL on Windows, which CI runners lack —
+	// this test failed there for that reason, not for a product bug).
+	ex, err := sandbox.NewExecutor(sandbox.Policy{Mode: sandbox.ModeNative, Workspace: t.TempDir(), Strict: true})
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+	enc := ex.Describe(context.Background())
 	var lines []string
 	var verdicts []verdict
 	report := func(v verdict, format string, args ...any) {
 		lines = append(lines, doctorLine(v, format, args...))
 		verdicts = append(verdicts, v)
 	}
-	doctorSandbox(cfg, report)
-	return lines, verdicts
-}
-
-func nativeSandboxConfig(dir string) *config.Config {
-	return &config.Config{
-		Model:     config.Model{Provider: "ollama", Name: "test-model"},
-		Sandbox:   config.Sandbox{Mode: "native"},
-		Workspace: config.Workspace{Root: dir},
-	}
-}
-
-func TestDoctorSandbox_StructuredVerdicts(t *testing.T) {
-	dir := t.TempDir()
-	lines, verdicts := collectDoctorSandbox(t, nativeSandboxConfig(dir))
-	if len(lines) == 0 {
-		t.Fatal("expected sandbox lines for native config")
-	}
+	reportSandboxEnforcement(enc, "", report)
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "sandbox Execution") {
 		t.Errorf("missing Execution fact line:\n%s", joined)
+	}
+	if !strings.Contains(joined, "NOT blocked") {
+		t.Fatalf("strict fixture must contain a NOT fact line:\n%s", joined)
 	}
 	// Facts containing NOT (e.g. "(other paths are NOT blocked)" in
 	// strict/WSL, "NOT enforced" when unenforced) must NOT drive the
@@ -77,7 +74,6 @@ func TestDoctorSandbox_StructuredVerdicts(t *testing.T) {
 	if !foundLimitation {
 		t.Errorf("native sandbox must report at least one structured limitation (shell-open):\n%s", joined)
 	}
-	_ = fmt.Sprint()
 }
 
 func TestDoctorShell_NamesConfiguredDistro(t *testing.T) {

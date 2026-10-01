@@ -15,12 +15,15 @@ func OpenNoFollowRead(resolved string) (*os.File, error) {
 	return os.OpenFile(resolved, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 }
 
-// OpenNoFollowWrite opens an already-resolved path for truncate-write
-// without following a final-component symlink. O_NONBLOCK avoids
-// blocking on FIFOs; the caller fstats the descriptor and applies
-// AssertRegular plus AssertWriteLinkCount before writing.
-func OpenNoFollowWrite(resolved string, perm os.FileMode) (*os.File, error) {
-	return os.OpenFile(resolved, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, perm)
+// OpenNoFollowReadWrite opens an already-resolved path for read-write
+// without following a final-component symlink and without truncating:
+// callers validate the open descriptor first, then truncate explicitly
+// with f.Truncate, so a refused write never destroys existing content
+// (truncation used to happen inside open, before validation).
+// O_NONBLOCK avoids blocking on FIFOs; the caller fstats the descriptor
+// and applies AssertRegular plus AssertWriteLinkCount before touching it.
+func OpenNoFollowReadWrite(resolved string, perm os.FileMode) (*os.File, error) {
+	return os.OpenFile(resolved, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, perm)
 }
 
 // linkCount reports the hard-link count where the platform exposes it.

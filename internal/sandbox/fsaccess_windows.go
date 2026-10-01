@@ -34,15 +34,17 @@ func OpenNoFollowRead(resolved string) (*os.File, error) {
 	return os.Open(resolved)
 }
 
-// OpenNoFollowWrite opens an already-resolved path for truncate-write.
+// OpenNoFollowReadWrite opens an already-resolved path for read-write
+// without truncating: callers validate the open descriptor first, then
+// truncate explicitly, so a refused write never destroys content.
 // Same follow-with-pre-check caveat as OpenNoFollowRead.
-func OpenNoFollowWrite(resolved string, perm os.FileMode) (*os.File, error) {
+func OpenNoFollowReadWrite(resolved string, perm os.FileMode) (*os.File, error) {
 	if info, err := os.Lstat(resolved); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("refusing symlink %s: %w", resolved, ErrNotRegular)
 		}
 	}
-	return os.OpenFile(resolved, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	return os.OpenFile(resolved, os.O_RDWR|os.O_CREATE, perm)
 }
 
 // linkCount is unsupported on Windows via the standard library: the

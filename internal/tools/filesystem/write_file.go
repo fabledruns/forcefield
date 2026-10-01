@@ -106,11 +106,15 @@ func (w WriteFile) Execute(ctx context.Context, args map[string]any) (tools.Resu
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
 
-	// Open no-follow, then validate the open descriptor: regular file
-	// (never FIFO/socket/device) and single link (never a hard link to
-	// outside data on link-counting platforms). Descriptor checks close
-	// the Lstat->write swap window the old path-stat checks left open.
-	f, err := sandbox.OpenNoFollowWrite(resolved, targetPerm)
+	// Open read-write without truncating, then validate the open
+	// descriptor: regular file (never FIFO/socket/device) and single
+	// link (never a hard link to outside data on link-counting
+	// platforms). Validation precedes a single explicit f.Truncate, so
+	// a refused write leaves existing content intact — truncating
+	// inside open destroyed data before validation ran. Descriptor
+	// checks close the Lstat->write swap window the old path-stat
+	// checks left open.
+	f, err := sandbox.OpenNoFollowReadWrite(resolved, targetPerm)
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
@@ -123,6 +127,9 @@ func (w WriteFile) Execute(ctx context.Context, args map[string]any) (tools.Resu
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
 	if err := sandbox.AssertWriteLinkCount(info); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+	}
+	if err := f.Truncate(0); err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
 	if err := sandbox.WriteCapped(ctx, f, []byte(content)); err != nil {

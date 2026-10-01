@@ -29,6 +29,13 @@ func TestCloseTerminatesBackgroundJobs(t *testing.T) {
 		t.Skipf("shell backend unavailable: %v", err)
 	}
 	time.Sleep(300 * time.Millisecond)
+	// Without a live backend (e.g. Windows CI runners with wsl.exe but
+	// no distribution) the job fails fast at startup instead of
+	// running: there is no running tree for Close to reap, so skip
+	// rather than assert against a stillborn job.
+	if cur, err := sj.Registry().Poll(snap.ID); err != nil || cur.State != shell.JobRunning {
+		t.Skipf("shell backend has no live process (state=%v err=%v)", cur.State, err)
+	}
 
 	rt := &Runtime{fullManager: mgr}
 	done := make(chan error, 1)

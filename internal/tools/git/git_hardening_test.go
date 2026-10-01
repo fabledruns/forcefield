@@ -140,9 +140,12 @@ func TestGit_ExternalDiffNotExecuted(t *testing.T) {
 	}
 }
 
-// Content filters (clean/smudge) are never reached by the read-only
-// allowlist (no checkout/commit/add path exists): a repo defining them
-// must stay inert across status and diff.
+// Content filters (clean/smudge) ARE reached by read-only inspection:
+// status and unstaged diff hash worktree content through the clean
+// filter. The tool therefore neutralizes every configured driver
+// (clean/smudge/process set to cat) instead of assuming distance.
+// A repo defining them must stay inert across status and diff while
+// inspection keeps working on raw content.
 func TestGit_FilterNotExecuted(t *testing.T) {
 	dir := hardeningRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("*.txt filter=evil\n"), 0o644); err != nil {
@@ -161,6 +164,31 @@ func TestGit_FilterNotExecuted(t *testing.T) {
 	}
 	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
 		t.Fatal("repo content filter executed during read-only inspection")
+	}
+}
+
+// Builtin command words ignore [alias] overrides by git design: only
+// non-builtin words expand aliases, and the tool invokes builtins
+// exclusively. A repo aliasing status/diff to shell must stay inert.
+func TestGit_BuiltinAliasOverrideInert(t *testing.T) {
+	dir := hardeningRepo(t)
+	marker := filepath.Join(dir, "MARKER")
+	hook := markerHook(t, dir, marker)
+	gitIn(t, dir, "config", "alias.status", "!"+hook)
+	gitIn(t, dir, "config", "alias.diff", "!"+hook)
+
+	tool := toolFor(dir)
+	for _, action := range []string{"status", "diff"} {
+		res, err := tool.Execute(context.Background(), map[string]any{"action": action})
+		if err != nil {
+			t.Fatalf("%s: %v", action, err)
+		}
+		if res.IsError {
+			t.Fatalf("%s with alias override must succeed, got: %s", action, res.Content)
+		}
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatal("repo [alias] override executed during inspection")
 	}
 }
 

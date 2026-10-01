@@ -83,7 +83,7 @@ Built-in tools are registered through `tools/builtin`.
 | `search_files`| `tools/search`          | Search file contents under a directory. Skips excluded dirs, lockfiles, sensitive and binary files; max 100 matches. |
 | `search_code` | `tools/search`          | Fast code search via ripgrep (`rg` argv, never a shell). Same skips as `search_files` plus `.gitignore` support; path:line:column matches, max 100. Falls back to built-in search when `rg` is not on PATH. |
 | `find_files`  | `tools/search`          | Find files/dirs by glob or substring. Sorted workspace-relative paths; max 50 results. |
-| `git`           | `tools/git`                   | Inspect a git repository (read-only): status, diffs, log, changed files. Max 256 KiB output. Repo config execution neutralized (`core.fsmonitor` override, no textconv/external drivers), minimal child environment. |
+| `git`           | `tools/git`                   | Inspect a git repository (read-only): status, diffs, log, changed files. Max 256 KiB output. Repo config execution neutralized (`core.fsmonitor` override, no textconv/external drivers, content-filter drivers replaced with identity), minimal child environment. |
 | `secret_scan` | `tools/security`        | Defensively scan one file/text for hardcoded secrets (local-only, redacted output). Max 50 findings, 1 MiB input. |
 | `load_skill`  | `runtime`               | Load a skill body by ID, scoped to the active agent's skill set. |
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -112,7 +113,64 @@ const gitWaitDelay = time.Second
 // core.fsmonitor executes on status without this; with
 // `-c core.fsmonitor=` it does not. Textconv and external diff are
 // disabled via --no-textconv/--no-ext-diff on the diff argv itself.
+// Content-filter drivers (filter.<name>.clean/smudge/process, e.g.
+// git-lfs) are enumerated per repository and neutralized the same way
+// (see filterOverrideArgs): status and unstaged diff hash worktree
+// content through the clean filter, so a repo-defined driver executes
+// without it. Builtin command words (status/diff/log/…) are immune to
+// [alias] overrides by git design (verified); only non-builtin words
+// expand aliases, which this tool never invokes.
 var hardeningConfigArgs = []string{"-c", "core.fsmonitor="}
+
+// maxFilterDrivers bounds -c overrides per invocation so a config
+// stuffed with driver sections cannot bloat argv.
+const maxFilterDrivers = 32
+
+// filterDriverKey matches filter driver keys whose values execute:
+// filter.<name>.clean|smudge|process. Anything else under filter.*
+// (e.g. .required booleans) cannot spawn a process.
+var filterDriverKey = regexp.MustCompile(`^filter\.(.+)\.(clean|smudge|process)$`)
+
+// filterOverrideArgs neutralizes every content-filter driver in the
+// effective config by replacing its helpers with cat (identity
+// conversion: content passes through byte-identical, nothing
+// executes). Enumeration itself is safe plumbing: `git config
+// --get-regexp` reads config without touching the worktree, and runs
+// under the same hardened spawn. Drivers named only in .gitattributes
+// need no override: with no configured helper there is nothing to run.
+// Repos relying on real conversion (e.g. git-lfs process drivers)
+// degrade to raw-pointer output or a soft diff error instead of
+// executing repo-configured binaries — inspection stays read-only.
+func (g Git) filterOverrideArgs(ctx context.Context, git, root string) []string {
+	out, _, _, err := g.runCappedWith(ctx, git, root, nil, "config", "--get-regexp", `^filter\.`)
+	if err != nil {
+		// Exit 1 with empty output is the normal no-drivers case; a
+		// real failure here also just means no overrides.
+		if strings.TrimSpace(out) == "" {
+			return nil
+		}
+	}
+	seen := make(map[string]bool)
+	var args []string
+	for _, line := range strings.Split(out, "\n") {
+		key, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+		m := filterDriverKey.FindStringSubmatch(key)
+		if m == nil || seen[m[1]] {
+			continue
+		}
+		seen[m[1]] = true
+		if len(seen) > maxFilterDrivers {
+			break
+		}
+		name := m[1]
+		args = append(args,
+			"-c", "filter."+name+".clean=cat",
+			"-c", "filter."+name+".smudge=cat",
+			"-c", "filter."+name+".process=cat",
+		)
+	}
+	return args
+}
 
 // gitAllowedEnv names the only host variables a git child receives.
 // Everything else (including GIT_DIR/GIT_WORK_TREE redirections,
@@ -210,13 +268,19 @@ func (g Git) Execute(ctx context.Context, args map[string]any) (tools.Result, er
 	var out string
 	var seen int
 	var cut bool
+	// Neutralize content-filter drivers once per call; every worktree
+	// action below reuses the same overrides.
+	filterArgs := g.filterOverrideArgs(ctx, git, root)
+	run := func(argv ...string) (string, int, bool, error) {
+		return g.runCappedWith(ctx, git, root, filterArgs, argv...)
+	}
 	switch action {
 	case ActionStatus:
-		out, seen, cut, err = g.runCapped(ctx, git, root, "status", "--porcelain=v1", "-b", "--", scope)
+		out, seen, cut, err = run("status", "--porcelain=v1", "-b", "--", scope)
 	case ActionDiff:
-		out, seen, cut, err = g.runCapped(ctx, git, root, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--", scope)
+		out, seen, cut, err = run("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--", scope)
 	case ActionStaged:
-		out, seen, cut, err = g.runCapped(ctx, git, root, "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--", scope)
+		out, seen, cut, err = run("diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--", scope)
 	case ActionLog:
 		n := defaultLogLimit
 		if raw, _ := args["limit"].(string); strings.TrimSpace(raw) != "" {
@@ -227,9 +291,9 @@ func (g Git) Execute(ctx context.Context, args map[string]any) (tools.Result, er
 			}
 			n = v
 		}
-		out, seen, cut, err = g.runCapped(ctx, git, root, "log", "--oneline", "-n", strconv.Itoa(n), "--", scope)
+		out, seen, cut, err = run("log", "--oneline", "-n", strconv.Itoa(n), "--", scope)
 	case ActionChanged:
-		out, seen, cut, err = g.changed(ctx, git, root, scope)
+		out, seen, cut, err = g.changed(ctx, git, root, scope, filterArgs)
 	}
 	if err != nil {
 		// Scheduler-level redaction still applies downstream; git's
@@ -253,12 +317,12 @@ func (g Git) Execute(ctx context.Context, args map[string]any) (tools.Result, er
 // files, both scoped. Two fixed read-only commands; either failing
 // surfaces as a soft error. Output is already capture-bounded; the cut
 // flags OR together.
-func (g Git) changed(ctx context.Context, git, root, scope string) (string, int, bool, error) {
-	tracked, seenT, cut1, err := g.runCapped(ctx, git, root, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD", "--", scope)
+func (g Git) changed(ctx context.Context, git, root, scope string, filterArgs []string) (string, int, bool, error) {
+	tracked, seenT, cut1, err := g.runCappedWith(ctx, git, root, filterArgs, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD", "--", scope)
 	if err != nil {
 		return "", 0, false, err
 	}
-	untrackedOut, seenU, cut2, err := g.runCapped(ctx, git, root, "ls-files", "--others", "--exclude-standard", "--", scope)
+	untrackedOut, seenU, cut2, err := g.runCappedWith(ctx, git, root, filterArgs, "ls-files", "--others", "--exclude-standard", "--", scope)
 	if err != nil {
 		return "", 0, false, err
 	}
@@ -293,14 +357,22 @@ func (g Git) changed(ctx context.Context, git, root, scope string) (string, int,
 // context. Git's own output for binary blobs stays terse
 // ("Binary files differ") because no --text flag is ever passed, and
 // textconv/external drivers stay off via --no-textconv/--no-ext-diff on
-// the diff argv.
+// the diff argv, and content-filter drivers via per-invocation -c
+// overrides (see filterOverrideArgs).
 func (g Git) runCapped(ctx context.Context, git, root string, argv ...string) (string, int, bool, error) {
+	return g.runCappedWith(ctx, git, root, nil, argv...)
+}
+
+// runCappedWith is runCapped plus extra -c config overrides (content-
+// filter neutralizations computed once per Execute).
+func (g Git) runCappedWith(ctx context.Context, git, root string, extraConfig []string, argv ...string) (string, int, bool, error) {
 	maxOut := g.resolveLimits().MaxBytes
 	stdout := &cappedWriter{max: maxOut}
 	stderr := &cappedWriter{max: 64 << 10}
-	full := make([]string, 0, len(argv)+len(hardeningConfigArgs)+2)
+	full := make([]string, 0, len(argv)+len(hardeningConfigArgs)+len(extraConfig)+2)
 	full = append(full, "-C", root)
 	full = append(full, hardeningConfigArgs...)
+	full = append(full, extraConfig...)
 	full = append(full, argv...)
 	cmd := exec.CommandContext(ctx, git, full...)
 	cmd.Dir = root
