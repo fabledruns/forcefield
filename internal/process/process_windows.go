@@ -3,40 +3,67 @@
 package process
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// Configure is a no-op on Windows: POSIX process groups don't exist
-// here. Tree membership is established after Start via Track instead.
-func Configure(cmd *exec.Cmd) {}
+// Configure starts cmd suspended so Track can assign the Job Object
+// before a single instruction of child code runs. Without this, a
+// fast-spawning grandchild born between Start and Track would miss job
+// membership entirely (AssignProcessToJobObject covers only the assigned
+// process; pre-existing children are not pulled in). Track resumes the
+// child after assignment, so no descendant can predate membership.
+// Every Configure must be paired with Track: an untracked child stays
+// suspended. All current callers pair them (shell, jobs, git,
+// search_code, MCP host, Run).
+func Configure(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+}
 
 // Track assigns cmd's process to a Job Object limited with
 // KILL_ON_JOB_CLOSE and returns its release func. Closing the job kills
 // the whole Windows-side tree rooted at cmd — including processes
-// spawned before Track ran or after Kill ran — even if Forcefield
-// itself is killed outright (the OS closes our handle for us).
+// spawned after Track ran — even if Forcefield itself is killed
+// outright (the OS closes our handle for us).
+//
+// The child was started suspended by Configure and is resumed here only
+// after assignment, so no descendant can be born outside the job: the
+// Start→Track race is closed by construction rather than by winning it.
+// A resume failure kills the child instead of leaving a suspended
+// zombie, and the release stays a no-op path.
 //
 // Best-effort by design: assignment fails when the process already
 // belongs to a job (e.g. nested under a supervising Forcefield's job —
-// which already covers it through inheritance) or has just exited. The
-// release is then a no-op and the synchronous Kill path remains. Track
-// must be called after Start and released after Wait.
+// which already covers it through inheritance) or has just exited. Those
+// paths still resume the child and fall back to the synchronous Kill
+// path. Track must be called after Start and released after Wait.
 func Track(cmd *exec.Cmd) (release ReleaseFunc) {
 	noop := func() {}
 	if cmd == nil || cmd.Process == nil {
 		return noop
 	}
+	pid := uint32(cmd.Process.Pid)
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
+		// No job: resume so the child can run; synchronous Kill remains.
+		_ = resumeProcess(pid)
 		return noop
 	}
 	// From here on the handle must be closed exactly once.
@@ -56,6 +83,7 @@ func Track(cmd *exec.Cmd) (release ReleaseFunc) {
 		uint32(unsafe.Sizeof(info)),
 	)
 	if err != nil {
+		_ = resumeProcess(pid)
 		release()
 		return noop
 	}
@@ -65,19 +93,99 @@ func Track(cmd *exec.Cmd) (release ReleaseFunc) {
 	proc, err := windows.OpenProcess(
 		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE,
 		false,
-		uint32(cmd.Process.Pid),
+		pid,
 	)
 	if err != nil {
+		_ = resumeProcess(pid)
 		release()
 		return noop
 	}
 	if err := windows.AssignProcessToJobObject(job, proc); err != nil {
+		// Already in a job (nested supervision) or otherwise
+		// unassignable: resume regardless so no suspended zombie
+		// remains, and rely on the synchronous Kill path.
 		_ = windows.CloseHandle(proc)
+		_ = resumeProcess(pid)
 		release()
 		return noop
 	}
 	_ = windows.CloseHandle(proc)
+	if err := resumeProcess(pid); err != nil {
+		// Cannot resume what we just caged: kill it rather than leak a
+		// suspended process, then release the (now empty) job.
+		_ = Kill(cmd)
+		release()
+		return noop
+	}
 	return release
+}
+
+// resumeWaitTimeout bounds thread enumeration for resuming a suspended
+// child. The primary thread exists from CreateProcess, so this resolves
+// on the first snapshot in practice; the bound keeps a wedged lookup
+// from stalling process startup.
+const resumeWaitTimeout = 2 * time.Second
+
+// resumeProcess resumes every thread of pid (in practice exactly the
+// suspended primary thread: no child code has run yet, so no other
+// thread can exist). It is the second half of the suspended-start
+// protocol opened by Configure.
+func resumeProcess(pid uint32) error {
+	deadline := time.Now().Add(resumeWaitTimeout)
+	for {
+		tids, err := processThreadIDs(pid)
+		if err == nil && len(tids) > 0 {
+			for _, tid := range tids {
+				if rerr := resumeThread(tid); rerr != nil {
+					return rerr
+				}
+			}
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("resume process %d: no threads found", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// processThreadIDs lists thread IDs owned by pid via a system snapshot.
+func processThreadIDs(pid uint32) ([]uint32, error) {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer windows.CloseHandle(snap)
+	var entry windows.ThreadEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	if err := windows.Thread32First(snap, &entry); err != nil {
+		return nil, err
+	}
+	var out []uint32
+	for {
+		if entry.OwnerProcessID == pid {
+			out = append(out, entry.ThreadID)
+		}
+		if err := windows.Thread32Next(snap, &entry); err != nil {
+			break
+		}
+	}
+	return out, nil
+}
+
+// resumeThread decrements one thread's suspend count once (created
+// suspended, so exactly one resume releases it).
+func resumeThread(tid uint32) error {
+	h, err := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, tid)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(h)
+	_, err = windows.ResumeThread(h)
+	return err
 }
 
 // taskkillPath is a seam over launcher resolution so tests can simulate
@@ -103,6 +211,10 @@ func statOk(p string) bool {
 	return err == nil
 }
 
+// taskkillTimeout bounds the helper invocation inside Kill so a wedged
+// taskkill cannot hang cancellation, timeout, or shutdown paths.
+const taskkillTimeout = 10 * time.Second
+
 // Kill terminates the whole Windows-side tree rooted at cmd's process:
 // taskkill enumerates and force-kills descendants first (/T /F), then
 // the direct child is killed as fallback. A Job Object from Track (if
@@ -117,7 +229,11 @@ func Kill(cmd *exec.Cmd) error {
 	// taskkill /T terminates descendants before the root, which is what
 	// prevents grandchildren from holding stdio pipes open and delaying
 	// timeout/cancellation completion.
-	_ = exec.Command(taskkillPath(), "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
+	func() {
+		ctx, cancel := context.WithTimeout(context.Background(), taskkillTimeout)
+		defer cancel()
+		_ = exec.CommandContext(ctx, taskkillPath(), "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
+	}()
 
 	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		// taskkill may have already reaped the process: TerminateProcess

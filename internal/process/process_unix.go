@@ -12,8 +12,11 @@ import (
 // own pid) before Start. Combined with Kill, this terminates everything
 // the child spawns — e.g. `sh -c "sleep 100 &"` — not just the direct
 // child, which is all a default Kill would reach. Group membership is
-// inherited reliably, so unlike enumeration-based kills there is no
-// race with later-spawned grandchildren.
+// inherited atomically at fork, so unlike enumeration-based kills there
+// is no race with later-spawned grandchildren and no Start→Track gap to
+// close (the Windows suspended-start protocol exists for exactly that
+// gap). The documented residual is a child that calls setsid(2) to
+// leave the group; see the sandbox process limitations.
 func Configure(cmd *exec.Cmd) {
 	if cmd == nil {
 		return

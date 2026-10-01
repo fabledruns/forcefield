@@ -111,6 +111,9 @@ func runCommand(args []string) error {
 		if err != nil {
 			return err
 		}
+		// Reap background work (shell jobs, MCP servers) on the way
+		// out so headless runs never orphan helper processes.
+		defer func() { _ = rt.Close() }()
 		if err := rt.SetAgent(agentFlag); err != nil {
 			return err
 		}

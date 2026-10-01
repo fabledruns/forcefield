@@ -676,9 +676,12 @@ func streamPipe(r io.Reader, stream string, dst *shellOutput, onChunk func(tools
 
 	reader := bufio.NewReader(r)
 	for {
-		raw, err := reader.ReadString('\n')
-		if raw != "" {
-			line := sanitizeOutput(strings.TrimSuffix(raw, "\n"))
+		raw, truncated, err := readBoundedLine(reader)
+		if raw != "" || truncated {
+			line := sanitizeOutput(raw)
+			if truncated {
+				line += lineTruncateSuffix
+			}
 			dst.append(stream, line)
 			dst.emitChunk(stream, line, onChunk)
 		}
@@ -690,6 +693,74 @@ func streamPipe(r io.Reader, stream string, dst *shellOutput, onChunk func(tools
 			}
 			return
 		}
+	}
+}
+
+// maxStreamLineBytes bounds one output line held in memory. The total
+// budget (shellOutput.max) already caps accumulation, but ReadString
+// allocates the whole line first: a newline-less 100MB write would grow
+// transient memory until timeout. Lines past this cap keep their head,
+// carry a marker, and have the remainder discarded (verified Phase 0:
+// a 5MB single line allocated 5MB before any cap could apply).
+const maxStreamLineBytes = 256 << 10
+
+// lineTruncateSuffix marks a line cut at maxStreamLineBytes. Wording is
+// distinct from the total-budget markers so tests and readers can tell
+// per-line truncation from budget truncation.
+const lineTruncateSuffix = "[...line truncated at 256 KiB]"
+
+// readBoundedLine reads one \n-terminated line, returning its content
+// without the terminator. Content past maxStreamLineBytes is discarded
+// (truncated=true) instead of accumulated, so transient memory stays
+// bounded by the cap plus one read fragment no matter how long the
+// line is. A final unterminated tail reports io.EOF with its content.
+func readBoundedLine(reader *bufio.Reader) (line string, truncated bool, err error) {
+	var b []byte
+	for {
+		frag, ferr := reader.ReadSlice('\n')
+		if ferr == nil {
+			// Complete line: drop the terminator before accounting so
+			// a line of exactly maxStreamLineBytes is kept whole.
+			frag = frag[:len(frag)-1]
+			if len(b)+len(frag) > maxStreamLineBytes {
+				b = append(b, frag[:maxStreamLineBytes-len(b)]...)
+				return string(b), true, nil
+			}
+			b = append(b, frag...)
+			return string(b), truncated, nil
+		}
+		if ferr == bufio.ErrBufferFull {
+			// Mark truncation only when fragment bytes are actually
+			// discarded, so a line of exactly maxStreamLineBytes
+			// still reports whole.
+			if len(b) < maxStreamLineBytes {
+				room := maxStreamLineBytes - len(b)
+				if len(frag) > room {
+					b = append(b, frag[:room]...)
+					truncated = true
+				} else {
+					b = append(b, frag...)
+				}
+			} else {
+				truncated = true
+			}
+			continue
+		}
+		// EOF or a real read error: frag holds the untimed tail, if any.
+		if len(frag) > 0 && len(b) < maxStreamLineBytes {
+			n := len(frag)
+			if len(b)+n > maxStreamLineBytes {
+				n = maxStreamLineBytes - len(b)
+				truncated = true
+			}
+			b = append(b, frag[:n]...)
+			if len(frag) > n {
+				truncated = true
+			}
+		} else if len(frag) > 0 {
+			truncated = true
+		}
+		return string(b), truncated, ferr
 	}
 }
 

@@ -32,3 +32,33 @@ func (r *Runtime) JobSnapshots() []shell.Snapshot {
 	}
 	return reg.List()
 }
+
+// closeBackgroundJobs terminates every running background shell job.
+// It mirrors the JobSnapshots lookup: the shell_job tool instance is
+// shared between the full and filtered managers, so one lookup reaches
+// the single registry. Nil-safe: runtimes without the tool (or without
+// a registry) have nothing to close.
+func (r *Runtime) closeBackgroundJobs() {
+	if r == nil {
+		return
+	}
+	r.mu.RLock()
+	m := r.fullManager
+	r.mu.RUnlock()
+	if m == nil {
+		return
+	}
+	t, ok := m.Lookup("shell_job")
+	if !ok {
+		return
+	}
+	job, ok := t.(*shell.ShellJob)
+	if !ok || job == nil {
+		return
+	}
+	reg := job.Registry()
+	if reg == nil {
+		return
+	}
+	reg.Close()
+}

@@ -204,15 +204,19 @@ func joinQuoted(names []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-// Close shuts the runtime's MCP Host down if one exists, owning Host
-// teardown exactly once. It never touches per-turn state: the frozen
-// tool universe stays registered (later calls fail inside the tools,
-// not here). The host pointer is cleared under lock so repeated calls
-// are trivially safe even if Host.Close regressed.
+// Close shuts the runtime's background work down if any exists: first
+// running shell jobs, then the MCP Host. It never touches per-turn
+// state: the frozen tool universe stays registered (later calls fail
+// inside the tools, not here). The host pointer is cleared under lock
+// so repeated calls are trivially safe even if Host.Close regressed.
+// Job termination is synchronous and fast (group/job kill, no waits);
+// MCP teardown stays bounded internally (stdin EOF plus grace, then
+// escalating waits), so Close as a whole cannot hang shutdown.
 func (r *Runtime) Close() error {
 	if r == nil {
 		return nil
 	}
+	r.closeBackgroundJobs()
 	r.mu.Lock()
 	host := r.mcpHost
 	r.mcpHost = nil

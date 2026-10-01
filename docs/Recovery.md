@@ -83,8 +83,15 @@ must still reap the Windows-side tree.
 - `Track` is the Windows Job Object backstop (`KILL_ON_JOB_CLOSE`,
   released after `Wait`); on Unix it is a no-op because group
   membership is established before `Start` and inherited reliably.
+  On Windows the child starts suspended and is resumed only after job
+  assignment, so no descendant can predate membership; a child that
+  calls `setsid` escapes the Unix group by platform design.
 - `Run` isolates (`Configure`), tracks, and on cancellation
   terminates cooperatively first, then kills after a grace period.
+- Quitting the TUI reaps shell jobs and MCP servers with a bounded
+  wait; dying by OS signal (SIGKILL, SIGHUP on terminal close)
+  bypasses teardown entirely — long sessions belong under
+  tmux/nohup.
 
 Scope: OS processes spawned directly (shell jobs, supervised
 children). Linux-side processes inside the WSL distribution outlive

@@ -2504,6 +2504,9 @@ func Run(messages []providers.Message) (providers.Response, error) {
 	if err != nil {
 		return providers.Response{}, fmt.Errorf("create runtime: %w", err)
 	}
+	// Tear down background work (shell jobs, MCP servers) before
+	// returning so one-shot runs never orphan helper processes.
+	defer func() { _ = rt.Close() }()
 
 	return rt.Run(messages)
 }

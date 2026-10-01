@@ -143,12 +143,14 @@ func TestShell_StderrIncludedInContentOnSuccess(t *testing.T) {
 func TestShell_CapturesVeryLongLine(t *testing.T) {
 	requireShellBackend(t)
 	s := NewShell()
-	// A single line well past the old 1 MiB scanner cap must be captured
-	// whole, not truncated with a "token too long" note. The line is
+	// A single line well past the old 1 MiB scanner cap must not grow
+	// transient memory without bound: the per-line cap (256 KiB) keeps
+	// the head, marks the cut, and discards the rest. The line is
 	// generated inside Bash (rather than passed through the environment)
 	// so the test also works under WSL, where wsl.exe's command line
 	// cannot carry multi-megabyte values.
-	// Note: shell caps at 2 MiB, so a 3 MiB line should be truncated with marker.
+	// Note: with the per-line cap, a 3 MiB line keeps 256 KiB plus the
+	// line marker (far under the 2 MiB total budget).
 	size := 3 << 20
 	command := "head -c " + strconv.Itoa(size) + " /dev/zero | tr '\\0' x"
 	result, err := s.Execute(context.Background(), map[string]any{
@@ -161,15 +163,12 @@ func TestShell_CapturesVeryLongLine(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("result.IsError = true, content: %.100s", result.Content)
 	}
-	// With 2 MiB cap, 3 MiB should be truncated
-	if got := len(strings.TrimRight(result.Stdout, "\n")); got > tools.DefaultShellMaxBytes {
-		t.Errorf("captured stdout length = %d, exceeds cap %d", got, tools.DefaultShellMaxBytes)
+	// Bounded by the per-line cap plus marker, not the total budget.
+	if got := len(strings.TrimRight(result.Stdout, "\n")); got > maxStreamLineBytes+1024 {
+		t.Errorf("captured stdout length = %d, exceeds per-line cap %d", got, maxStreamLineBytes)
 	}
-	if got := len(strings.TrimRight(result.Stdout, "\n")); got < tools.DefaultShellMaxBytes-1024 {
-		t.Errorf("captured stdout length = %d, want near cap %d (truncated)", got, tools.DefaultShellMaxBytes)
-	}
-	if !strings.Contains(result.Content, "truncated") {
-		t.Errorf("expected truncation marker, got content snippet %.500q", result.Content)
+	if !strings.Contains(result.Content, "[...line truncated at 256 KiB]") {
+		t.Errorf("expected line-truncation marker, got content snippet %.500q", result.Content)
 	}
 }
 

@@ -738,6 +738,38 @@ func (m *model) stopStream(savePartial bool) {
 	m.noteSaveError()
 }
 
+// shutdownTimeout bounds the background cleanup wait on quit: running
+// shell jobs and MCP servers get this long to terminate before the UI
+// exits anyway. Runtime.Close itself is bounded per subsystem (fast
+// job kills, MCP's own grace plus escalation waits); the timeout here
+// is the backstop, not the mechanism.
+var shutdownTimeout = 5 * time.Second
+
+// shutdownCmd reaps background work, then quits. stopStream already ran
+// synchronously in Update (cancelling the run); only Close — which may
+// block on child teardown — moves off the UI thread, and only up to
+// shutdownTimeout. Nil-runtime models (most tests, failed startup)
+// quit immediately.
+//
+// What this does not cover, explicitly: dying by OS signal (SIGKILL,
+// SIGHUP on terminal close, external kill) bypasses Bubble Tea
+// teardown entirely — no userspace quit path can intercept those. Long
+// sessions belong under tmux/nohup; see docs/Recovery.md.
+func (m *model) shutdownCmd() tea.Cmd {
+	rt := m.runtime
+	return func() tea.Msg {
+		if rt != nil {
+			done := make(chan error, 1)
+			go func() { done <- rt.Close() }()
+			select {
+			case <-done:
+			case <-time.After(shutdownTimeout):
+			}
+		}
+		return tea.Quit()
+	}
+}
+
 // noteSaveError appends a transcript warning the first time a session
 // save error is observed, so a live run whose history stops reaching
 // disk is never silent. Nil-safe: teardown paths also run without an
@@ -1015,7 +1047,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// idle, preserve Ctrl+C as the explicit application quit shortcut.
 		m.stopStream(true)
 		m.quitting = true
-		return m, tea.Quit
+		return m, m.shutdownCmd()
 
 	case tea.KeyEsc:
 		// Esc first clears a non-empty input (or closes suggestions),
@@ -1030,7 +1062,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.stopStream(true)
 		m.quitting = true
-		return m, tea.Quit
+		return m, m.shutdownCmd()
 
 	case tea.KeyCtrlE:
 		m.toggleToolExpansion()
@@ -1078,7 +1110,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		started, quit := m.acceptInput()
 		if quit {
-			return m, tea.Quit
+			return m, m.shutdownCmd()
 		}
 		if !started {
 			return m, nil
