@@ -113,7 +113,11 @@ func TestRunChildCommandCancelKillsDescendants(t *testing.T) {
 	log := filepath.Join(t.TempDir(), "heartbeat.log")
 	t.Setenv("HELPER_LOG", log)
 	exe, args := helperCommand(t, "tree")
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// Generous timeouts: the helper is a full test-binary cold start
+	// followed by a nested powershell start, which on a loaded CI
+	// runner takes an order of magnitude longer than locally. Only the
+	// setup waits are generous; the cancel/frozen assertions stay strict.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	done := make(chan [2]any, 1)
@@ -123,7 +127,7 @@ func TestRunChildCommandCancelKillsDescendants(t *testing.T) {
 	}()
 
 	// Let the detached grandchild prove it is alive first.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for {
 		if fi, err := os.Stat(log); err == nil && fi.Size() > 0 {
 			break

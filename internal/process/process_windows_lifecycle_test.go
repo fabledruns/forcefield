@@ -61,7 +61,11 @@ func TestKillReapsDelayedGrandchild(t *testing.T) {
 	}
 	release := Track(cmd)
 	defer release()
-	waitForTicks(t, log, 20*time.Second)
+	// Generous setup budget: two nested cold powershell starts on a
+	// loaded CI runner can take an order of magnitude longer than
+	// locally. Only the setup waits; the kill/frozen assertions below
+	// stay strict.
+	waitForTicks(t, log, 60*time.Second)
 
 	if err := Kill(cmd); err != nil {
 		t.Fatalf("Kill: %v", err)
