@@ -453,7 +453,9 @@ func (s SearchCode) runRg(ctx context.Context, params searchCodeParams, root, re
 	cmd.Stdin = nil
 	// Own the process tree exactly like the shell tool: its own group on
 	// Unix, a kill-on-close job object on Windows, so timeout and
-	// cancellation reap the whole tree.
+	// cancellation reap the whole tree. Track runs after Start: before
+	// Start there is no process to assign, and the assignment would be a
+	// silent no-op on Windows.
 	process.Configure(cmd)
 	cmd.Cancel = func() error { return process.Kill(cmd) }
 	cmd.WaitDelay = searchCodeWaitDelay
@@ -461,10 +463,20 @@ func (s SearchCode) runRg(ctx context.Context, params searchCodeParams, root, re
 	stderr := &rgCappedWriter{max: searchCodeStderrMax}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		durationMs := time.Since(started).Milliseconds()
+		if runCtx.Err() == context.DeadlineExceeded {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("search timed out after %s", timeout), DurationMs: durationMs}, nil
+		}
+		if runCtx.Err() == context.Canceled || ctx.Err() != nil {
+			return tools.Result{IsError: true, Content: "search cancelled", DurationMs: durationMs}, nil
+		}
+		return tools.Result{IsError: true, Content: fmt.Sprintf("search failed to start: %v", err), DurationMs: durationMs}, nil
+	}
 	release := process.Track(cmd)
 	defer release()
 
-	runErr := cmd.Run()
+	runErr := cmd.Wait()
 	durationMs := time.Since(started).Milliseconds()
 
 	if runCtx.Err() == context.DeadlineExceeded {

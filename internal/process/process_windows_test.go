@@ -13,6 +13,23 @@ import (
 	"time"
 )
 
+// taskkillPath must prefer System32 over PATH so a hostile directory
+// leading PATH cannot substitute the kill helper (Phase 0 verified the
+// bare-name lookup resolved an attacker first).
+func TestTaskkillPathPrefersSystem32(t *testing.T) {
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		t.Skip("SystemRoot unset")
+	}
+	want := filepath.Join(root, "System32", "taskkill.exe")
+	if _, err := os.Stat(want); err != nil {
+		t.Skipf("system taskkill absent: %v", err)
+	}
+	if got := defaultTaskkillPath(); got != want {
+		t.Errorf("defaultTaskkillPath() = %q, want %q", got, want)
+	}
+}
+
 // requirePowerShell skips the test when powershell.exe is unavailable.
 // It ships with Windows; the skip is belt-and-braces for stripped images.
 func requirePowerShell(t *testing.T) string {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -79,6 +80,29 @@ func Track(cmd *exec.Cmd) (release ReleaseFunc) {
 	return release
 }
 
+// taskkillPath is a seam over launcher resolution so tests can simulate
+// absence without touching the real system directory.
+var taskkillPath = defaultTaskkillPath
+
+// defaultTaskkillPath prefers the well-known System32 location so a
+// tampered PATH cannot substitute a different executable (verified
+// Phase 0: bare "taskkill" resolved an attacker first when a hostile
+// directory led PATH). Falls back to PATH lookup when System32 is
+// unavailable, mirroring the wsl.exe launcher resolution.
+func defaultTaskkillPath() string {
+	if root := os.Getenv("SystemRoot"); root != "" {
+		if p := filepath.Join(root, "System32", "taskkill.exe"); statOk(p) {
+			return p
+		}
+	}
+	return "taskkill"
+}
+
+func statOk(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
 // Kill terminates the whole Windows-side tree rooted at cmd's process:
 // taskkill enumerates and force-kills descendants first (/T /F), then
 // the direct child is killed as fallback. A Job Object from Track (if
@@ -93,7 +117,7 @@ func Kill(cmd *exec.Cmd) error {
 	// taskkill /T terminates descendants before the root, which is what
 	// prevents grandchildren from holding stdio pipes open and delaying
 	// timeout/cancellation completion.
-	_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
+	_ = exec.Command(taskkillPath(), "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
 
 	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		// taskkill may have already reaped the process: TerminateProcess

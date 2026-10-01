@@ -8,10 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"forcefield/internal/process"
 	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 )
@@ -100,6 +102,66 @@ func (Git) InputSchema() map[string]any {
 // being absent without touching the real PATH.
 var gitBinary = exec.LookPath
 
+// gitWaitDelay bounds pipe drain after cancel/timeout, matching the
+// shell tool: a descendant holding a pipe open cannot wedge reaping.
+const gitWaitDelay = time.Second
+
+// hardeningConfigArgs neutralizes repo-controlled execution on every
+// invocation. -c overrides beat every config file, including the
+// inspected repo's own .git/config. Verified: a repo setting
+// core.fsmonitor executes on status without this; with
+// `-c core.fsmonitor=` it does not. Textconv and external diff are
+// disabled via --no-textconv/--no-ext-diff on the diff argv itself.
+var hardeningConfigArgs = []string{"-c", "core.fsmonitor="}
+
+// gitAllowedEnv names the only host variables a git child receives.
+// Everything else (including GIT_DIR/GIT_WORK_TREE redirections,
+// GIT_CONFIG_COUNT injections, and any secret-bearing variables the
+// Forcefield process holds) is dropped. System and global configs keep
+// working because HOME/SystemRoot resolution is preserved; only the
+// repo's dangerous keys are overridden via -c above.
+var gitAllowedEnv = []string{
+	"PATH", "PATHEXT",
+	"HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+	"SystemRoot", "TEMP", "TMP",
+}
+
+// gitSetEnv holds variables git always receives regardless of the host.
+var gitSetEnv = []string{
+	// Never take index locks: inspection must not mutate or contend.
+	"GIT_OPTIONAL_LOCKS=0",
+	// Never spawn an interactive pager, even if output ever reaches a tty.
+	"GIT_PAGER=cat",
+}
+
+// gitEnv builds the child environment: the allowlisted host entries
+// plus the forced neutralizations. Values are never expanded.
+func gitEnv() []string {
+	keep := func(name string) bool {
+		for _, a := range gitAllowedEnv {
+			if runtime.GOOS == "windows" {
+				if strings.EqualFold(name, a) {
+					return true
+				}
+			} else if name == a {
+				return true
+			}
+		}
+		return false
+	}
+	out := make([]string, 0, len(gitAllowedEnv)+len(gitSetEnv))
+	for _, kv := range os.Environ() {
+		name := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			name = kv[:i]
+		}
+		if keep(name) {
+			out = append(out, kv)
+		}
+	}
+	return append(out, gitSetEnv...)
+}
+
 func (g Git) Execute(ctx context.Context, args map[string]any) (tools.Result, error) {
 	started := time.Now()
 	action, err := tools.StringArg(args, "action")
@@ -152,9 +214,9 @@ func (g Git) Execute(ctx context.Context, args map[string]any) (tools.Result, er
 	case ActionStatus:
 		out, seen, cut, err = g.runCapped(ctx, git, root, "status", "--porcelain=v1", "-b", "--", scope)
 	case ActionDiff:
-		out, seen, cut, err = g.runCapped(ctx, git, root, "diff", "--no-color", "--no-ext-diff", "--", scope)
+		out, seen, cut, err = g.runCapped(ctx, git, root, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--", scope)
 	case ActionStaged:
-		out, seen, cut, err = g.runCapped(ctx, git, root, "diff", "--cached", "--no-color", "--no-ext-diff", "--", scope)
+		out, seen, cut, err = g.runCapped(ctx, git, root, "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--", scope)
 	case ActionLog:
 		n := defaultLogLimit
 		if raw, _ := args["limit"].(string); strings.TrimSpace(raw) != "" {
@@ -192,7 +254,7 @@ func (g Git) Execute(ctx context.Context, args map[string]any) (tools.Result, er
 // surfaces as a soft error. Output is already capture-bounded; the cut
 // flags OR together.
 func (g Git) changed(ctx context.Context, git, root, scope string) (string, int, bool, error) {
-	tracked, seenT, cut1, err := g.runCapped(ctx, git, root, "diff", "--name-only", "HEAD", "--", scope)
+	tracked, seenT, cut1, err := g.runCapped(ctx, git, root, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD", "--", scope)
 	if err != nil {
 		return "", 0, false, err
 	}
@@ -214,21 +276,56 @@ func (g Git) changed(ctx context.Context, git, root, scope string) (string, int,
 // through a bounded writer so a pathological diff cannot grow memory
 // without bound: bytes past the resolved cap are counted and discarded
 // while the process still drains to completion (so it is always
-// reaped). Stderr gets its own small bound; git writes progress and
-// errors there and the model needs both. Cancellation aborts the
-// process via the context. Git's own output for binary blobs stays
-// terse ("Binary files differ") because no --text flag is ever passed.
+// reaped).
+//
+// Hardening per invocation (see hardeningConfigArgs/gitEnv):
+//   - argv is prefixed with -c core.fsmonitor= so a repo-controlled
+//     fsmonitor hook never executes;
+//   - cwd is pinned to root (plus the historical -C root, kept);
+//   - the environment is the allowlisted minimum plus forced
+//     GIT_OPTIONAL_LOCKS=0 / GIT_PAGER=cat;
+//   - the process joins the hardened lifecycle (Configure pre-Start,
+//     group/job Kill on cancel, Track post-Start) exactly like the
+//     shell and search_code tools.
+//
+// Stderr gets its own small bound; git writes progress and errors there
+// and the model needs both. Cancellation aborts the whole tree via the
+// context. Git's own output for binary blobs stays terse
+// ("Binary files differ") because no --text flag is ever passed, and
+// textconv/external drivers stay off via --no-textconv/--no-ext-diff on
+// the diff argv.
 func (g Git) runCapped(ctx context.Context, git, root string, argv ...string) (string, int, bool, error) {
 	maxOut := g.resolveLimits().MaxBytes
 	stdout := &cappedWriter{max: maxOut}
 	stderr := &cappedWriter{max: 64 << 10}
-	cmd := exec.CommandContext(ctx, git, append([]string{"-C", root}, argv...)...)
+	full := make([]string, 0, len(argv)+len(hardeningConfigArgs)+2)
+	full = append(full, "-C", root)
+	full = append(full, hardeningConfigArgs...)
+	full = append(full, argv...)
+	cmd := exec.CommandContext(ctx, git, full...)
+	cmd.Dir = root
+	cmd.Env = gitEnv()
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	// Never inherit surprising fds; the environment passes through (git
-	// needs HOME/SystemRoot for config lookups).
+	// Never inherit surprising fds.
 	cmd.Stdin = nil
-	if err := cmd.Run(); err != nil {
+	// Own the process tree exactly like the shell tool: its own group on
+	// Unix, a kill-on-close job object on Windows, so timeout and
+	// cancellation reap the whole tree including hook/driver children a
+	// repo config might still reach.
+	process.Configure(cmd)
+	cmd.Cancel = func() error { return process.Kill(cmd) }
+	cmd.WaitDelay = gitWaitDelay
+	if err := cmd.Start(); err != nil {
+		detail := strings.TrimRight(stderr.String(), "\n")
+		if detail == "" {
+			detail = err.Error()
+		}
+		return "", stdout.total, stdout.cut || stderr.cut, fmt.Errorf("%s", detail)
+	}
+	release := process.Track(cmd)
+	defer release()
+	if err := cmd.Wait(); err != nil {
 		detail := strings.TrimRight(stderr.String(), "\n")
 		if detail == "" {
 			detail = err.Error()
