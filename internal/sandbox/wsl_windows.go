@@ -265,7 +265,7 @@ func (w *wslExecutor) Describe(ctx context.Context) Enforcement {
 		if _, err := w.ensureNetProbe(ctx); err == nil {
 			e.NetworkEnforced = true
 			e.Notes = append(e.Notes,
-				"commands run in an unprivileged user+network namespace (loopback only) while network isolation is active",
+				"commands run in an unprivileged user+network namespace (loopback only for Linux sockets) while network isolation is active",
 			)
 			e.Limitations = append(e.Limitations, Limitation{ID: LimNetworkNamespace, Detail: "unprivileged user+network namespace (loopback only) for Linux sockets; Windows interop is NOT covered (see network.wsl-interop)"})
 		} else {

@@ -382,7 +382,7 @@ Runs commands directly on the host. This is the default and preserves the histor
 wsl
 ```
 
-On Windows, runs commands inside a WSL distribution with a pinned working directory, restricted environment, and optional network isolation.
+On Windows, runs commands inside a WSL distribution with a pinned working directory, restricted environment, and optional network isolation (Linux sockets only — Windows `.exe` interop keeps host networking).
 
 WSL mode requires an available WSL distribution. Forcefield does not silently fall back to native execution.
 

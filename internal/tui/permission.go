@@ -305,6 +305,11 @@ func riskNote(tool string) string {
 	case "write_file":
 		return "creates or overwrites a file on disk (confined to the workspace)"
 	default:
+		// MCP tools carry no Execution report; label them unsandboxed
+		// explicitly rather than showing no risk context at all.
+		if note := permissions.MCPUnsandboxedNotice(tool); note != "" {
+			return note
+		}
 		return ""
 	}
 }

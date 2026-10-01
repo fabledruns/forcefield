@@ -62,12 +62,13 @@ func buildNativeRelay(ctx context.Context, command, dir string, extraEnv []strin
 	return cmd, cleanup, nil
 }
 
-// processLimitations reports the Windows process-tracking truth (Phase 0
-// verified): the Job Object is assigned after Start, so children spawned
-// before Track are NOT covered; taskkill resolves via PATH (unlike the
-// System32-pinned wsl.exe); Terminate is Kill (no graceful console signal).
+// processLimitations reports the Windows process-tracking truth: the
+// child starts suspended and is resumed only after Job Object
+// assignment (Phase 4 closed the former Start→Track gap), taskkill is
+// System32-pinned with a bounded invocation (Phase 3), and Terminate is
+// Kill (no graceful console signal exists that preserves stdio).
 func processLimitations() []Limitation {
 	return []Limitation{
-		{ID: LimProcessWindowsJob, Warn: true, Detail: "Windows Job Object (KILL_ON_JOB_CLOSE) assigned after Start plus taskkill /T /F; children spawned before Track are NOT covered (verified Phase 0); taskkill resolves via PATH"},
+		{ID: LimProcessWindowsJob, Warn: true, Detail: "Windows Job Object (KILL_ON_JOB_CLOSE) assigned before resume plus bounded taskkill /T /F; Linux-side WSL relay children may still outlive the relay"},
 	}
 }

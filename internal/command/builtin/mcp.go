@@ -85,6 +85,7 @@ func mcpStatus(ctx command.Context, hint bool) error {
 	for _, s := range servers {
 		ctx.Println("%-*s  %s", nameWidth, s.Name, mcpServerDetail(s))
 	}
+	ctx.Println("MCP servers run unsandboxed with your OS user privileges (not confined to the workspace).")
 	if hint {
 		ctx.Println("Manage with: /mcp list, add, get, remove, enable, disable, test")
 	}

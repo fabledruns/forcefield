@@ -3,6 +3,7 @@ package permissions
 import (
 	"context"
 
+	"forcefield/internal/mcp"
 	"forcefield/internal/sandbox"
 )
 
@@ -70,4 +71,17 @@ type AskerFunc func(ctx context.Context, req Request) (Prompt, error)
 
 func (f AskerFunc) Ask(ctx context.Context, req Request) (Prompt, error) {
 	return f(ctx, req)
+}
+
+// MCPUnsandboxedNotice returns the approval-time warning for MCP tools,
+// which carry no Execution report because no executor exists for them.
+// Empty for native tools. The wording is
+// sandbox.MCPUnsandboxedLimitation's Detail verbatim: one source shared
+// by the stdin asker, the TUI prompt, and doctor. Name matching is the
+// canonical mcp.IsQualifiedToolName, never a local pattern.
+func MCPUnsandboxedNotice(tool string) string {
+	if !mcp.IsQualifiedToolName(tool) {
+		return ""
+	}
+	return sandbox.MCPUnsandboxedLimitation().Detail
 }

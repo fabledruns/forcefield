@@ -15,6 +15,19 @@ MCP servers are **external, untrusted execution boundaries**, even when you conf
 
 Only configure servers you trust, and prefer `Ask` (the default) over blanket `Allow` for their tools.
 
+**Sandbox mode does not gate MCP: warn, don't refuse.** MCP stays
+UNSANDBOXED in v1.5.0 by decision, and enabling `sandbox.mode: wsl`
+does not refuse to start configured servers or demand an opt-in flag.
+Rationale: the sandbox never covered MCP servers (most are
+Windows-native or network-dependent, which a Linux namespace cannot
+meaningfully contain), so refusing would break working setups without
+adding isolation. Instead the limitation is visible everywhere: `ff
+doctor` warns `[mcp.unsandboxed]`, both approval prompts label
+`mcp__*` calls UNSANDBOXED, `/mcp` lists the notice, and server
+arguments still escalate to `Ask` on sensitive paths. Revisit only
+with a genuine MCP confinement mechanism, never with a flag that
+implies isolation.
+
 ## Configuration
 
 ```yaml
@@ -42,7 +55,7 @@ mcp:
 | `timeout_seconds` | No       | Per-call timeout, 0–300. `0` (or omitted) means the 30 s default.          |
 | `enabled`         | No       | `false` means the server is never launched. Default `true`.                 |
 
-At most 8 servers may be enabled. Environment handling is deliberately minimal: the child starts from an empty baseline (plus `SystemRoot` on Windows, which process creation requires), then passthrough copies, then explicit values. Provider API keys and other host secrets are never inherited unless you explicitly pass them through — don't.
+At most 8 servers may be enabled. Environment handling is deliberately minimal: the child starts from an empty baseline (plus `SystemRoot` on Windows, which process creation requires), then passthrough copies, then explicit values. Provider API keys and other host secrets are never inherited unless you explicitly pass them through — don't. Explicit secret-looking `env` values are registered for diagnostic redaction; `env_passthrough` values are not (their sensitivity is unknown to Forcefield), so a server that echoes its environment can leak passthrough values into diagnostics — another reason never to pass secrets through.
 
 ## Tool naming
 

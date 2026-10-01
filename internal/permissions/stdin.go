@@ -54,9 +54,13 @@ func (a *StdinAsker) Ask(ctx context.Context, req Request) (Prompt, error) {
 
 	// Execution facts come from the executor itself, so the prompt can
 	// never claim more isolation than exists. When absent (tools without
-	// an execution story), nothing extra is printed.
+	// an execution story), nothing extra is printed — except MCP tools,
+	// which are explicitly labelled unsandboxed since no executor
+	// covers them at all.
 	if req.Execution != nil {
 		fmt.Fprintf(out, "\n%s\n", strings.Join(req.Execution.SummaryLines(), "\n"))
+	} else if note := MCPUnsandboxedNotice(req.Tool); note != "" {
+		fmt.Fprintf(out, "\n%s\n", note)
 	}
 
 	fmt.Fprint(out, "\nAllow?\n\n(y) Yes\n(n) No\n(a) Always allow this tool\n(d) Always deny this tool\n\n> ")
