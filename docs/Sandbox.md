@@ -32,6 +32,30 @@ Native mode is never described as sandboxed anywhere in the UI.
 
 Commands execute inside a WSL distribution under an explicitly restricted invocation. Requires Windows. If WSL is unavailable or misconfigured, Forcefield **fails with a clear error and never falls back to native execution**.
 
+---
+
+## Capability matrix (v1.5.0)
+
+One row per supported configuration. Every cell states what is
+actually enforced; the [Known limitations](#known-limitations-v150)
+below qualify each `partial` and `no`.
+
+| Configuration | Shell cwd | Shell text | FS tools | Network | Environment | Process tree |
+|---|---|---|---|---|---|---|
+| Windows `native`, permissive | unpinned | open | caged | host | full host | Job + taskkill, suspended start |
+| Windows `native`, strict | pinned | open | caged | host | full host | Job + taskkill, suspended start |
+| Windows `wsl`, `network: disabled` | pinned | open (lexical mitigation) | caged | loopback-only for Linux sockets; `.exe` interop keeps host net | restricted launcher | Windows side reaped; Linux side may outlive |
+| Windows `wsl`, `network: host` | pinned | open (lexical mitigation) | caged | shared WSL/host | restricted launcher | Windows side reaped; Linux side may outlive |
+| Linux/macOS (`native` ± strict) | pinned iff strict | open | caged | host | full host | process group, no Start→Track gap |
+| MCP servers (any mode) | n/a (launch dir only) | opaque args | **not confined** | host | minimal allowlist | bounded shutdown, Phase 4 lifecycle |
+
+`caged` = confined to the workspace root via the shared
+resolve+canonicalize+boundary pipeline with descriptor-checked,
+no-follow opens. `open` = never confined; gated by permissions
+(`ask`) plus conservative lexical refusals where noted.
+`ff doctor` renders this same matrix from the executor's own
+`Enforcement` report: facts as info lines, limits as warnings.
+
 ## Configuration
 
 ```yaml
@@ -46,7 +70,7 @@ sandbox:
 | --------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | `mode`                      | Execution backend. Empty/`native` preserves current behavior.                                                   |
 | `sandbox.wsl.distribution`  | Named distribution to use. Validated against `[A-Za-z0-9._-]` and may not start with `-`, so a value can never become a command-line flag of its own. |
-| `sandbox.wsl.network`       | `disabled` (default): deny network access via an in-distribution network namespace when possible. `host`: inherit WSL/host networking, never isolated. |
+| `sandbox.wsl.network`       | `disabled` (default): deny network access via an in-distribution network namespace when possible (Linux sockets only; Windows `.exe` interop keeps host networking). `host`: inherit WSL/host networking, never isolated. |
 
 Unknown values are rejected when config loads, naming the exact field and value.
 
@@ -120,6 +144,65 @@ Stated plainly, because these are the limits:
 4. **No resource limits.** CPU, memory, and process-count limits are not enforced.
 5. **Not a security boundary against the user.** This boundary constrains what agent-driven commands can reach by default posture; it is not a defense against a local user, and it is not a malware containment system.
 
+## Known limitations (v1.5.0)
+
+The complete residual list. Each item is enforced in code or tests
+only as far as stated here — nothing beyond this list is claimed.
+
+- **Windows has no `O_NOFOLLOW` or link-count equivalence.** Opens
+  refuse pre-existing symlinks via `Lstat` plus workspace
+  pre-resolution, but a link swapped between check and open is not
+  stopped (Unix closes this with `O_NOFOLLOW`). Hard-link writes are
+  refused on Unix only; Windows cannot count links with the standard
+  library. Hard-link *reads* are allowed everywhere by policy.
+- **Residual `MkdirAll` TOCTOU.** Parent creation itself cannot be
+  atomic; post-creation re-validation turns a swap into an error
+  before anything opens, but the window exists.
+- **Process limits: `setsid`, SIGHUP.** A child calling `setsid`
+  leaves the Unix process group by kernel design. Dying by OS signal
+  (`SIGKILL`, `SIGHUP` on terminal close) bypasses all teardown —
+  long sessions belong under `tmux`/`nohup`. See
+  [Recovery](Recovery.md).
+- **WSL Windows-side networking is not isolated,** and large
+  commands stage to a `%TEMP%` script visible via `/mnt` (leaked if
+  the process is SIGKILLed before cleanup).
+- **MCP is UNSANDBOXED** in every mode (warn, never refuse — see
+  [MCP](MCP.md)). Server stderr echoing a passthrough variable is
+  not redacted; never pass secrets through.
+- **No CPU/memory/PID limits**, and **no Linux/macOS isolation
+  backend**: non-Windows runs on the host with the shared path cage
+  plus honest reporting.
+
+## What v1.5.0 hardened (and what it did not change)
+
+## What v1.5.0 hardened (and what it did not change)
+
+- **Filesystem (one hardened path):** resolve → no-follow open →
+  descriptor checks (regular file, size cap) → bounded
+  context-aware reads/writes → `fchmod`. Non-regular files
+  (FIFO/socket/device) are refused; multi-link writes are refused
+  where countable; `secret_scan` and `search_files` share the path.
+- **Helpers:** `git` runs under the full process lifecycle with a
+  minimal environment, `-c core.fsmonitor=` on every invocation,
+  and `--no-textconv`/`--no-ext-diff` on all diffs;
+  `search_code` tracks its tree post-start like the shell;
+  `taskkill.exe` resolves via System32, not `PATH`.
+- **Lifecycle:** Windows children start suspended and resume after
+  job assignment (no Start→Track gap); output lines cap at 256 KiB;
+  `Runtime.Close` reaps jobs then MCP; TUI quit waits bounded (5s);
+  headless runs close on exit.
+- **Reporting:** `Enforcement.Limitations` is the structured source;
+  doctor renders facts as info and limits as warnings (no substring
+  matching); the WSL interop canary observes `command -v` only.
+- **Permissions:** boundary denial outranks every allow
+  (boundary > session Deny > session Allow > persisted Check >
+  sensitive escalation > Ask); headless Ask fails closed; MCP and
+  shell-text refusals hold regardless of grants.
+- **Unchanged by design:** no container backend, no Linux/macOS
+  isolation, no MCP sandboxing, no Windows egress control, no
+  resource limits. The milestone name "Full Sandbox" means the
+  boundary is complete and honest — not airtight.
+
 ## Approval UX
 
 Permission prompts render their execution block directly from the executor's `Enforcement` report, so wording always matches reality. Examples:
@@ -149,12 +232,18 @@ If you ever see stronger wording than this table allows, that is a bug.
 
 ## Doctor
 
-`ff doctor` reports the configured mode, whether the backend is actually usable, the selected distribution, and every enforcement fact above. Configured-but-unavailable WSL mode fails doctor with exit code 1 and explains why; limitations print as warnings, not as all-clear lines.
+`ff doctor` reports the configured mode, whether the backend is actually usable, the selected distribution, and every enforcement fact above. Configured-but-unavailable WSL mode fails doctor with exit code 1 and explains why; limitations print as warnings, not as all-clear lines. In `network: disabled` mode doctor additionally runs the interop canary and reports which Windows helpers resolve inside the namespace.
 
 ---
 
 ## Security model (RC6 explicit guarantees)
 
+- **Precedence is fixed: boundary > session Deny > session Allow >
+  persisted Check > sensitive escalation > Ask.** The workspace
+  boundary pre-flight denies escapes before any prompt, and no
+  one-shot or Always allow — session or persisted — can authorize
+  them; denials surface as tool failures, not permission denials.
+  Headless runs with no asker fail closed.
 - **Default posture confines file tools, not the shell.** `native` +
   `permissive` runs shell with your user's privileges and full host
   environment. Filesystem tools are always confined to the workspace
