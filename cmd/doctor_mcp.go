@@ -10,6 +10,7 @@ import (
 	"forcefield/internal/config"
 	"forcefield/internal/mcp"
 	"forcefield/internal/runtime"
+	"forcefield/internal/sandbox"
 )
 
 // doctorMCP validates MCP server configuration and reports last-known
@@ -31,6 +32,17 @@ func doctorMCP(cfg *config.Config, report func(verdict, string, ...any)) {
 	if err := cfg.MCP.Validate(); err != nil {
 		report(vFail, "mcp: invalid configuration: %v", err)
 		return
+	}
+
+	// Explicit unsandboxed state (Phase 1 single source of truth lives in
+	// sandbox.MCPUnsandboxedLimitation): any enabled server runs outside
+	// every boundary, so doctor must say so as a warning, not an ok line.
+	for _, sc := range servers {
+		if sc.IsEnabled() {
+			lim := sandbox.MCPUnsandboxedLimitation()
+			report(vWarn, "mcp limitation [%s]: %s", lim.ID, lim.Detail)
+			break
+		}
 	}
 
 	root, err := runtime.ResolveWorkspace(cfg)
