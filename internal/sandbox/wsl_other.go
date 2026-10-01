@@ -29,7 +29,13 @@ func (*wslExecutor) Probe(context.Context) error {
 }
 
 func (*wslExecutor) Describe(context.Context) Enforcement {
-	return Enforcement{Mode: ModeWSL}
+	return Enforcement{
+		Mode: ModeWSL,
+		Limitations: []Limitation{
+			{ID: LimPlatformWSLWindows, Warn: true, Detail: "sandbox mode \"wsl\" requires Windows; on this platform the executor cannot be constructed (no fallback to native)"},
+			{ID: LimPlatformHostOnly, Detail: "no Linux/macOS isolation backend exists in v1.5.0; native runs on the host"},
+		},
+	}
 }
 
 var _ Executor = (*wslExecutor)(nil)

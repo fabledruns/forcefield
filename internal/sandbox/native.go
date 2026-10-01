@@ -59,7 +59,8 @@ func (n *nativeExecutor) probePolicy() error {
 }
 
 // Describe reports native honestly: no shell-text confinement in any mode.
-// See docs/Sandbox.md and Enforcement.FilesystemConfined.
+// See docs/Sandbox.md and Enforcement.FilesystemConfined. Limitations is
+// the structured source doctor renders; Notes stay the approval-UI lines.
 func (n *nativeExecutor) Describe(context.Context) Enforcement {
 	if n.policy.Confines() {
 		return Enforcement{
@@ -73,6 +74,14 @@ func (n *nativeExecutor) Describe(context.Context) Enforcement {
 			Notes: []string{
 				"strict workspace boundary: filesystem tools and the shell working directory are confined to the workspace; shell command text is not confined",
 			},
+			Limitations: append([]Limitation{
+				{ID: LimFilesystemToolsCaged, Detail: "filesystem tools are confined to the project workspace via tool-layer policy"},
+				{ID: LimFilesystemShellOpen, Warn: true, Detail: "shell command text is NOT confined; only the working directory is pinned"},
+				{ID: LimShellTextOpen, Warn: true, Detail: "shell command text is never confined, in any mode; outside paths are gated only by permissions (ask)"},
+				{ID: LimNetworkNamespace, Detail: "host networking; no isolation is attempted in native mode"},
+				{ID: LimEnvFullHost, Detail: "full host environment is forwarded by design"},
+				{ID: LimPlatformHostOnly, Detail: "native runs on the host on all platforms; no Linux/macOS isolation backend exists in v1.5.0"},
+			}, processLimitations()...),
 		}
 	}
 	return Enforcement{
@@ -86,6 +95,14 @@ func (n *nativeExecutor) Describe(context.Context) Enforcement {
 		Notes: []string{
 			"native execution has no isolation: commands run with your user's permissions",
 		},
+		Limitations: append([]Limitation{
+			{ID: LimFilesystemToolsCaged, Detail: "filesystem tools are confined to the project workspace via tool-layer policy"},
+			{ID: LimFilesystemShellOpen, Warn: true, Detail: "shell runs unconfined: working directory is NOT pinned and command text is NOT confined"},
+			{ID: LimShellTextOpen, Warn: true, Detail: "shell command text is never confined, in any mode; outside paths are gated only by permissions (ask)"},
+			{ID: LimNetworkNamespace, Detail: "host networking; no isolation is attempted in native mode"},
+			{ID: LimEnvFullHost, Detail: "full host environment is forwarded by design"},
+			{ID: LimPlatformHostOnly, Detail: "native runs on the host on all platforms; no Linux/macOS isolation backend exists in v1.5.0"},
+		}, processLimitations()...),
 	}
 }
 

@@ -221,6 +221,12 @@ var (
 
 // Enforcement states what a backend actually enforces. Approval UIs and
 // doctor render exclusively from here. See docs/Sandbox.md.
+//
+// Limitations is the structured source of truth for capabilities and
+// their limits (Phase 1): doctor derives warn/info verdicts from
+// Limitations, never by substring-matching SummaryLines. Notes stay the
+// human-readable lines rendered in SummaryLines so the approval UI and
+// doctor share wording; Limitations carry the machine-stable IDs.
 type Enforcement struct {
 	Mode    Mode
 	Distro  string // wsl mode: selected distribution, "" = default
@@ -239,6 +245,63 @@ type Enforcement struct {
 	EnvForwarded bool
 
 	Notes []string
+
+	// Limitations lists every capability limit in machine-stable form.
+	// Entries with Warn=true must surface as warnings in doctor and
+	// must never read as all-clear in the approval UI.
+	Limitations []Limitation
+}
+
+// Limitation is one structured capability/limitation fact. ID is stable
+// for tests and doctor assertions; Detail is the human wording shared
+// with Notes; Warn selects the doctor verdict (true = warn, false = info).
+type Limitation struct {
+	ID     string
+	Warn   bool
+	Detail string
+}
+
+// Stable limitation IDs. Keep them stable: doctor tests and docs refer
+// to these, not to English substrings.
+const (
+	LimFilesystemShellOpen   = "filesystem.shell-open"
+	LimFilesystemToolsCaged  = "filesystem.tools-caged"
+	LimShellTextOpen         = "shell.text-open"
+	LimShellStagedVisible    = "shell.staged-visible"
+	LimNetworkInterop        = "network.wsl-interop"
+	LimNetworkNamespace      = "network.namespace"
+	LimEnvFullHost           = "env.full-host"
+	LimEnvRestrictedLauncher = "env.restricted-launcher"
+	LimProcessUnixPgroup     = "process.unix-pgroup"
+	LimProcessWindowsJob     = "process.windows-job"
+	LimProcessWSLRelay       = "process.wsl-relay"
+	LimPlatformWSLWindows    = "platform.wsl-windows-only"
+	LimPlatformHostOnly      = "platform.host-only"
+	LimMCPUnsandboxed        = "mcp.unsandboxed"
+)
+
+// Warnings returns the Warn=true subset of Limitations in order.
+func (e Enforcement) Warnings() []Limitation {
+	out := make([]Limitation, 0, len(e.Limitations))
+	for _, l := range e.Limitations {
+		if l.Warn {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// MCPUnsandboxedLimitation is the single source of truth for the MCP
+// trust statement: MCP servers run with OS privileges, outside any
+// sandbox or workspace boundary. Doctor and any future approval surface
+// must render this exact Detail as a warning.
+func MCPUnsandboxedLimitation() Limitation {
+	return Limitation{
+		ID:   LimMCPUnsandboxed,
+		Warn: true,
+		Detail: "MCP servers run UNSANDBOXED with your OS user privileges: no sandbox executor, " +
+			"no workspace boundary, opaque arguments; cwd is the launch directory only",
+	}
 }
 
 // SummaryLines renders the enforcement facts as stable human-readable
@@ -286,7 +349,11 @@ func (e Enforcement) SummaryLines() []string {
 
 	netLine := "host network"
 	if net == NetworkDisabled {
-		netLine = "disabled - enforced (isolated network namespace)"
+		// Qualified to Linux sockets on purpose: Windows .exe interop
+		// runs on the host stack inside the same namespace (see
+		// network.wsl-interop), so an unqualified "isolated" would
+		// overclaim egress denial.
+		netLine = "disabled - enforced for Linux sockets (isolated network namespace)"
 		if !e.NetworkEnforced {
 			netLine = "disabled - NOT enforced; the command may use host networking"
 		}

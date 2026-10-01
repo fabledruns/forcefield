@@ -77,7 +77,7 @@ It never prints secret values such as API keys.`,
 		doctorSessions(report)
 		doctorSkills(report)
 		doctorMemory(report)
-		doctorShell(report)
+		doctorShell(cfg, report)
 		doctorSearch(report)
 		doctorSandbox(cfg, report)
 		doctorMCP(cfg, report)
@@ -397,7 +397,20 @@ func doctorMemory(report func(verdict, string, ...any)) {
 }
 
 // doctorShell verifies the Bash execution backend (WSL on Windows).
-func doctorShell(report func(verdict, string, ...any)) {
+// In WSL mode it names the configured distribution and defers the live
+// probe to the sandbox section so doctor never silently inspects a
+// different distro than the runtime will use.
+func doctorShell(cfg *config.Config, report func(verdict, string, ...any)) {
+	if cfg != nil {
+		if mode, _ := sandbox.ParseMode(cfg.Sandbox.Mode); mode == sandbox.ModeWSL {
+			if strings.TrimSpace(cfg.Sandbox.WSL.Distribution) == "" {
+				report(vOK, "shell backend: WSL mode with default distribution (no explicit sandbox.wsl.distribution configured); live probe runs in the sandbox section against the same resolution")
+			} else {
+				report(vOK, "shell backend: WSL mode with configured distribution %q; live probe runs in the sandbox section against that distribution (never silently the default)", cfg.Sandbox.WSL.Distribution)
+			}
+			return
+		}
+	}
 	sh := shell.NewShell()
 	if err := sh.CheckBackend(context.Background()); err != nil {
 		report(vFail, "shell backend: %v", err)
@@ -446,15 +459,54 @@ func doctorSandbox(cfg *config.Config, report func(verdict, string, ...any)) {
 		return
 	}
 
-	// Limitations the executor itself declares ("NOT enforced",
-	// "NOT blocked") must not read as all-clear: surface them as warnings.
-	for _, line := range executor.Describe(context.Background()).SummaryLines() {
-		v := vOK
-		if strings.Contains(line, "NOT ") {
-			v = vWarn
-		}
-		report(v, "sandbox %s", line)
+	// Structured reporting (Phase 1): facts render as info lines from
+	// SummaryLines; limits render as warnings from Limitations. No
+	// substring matching: the executor owns both wordings.
+	enc := executor.Describe(context.Background())
+	for _, line := range enc.SummaryLines() {
+		report(vOK, "sandbox %s", line)
 	}
+	if enc.Mode == sandbox.ModeWSL {
+		if strings.TrimSpace(cfg.Sandbox.WSL.Distribution) == "" {
+			report(vOK, "sandbox distribution: default distribution (no explicit sandbox.wsl.distribution configured)")
+		} else {
+			report(vOK, "sandbox distribution: configured %q", cfg.Sandbox.WSL.Distribution)
+		}
+	}
+	for _, lim := range enc.Warnings() {
+		report(vWarn, "sandbox limitation [%s]: %s", lim.ID, lim.Detail)
+	}
+	doctorInteropCanary(executor, enc, report)
+}
+
+// doctorInteropCanary runs the safe .exe-resolution probe when the
+// configured boundary claims Linux network isolation, and reports what
+// it observed. A positive result is concrete per-machine evidence that
+// Windows-side execution escapes the namespace; any other outcome
+// keeps the structural warning (which is reported from Limitations
+// above regardless) and says exactly that. The probe performs only
+// `command -v` lookups: no network traffic, no external targets.
+func doctorInteropCanary(executor sandbox.Executor, enc sandbox.Enforcement, report func(verdict, string, ...any)) {
+	if enc.Mode != sandbox.ModeWSL || !enc.NetworkEnforced {
+		return
+	}
+	prober, ok := executor.(interface {
+		InteropCanary(context.Context) ([]string, error)
+	})
+	if !ok {
+		report(vWarn, "sandbox interop canary: unavailable on this build; Windows .exe interop is still not covered (see [%s])", sandbox.LimNetworkInterop)
+		return
+	}
+	found, err := prober.InteropCanary(context.Background())
+	if err != nil {
+		report(vWarn, "sandbox interop canary inconclusive (%v); treating Windows .exe interop as present (see [%s])", err, sandbox.LimNetworkInterop)
+		return
+	}
+	if len(found) > 0 {
+		report(vWarn, "sandbox interop canary: %s resolvable inside the isolated namespace with host networking (not blocked)", strings.Join(found, ", "))
+		return
+	}
+	report(vOK, "sandbox interop canary: no Windows .exe helpers resolved inside the isolated namespace on this machine (the interop gap [%s] applies regardless)", sandbox.LimNetworkInterop)
 }
 
 // newSandboxExecutor builds the same executor runtime.New uses, from the

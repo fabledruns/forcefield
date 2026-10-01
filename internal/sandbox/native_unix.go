@@ -43,3 +43,12 @@ func probeNativeHost(context.Context) error {
 	}
 	return nil
 }
+
+// processLimitations reports the Unix process-tracking truth (Phase 0
+// verified): group kill reaches the pgid, but a child that calls setsid
+// escapes it, and SIGKILL/SIGHUP of Forcefield itself orphans descendants.
+func processLimitations() []Limitation {
+	return []Limitation{
+		{ID: LimProcessUnixPgroup, Warn: true, Detail: "Unix process group (Setpgid + kill(-pgid)); a child that calls setsid escapes the group (verified Phase 0); SIGKILL/SIGHUP of Forcefield orphans descendants"},
+	}
+}

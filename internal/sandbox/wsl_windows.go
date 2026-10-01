@@ -233,7 +233,10 @@ func trimEnvPairs(argv, extra []string) []string {
 }
 
 // Describe reports enforcement truthfully, probing lazily for network
-// capability so the wording is never aspirational.
+// capability so the wording is never aspirational. Limitations is the
+// structured source doctor renders; Notes stay the approval-UI lines, now
+// including the Phase 0 interop caveat so the UI cannot overclaim
+// "disabled - enforced".
 func (w *wslExecutor) Describe(ctx context.Context) Enforcement {
 	e := Enforcement{
 		Mode:            ModeWSL,
@@ -245,6 +248,17 @@ func (w *wslExecutor) Describe(ctx context.Context) Enforcement {
 		Notes: []string{
 			"the distribution can reach all Windows drives through /mnt and its own filesystem; only the working directory is validated",
 			"filesystem tools (read_file, write_file, list_files) are confined to the project workspace via tool-layer policy",
+			"Windows interop executables (.exe via /mnt/c/...) are NOT blocked by the network namespace and use host networking (verified Phase 0)",
+			"large commands are staged to a script under %TEMP%, visible inside the distribution via /mnt",
+		},
+		Limitations: []Limitation{
+			{ID: LimFilesystemToolsCaged, Detail: "filesystem tools are confined to the project workspace via tool-layer policy"},
+			{ID: LimFilesystemShellOpen, Warn: true, Detail: "the distribution can reach all Windows drives through /mnt and its own filesystem; only the working directory is validated"},
+			{ID: LimShellTextOpen, Warn: true, Detail: "shell command text is never confined; obvious host patterns are refused lexically (mitigation, not a boundary)"},
+			{ID: LimShellStagedVisible, Warn: true, Detail: "large commands are staged to a script under %TEMP%, visible inside the distribution via /mnt; SIGKILL leaks the file"},
+			{ID: LimNetworkInterop, Warn: true, Detail: "Windows interop (.exe via /mnt/c/...) executes inside the network namespace with host networking even when the launcher env is empty (verified Phase 0); network isolation does NOT cover Windows-side execution"},
+			{ID: LimEnvRestrictedLauncher, Detail: "wsl.exe launcher receives only SystemRoot, TEMP, TMP and empty WSLENV; in-distro env is distro defaults plus requested extras"},
+			{ID: LimProcessWSLRelay, Warn: true, Detail: "Windows-side tree is reaped (Job + taskkill); Linux-side processes inside the distribution may outlive the relay; full sweep needs wsl --shutdown"},
 		},
 	}
 	if e.Network == NetworkDisabled {
@@ -253,13 +267,16 @@ func (w *wslExecutor) Describe(ctx context.Context) Enforcement {
 			e.Notes = append(e.Notes,
 				"commands run in an unprivileged user+network namespace (loopback only) while network isolation is active",
 			)
+			e.Limitations = append(e.Limitations, Limitation{ID: LimNetworkNamespace, Detail: "unprivileged user+network namespace (loopback only) for Linux sockets; Windows interop is NOT covered (see network.wsl-interop)"})
 		} else {
 			e.Notes = append(e.Notes,
 				fmt.Sprintf("network isolation cannot be established here (%v); affected commands refuse to run rather than fall back", err),
 			)
+			e.Limitations = append(e.Limitations, Limitation{ID: LimNetworkNamespace, Warn: true, Detail: fmt.Sprintf("network isolation requested but unavailable here (%v); commands refuse to run rather than fall back", err)})
 		}
 	} else {
 		e.Notes = append(e.Notes, "network isolation was not requested; the command shares WSL/host networking")
+		e.Limitations = append(e.Limitations, Limitation{ID: LimNetworkNamespace, Detail: "network isolation was not requested; the command shares WSL/host networking"})
 	}
 	return e
 }

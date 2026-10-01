@@ -14,8 +14,15 @@ import (
 // These tests exercise the restricted WSL executor against a real WSL
 // installation. They prove the guarantees this package claims (and refuse
 // to claim anything it cannot demonstrate); they skip cleanly when WSL is
-// unavailable so non-Windows CI stays green. Unit-level equivalents live
-// in sandbox_windows_test.go.
+// unavailable so CI stays green. Unit-level equivalents live in
+// sandbox_windows_test.go.
+//
+// CI limitation (deliberate, Phase 5): GitHub windows-latest runners
+// ship WSL without a distribution, and installing one per run is slow
+// and fragile, so there is no dedicated WSL CI job. These tests run
+// wherever a distribution exists and skip elsewhere; the interop
+// canary, lexical tables, and fail-closed unit tests carry the
+// coverage CI cannot.
 
 // newIntegrationExecutor builds a restricted executor over a throwaway
 // workspace, skipping the test when the configured chain is unusable.

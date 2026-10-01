@@ -29,10 +29,25 @@ func TestIsWSLForbiddenPattern(t *testing.T) {
 		{"cat /proc/self/cwd/etc/passwd", true},
 		{"cat /sys/kernel/hostname", true},
 		{"cat /run/WSL/interop", true},
+		{"cat /RUN/WSL/x", true}, // case variant of the real socket dir
 		{"wslpath -w /home/user", true},
+		{"wslinfo --networking-mode", true},
 		{"powershell.exe -Command Get-Content C:/file", true},
 		{"cmd.exe /c dir", true},
 		{"wsl.exe -d Ubuntu ls /", true},
+		// Phase 5: interop launchers observed reachable from inside the
+		// isolated namespace (network.wsl-interop), plus the .exe
+		// catch-all for the whole class.
+		{"curl.exe --version", true},
+		{"/mnt/c/WINDOWS/system32/curl.exe --version", true},
+		{"explorer.exe .", true},
+		{"notepad.exe /p file", true},
+		{"setup.exe /s", true},
+		{"ls myfile.exe", true}, // conservative: mere filenames match too
+		// Deliberately NOT matched: bare cmd without .exe would
+		// false-positive on words/flags; real invocations spell
+		// cmd.exe (matched above) and approval ask still gates the rest.
+		{"cmd /c dir", false},
 		{"cat ../../etc/passwd", true},
 		{"ls ../secret", true},
 		{"echo safe", false},

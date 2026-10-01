@@ -106,7 +106,7 @@ These properties hold at boundaries Forcefield controls:
 1. **Structured invocation.** Every command is assembled as an argv passed to `wsl.exe --exec`. Agent-authored text is never re-parsed by a host shell or by `cmd.exe`; there is no `cmd /c` path.
 2. **Pinned working directory.** The requested directory is resolved to an absolute path, symlink-resolved, and required to lie inside the project workspace (the Git repository root, else the working directory). Traversal (`..`), absolute paths outside the workspace, drive-relative forms (`C:foo`), Linux-absolute paths on a Windows workspace, and symlinks that resolve outside are all rejected before any process exists.
 3. **Severed host environment.** The `wsl.exe` launcher receives only `SystemRoot`, `TEMP`, `TMP`, and an explicitly **empty `WSLENV`**, which turns off all host-to-Linux variable sharing. Inside the distribution, the environment is the distribution's own defaults plus exactly the key/value pairs the tool requested. Provider API keys (e.g. `NVIDIA_API_KEY`) do not cross; Forcefield deliberately keeps them out of its own process environment too (see [Config](Config.md)).
-4. **Network isolation when achievable.** With `network: disabled`, the command is launched inside a fresh user+network namespace via in-distribution `unshare --user --net --map-root-user`. Only loopback remains. File ownership maps back to your real user, so files created in this mode belong to you. Support is probed once per run; see below for what happens without support.
+4. **Network isolation for Linux sockets when achievable.** With `network: disabled`, the command is launched inside a fresh user+network namespace via in-distribution `unshare --user --net --map-root-user`. Only loopback remains **for Linux sockets**. Windows `.exe` interop is explicitly not covered: interop executables (`cmd.exe`, `powershell.exe`, `curl.exe`, …) still run inside that namespace on the Windows host network stack, even with an empty environment. File ownership maps back to your real user, so files created in this mode belong to you. Support is probed once per run; see below for what happens without support. `ff doctor` runs a safe resolution canary (`command -v` only, no traffic) reporting which helpers resolve inside the namespace.
 5. **Process lifetime.** Timeouts, context cancellation, and Windows-side process-tree teardown (the `wsl.exe` relay) remain fully effective. Linux-side processes inside the distribution may outlive the relay: no Windows host primitive used by Forcefield reaches inside the distribution, so their cleanup is not guaranteed. A full distribution-level sweep requires `wsl --shutdown`.
 
 ## What `wsl` mode does NOT do
@@ -116,7 +116,7 @@ Stated plainly, because these are the limits:
 1. **Linux-side processes are not reaped.** Killing the Windows relay stops the Windows side promptly, but descendants running inside the distribution outlive it by platform design. This is an OS boundary, not a Forcefield bug; see item 5 above.
 
 2. **Filesystems are not confined.** A WSL distribution automounts every Windows drive under `/mnt/<letter>` and contains its own full Linux filesystem. A sandboxed command can therefore read and write any path your OS identity permits, anywhere on the machine. Only the *working directory* is validated; nothing stops a command from opening other paths. Plain WSL cannot deliver filesystem confinement, and Forcefield will not pretend otherwise.
-3. **Network denial fails closed.** If the distribution cannot create network namespaces (no `unshare`, kernel restrictions, AppArmor policy), a requested `network: disabled` makes commands **refuse to run** with an explanation - it never silently runs them with host networking. Set `network: host` if you accept unisolated networking.
+3. **Network denial fails closed (for what it covers).** If the distribution cannot create network namespaces (no `unshare`, kernel restrictions, AppArmor policy), a requested `network: disabled` makes commands **refuse to run** with an explanation - it never silently runs them with host networking. Set `network: host` if you accept unisolated networking. Either way, Windows `.exe` interop keeps host networking: fail-closed governs Linux networking only.
 4. **No resource limits.** CPU, memory, and process-count limits are not enforced.
 5. **Not a security boundary against the user.** This boundary constrains what agent-driven commands can reach by default posture; it is not a defense against a local user, and it is not a malware containment system.
 
@@ -140,7 +140,7 @@ For WSL with enforced network isolation:
 ```text
 Execution:    WSL (Ubuntu)
 Filesystem:   working directory pinned to the project workspace (other paths are NOT blocked)
-Network:      disabled - enforced (isolated network namespace)
+Network:      disabled - enforced for Linux sockets (isolated network namespace)
 Environment:  restricted (host variables are not forwarded)
 Isolation:    WSL execution boundary
 ```

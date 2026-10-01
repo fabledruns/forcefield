@@ -821,9 +821,17 @@ func (s *Shell) isWSLMode(ctx context.Context) bool {
 
 // isWSLForbiddenPattern reports whether command contains obvious host
 // filesystem escapes that are blocked in WSL mode. This is a conservative
-// lexical mitigation, not a filesystem sandbox. It blocks /mnt/*, Windows
-// drive patterns like C:\ or C:/, /proc and /sys, traversal via ../, and
-// WSL interop paths.
+// lexical mitigation, not a filesystem sandbox and not a network
+// boundary: Windows .exe interop executes inside the network namespace
+// with host networking (verified Phase 0), so the whole .exe class is
+// refused here while ordinary approval (ask) still gates everything
+// else. It blocks /mnt/*, Windows drive patterns like C:\ or C:/,
+// /proc and /sys, traversal via ../, and WSL interop paths.
+//
+// Deliberately NOT matched: bare `cmd` without .exe (a substring rule
+// would false-positive on words and flags containing "cmd"; real
+// interop invocations spell cmd.exe, which is matched, and the .exe
+// catch-all below covers the rest).
 func isWSLForbiddenPattern(command string) bool {
 	if strings.Contains(command, "/mnt/") {
 		return true
@@ -838,14 +846,31 @@ func isWSLForbiddenPattern(command string) bool {
 	if strings.Contains(command, `\\wsl`) || strings.Contains(lower, "wsl.localhost") || strings.Contains(lower, `\\wsl$`) {
 		return true
 	}
-	// Indirect WSL/host escapes via proc, sys, or interop helpers
+	// Indirect WSL/host escapes via proc, sys, or interop helpers.
+	// /run/wsl is matched lowercase, which also covers the real /run/WSL
+	// socket directory (verified Phase 0: the sockets live there).
 	if strings.Contains(lower, "/proc/") || strings.Contains(lower, "/sys/") {
 		return true
 	}
 	if strings.Contains(lower, "/run/wsl") || strings.Contains(lower, "/usr/lib/wsl") {
 		return true
 	}
-	if strings.Contains(lower, "wslpath") || strings.Contains(lower, "powershell") || strings.Contains(lower, "cmd.exe") || strings.Contains(lower, "wsl.exe") {
+	if strings.Contains(lower, "wslpath") || strings.Contains(lower, "wslinfo") || strings.Contains(lower, "powershell") || strings.Contains(lower, "cmd.exe") || strings.Contains(lower, "wsl.exe") {
+		return true
+	}
+	// Named interop launchers observed reachable from inside the
+	// namespace (verified Phase 0). Checked before the generic .exe
+	// rule so refusal messages name the culprit.
+	if strings.Contains(lower, "curl.exe") || strings.Contains(lower, "explorer.exe") || strings.Contains(lower, "notepad.exe") {
+		return true
+	}
+	// Catch-all for the interop class: any .exe reference from inside
+	// the distribution runs on the Windows host, outside the Linux
+	// network namespace. Conservative by design (a mere filename
+	// mentioning .exe is also refused); bypassable by the same
+	// indirection as every rule here ($var, quoting), so this stays a
+	// mitigation and never a claimed boundary.
+	if strings.Contains(lower, ".exe") {
 		return true
 	}
 	// Traversal outside workspace via ../
@@ -888,8 +913,23 @@ func wslForbiddenSnippet(command string) string {
 	if strings.Contains(lower, "wslpath") {
 		return "wslpath"
 	}
+	if strings.Contains(lower, "wslinfo") {
+		return "wslinfo"
+	}
 	if strings.Contains(lower, "powershell") {
 		return "powershell"
+	}
+	if strings.Contains(lower, "curl.exe") {
+		return "curl.exe"
+	}
+	if strings.Contains(lower, "explorer.exe") {
+		return "explorer.exe"
+	}
+	if strings.Contains(lower, "notepad.exe") {
+		return "notepad.exe"
+	}
+	if strings.Contains(lower, ".exe") {
+		return ".exe"
 	}
 	return "host filesystem"
 }
