@@ -343,6 +343,39 @@ func TestHostArgvSeparate(t *testing.T) {
 	}
 }
 
+// TestHostFastExitStderrDrained pins the shutdown drain-before-close
+// ordering: a child that prints to stderr and exits immediately must
+// have its output in the failure snapshot every time. Before the fix,
+// shutdown closed the stderr read end before joining the pump, so an
+// unscheduled pump lost the bytes and the snapshot read back empty -
+// observed as a CI-only failure on ubuntu (argv dump "": unexpected
+// end of JSON input) while Windows/macOS won the race. Loop to shake
+// the scheduling: post-fix every iteration is deterministic because
+// shutdown joins the drained pump before snapshotting.
+func TestHostFastExitStderrDrained(t *testing.T) {
+	want := []string{"a b", ";rm", "x$y"}
+	for i := 0; i < 25; i++ {
+		cfg := helperServerConfig(t, map[string]string{"MCP_HELPER_ARGV_DUMP": "1"}, want...)
+		h, _ := newTestHost(t, map[string]ServerConfig{"s": cfg})
+		if err := h.Start(context.Background()); err == nil {
+			t.Fatalf("iter %d: Start succeeded for argv-dump helper that never handshakes", i)
+		}
+		stderr := snapshotOf(h, "s").Stderr
+		var raw []string
+		if err := json.Unmarshal([]byte(stderr), &raw); err != nil {
+			t.Fatalf("iter %d: argv dump %q: %v", i, stderr, err)
+		}
+		if len(raw) < len(want)+1 {
+			t.Fatalf("iter %d: argv = %v", i, raw)
+		}
+		for j, w := range want {
+			if raw[len(raw)-len(want)+j] != w {
+				t.Fatalf("iter %d: argv = %v, want trailing %v", i, raw, want)
+			}
+		}
+	}
+}
+
 // stderrCwd extracts the helper's reported working directory (the
 // "cwd=<dir>" line) from captured stderr, or "" when absent.
 func stderrCwd(stderr string) string {

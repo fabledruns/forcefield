@@ -774,6 +774,21 @@ func (s *server) shutdown(failed bool) {
 		}
 	}
 
+	// Drain-before-close: the process is gone, so bytes it already wrote
+	// EOF promptly; wait bounded for the stderr pump to collect them
+	// before closing the read end below. Closing first discards unread
+	// pipe data, which loses exactly the fast-exit diagnostics this ring
+	// keeps (a child that prints and exits immediately plus an
+	// unscheduled pump reads back empty). Grandchildren may hold the
+	// pipe open, hence bounded: expiry just falls through to the close
+	// below, preserving the existing no-hang guarantee.
+	s.mu.Lock()
+	pumpDone := s.pumpDone
+	s.mu.Unlock()
+	if pumpDone != nil {
+		waitChan(pumpDone, hostTerminateWait)
+	}
+
 	s.mu.Lock()
 	release := s.release
 	s.release = nil
@@ -798,7 +813,7 @@ func (s *server) shutdown(failed bool) {
 		waitChan(tr.Done(), hostTerminateWait)
 	}
 	s.mu.Lock()
-	pumpDone := s.pumpDone
+	pumpDone = s.pumpDone
 	s.mu.Unlock()
 	if pumpDone != nil {
 		waitChan(pumpDone, hostTerminateWait)
