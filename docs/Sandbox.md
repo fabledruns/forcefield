@@ -175,8 +175,6 @@ only as far as stated here — nothing beyond this list is claimed.
 
 ## What v1.5.0 hardened (and what it did not change)
 
-## What v1.5.0 hardened (and what it did not change)
-
 - **Filesystem (one hardened path):** resolve → no-follow open →
   descriptor checks (regular file, size cap) → bounded
   context-aware reads/writes → `fchmod`. Non-regular files
