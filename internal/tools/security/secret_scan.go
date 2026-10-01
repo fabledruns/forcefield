@@ -5,7 +5,6 @@ package security
 import (
 	"context"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 
@@ -107,7 +106,7 @@ type finding struct {
 	snip string
 }
 
-func (s SecretScan) Execute(_ context.Context, args map[string]any) (tools.Result, error) {
+func (s SecretScan) Execute(ctx context.Context, args map[string]any) (tools.Result, error) {
 	path, _ := args["path"].(string)
 	text, _ := args["text"].(string)
 	hasPath := strings.TrimSpace(path) != ""
@@ -127,6 +126,13 @@ func (s SecretScan) Execute(_ context.Context, args map[string]any) (tools.Resul
 		data = []byte(text)
 		name = "<text>"
 	} else {
+		// Hardened file path shared with read_file: resolve within the
+		// workspace, open no-follow, validate the open descriptor
+		// (regular file, size cap), then ctx-aware bounded read. The
+		// old os.Stat+os.ReadFile followed symlinks and ignored ctx.
+		if err := sandbox.CheckCtx(ctx); err != nil {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: %v", path, err)}, nil
+		}
 		// Workspace confinement is unconditional: canonicalize and
 		// resolve inside the root before reading, so approval can
 		// never authorize a scan outside it.
@@ -134,19 +140,27 @@ func (s SecretScan) Execute(_ context.Context, args map[string]any) (tools.Resul
 		if err != nil {
 			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: %v", path, err)}, nil
 		}
-		info, err := os.Stat(resolved)
+		f, err := sandbox.OpenNoFollowRead(resolved)
 		if err != nil {
 			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: %v", path, err)}, nil
 		}
-		if info.IsDir() {
-			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: is a directory", path)}, nil
-		}
-		if info.Size() > maxScanBytes {
-			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: file is %d bytes, exceeds %d byte limit", path, info.Size(), maxScanBytes)}, nil
-		}
-		raw, err := os.ReadFile(resolved)
+		defer f.Close()
+		info, err := f.Stat()
 		if err != nil {
 			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: %v", path, err)}, nil
+		}
+		if err := sandbox.AssertRegular(info); err != nil {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: %v", path, err)}, nil
+		}
+		if err := sandbox.AssertReadSize(info, maxScanBytes); err != nil {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: %v", path, err)}, nil
+		}
+		raw, err := sandbox.ReadCapped(ctx, f, maxScanBytes)
+		if err != nil {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: %v", path, err)}, nil
+		}
+		if int64(len(raw)) > maxScanBytes {
+			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot scan %s: file exceeds %d byte limit during read", path, maxScanBytes)}, nil
 		}
 		data = raw
 		name = path

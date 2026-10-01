@@ -65,10 +65,13 @@ func (ListFiles) InputSchema() map[string]any {
 	}
 }
 
-func (l ListFiles) Execute(_ context.Context, args map[string]any) (tools.Result, error) {
+func (l ListFiles) Execute(ctx context.Context, args map[string]any) (tools.Result, error) {
 	path, err := tools.OptionalStringArg(args, "path", ".")
 	if err != nil {
 		return tools.Result{}, err
+	}
+	if err := sandbox.CheckCtx(ctx); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot list %s: %v", path, err)}, nil
 	}
 
 	// Workspace confinement is unconditional: canonicalize and resolve
@@ -81,6 +84,9 @@ func (l ListFiles) Execute(_ context.Context, args map[string]any) (tools.Result
 
 	entries, err := os.ReadDir(resolved)
 	if err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot list %s: %v", path, err)}, nil
+	}
+	if err := sandbox.CheckCtx(ctx); err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot list %s: %v", path, err)}, nil
 	}
 

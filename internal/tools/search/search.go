@@ -219,19 +219,33 @@ func (s SearchFiles) Execute(ctx context.Context, args map[string]any) (tools.Re
 	}
 
 	scanFile := func(abs string, rel string) error {
-		fi, err := os.Stat(abs)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// Hardened open shared with read_file: no-follow open, then
+		// every decision below uses the open descriptor. A symlink
+		// (even one resolving inside the root at walk time) fails
+		// the no-follow open and is skipped instead of followed, so
+		// a link swapped between containment check and open cannot
+		// redirect the read outside. Non-regular files (FIFO,
+		// socket, device) are skipped before any read, so a FIFO can
+		// neither block the walk nor wedge cancellation.
+		f, err := sandbox.OpenNoFollowRead(abs)
+		if err != nil {
+			return nil // vanished, symlink, or unreadable; skip
+		}
+		defer f.Close()
+		fi, err := f.Stat()
 		if err != nil {
 			return nil // vanished mid-walk; skip
+		}
+		if err := sandbox.AssertRegular(fi); err != nil {
+			return nil // FIFO/socket/device/dir; skip silently
 		}
 		if fi.Size() > maxFileBytes {
 			skippedLarge++
 			return nil
 		}
-		f, err := os.Open(abs)
-		if err != nil {
-			return nil // unreadable; skip
-		}
-		defer f.Close()
 		if isBinary(f) {
 			skippedBinary++
 			return nil
@@ -242,6 +256,9 @@ func (s SearchFiles) Execute(ctx context.Context, args map[string]any) (tools.Re
 		r := bufio.NewReader(io.LimitReader(f, maxFileBytes+1))
 		lineNo := 0
 		for {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			raw, err := r.ReadString('\n')
 			lineNo++
 			text := strings.TrimRight(raw, "\r\n")

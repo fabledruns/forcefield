@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
@@ -51,7 +50,7 @@ func (WriteFile) InputSchema() map[string]any {
 	}
 }
 
-func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result, error) {
+func (w WriteFile) Execute(ctx context.Context, args map[string]any) (tools.Result, error) {
 	path, err := tools.StringArg(args, "path")
 	if err != nil {
 		return tools.Result{}, err
@@ -60,8 +59,12 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 	if err != nil {
 		return tools.Result{}, err
 	}
-	// Bound input bytes so one call cannot fill disk. Mirrors the read
-	// cap; the model can chunk large writes across calls.
+	if err := sandbox.CheckCtx(ctx); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+	}
+	// Bound input bytes before any allocation or write so one call
+	// cannot fill disk. Mirrors the read cap; the model can chunk
+	// large writes across calls.
 	if len(content) > tools.DefaultWriteMaxBytes {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: content is %d bytes, limit is %d bytes; split the write into smaller chunks", path, len(content), tools.DefaultWriteMaxBytes)}, nil
 	}
@@ -76,25 +79,19 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
 
-	if dir := filepath.Dir(resolved); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
-		}
-		// TOCTOU mitigation: re-validate after MkdirAll. A concurrent
-		// writer could have created a symlink between the initial check
-		// and the directory creation.
-		if _, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, resolved); err != nil {
-			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
-		}
-		if realDir, err := sandbox.EvalLinks(filepath.Dir(resolved)); err == nil {
-			if _, err := sandbox.EnsureWithinWorkspace(w.policy.Workspace, realDir); err != nil {
-				return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
-			}
-		}
+	// Shared parent preparation: create missing parents, then
+	// re-validate so a concurrent swap surfaces as an error before
+	// anything is opened (see internal/sandbox/fsaccess.go).
+	if err := sandbox.EnsureParentDirs(w.policy.Workspace, resolved); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+	}
+	if err := sandbox.CheckCtx(ctx); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
 
-	// If the target already exists and is a symlink, refuse. This is a
-	// mitigation; a full fix would use openat(O_NOFOLLOW) for the write.
+	// If the target already exists and is a symlink, refuse with a
+	// clear message. Unix additionally enforces O_NOFOLLOW at open;
+	// Windows has no equivalent (honest limitation in fsaccess_windows.go).
 	if info, err := os.Lstat(resolved); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: path is a symlink", path)}, nil
@@ -109,15 +106,33 @@ func (w WriteFile) Execute(_ context.Context, args map[string]any) (tools.Result
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
 
-	// Use O_NOFOLLOW where available so a symlink swap between the Lstat
-	// and the write is not followed.
-	var writeErr error
-	writeErr = writeFileNoFollow(resolved, []byte(content), targetPerm)
-	if writeErr != nil {
-		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, writeErr)}, nil
+	// Open no-follow, then validate the open descriptor: regular file
+	// (never FIFO/socket/device) and single link (never a hard link to
+	// outside data on link-counting platforms). Descriptor checks close
+	// the Lstat->write swap window the old path-stat checks left open.
+	f, err := sandbox.OpenNoFollowWrite(resolved, targetPerm)
+	if err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
-	// Ensure restrictive permissions even if umask is permissive.
-	_ = os.Chmod(resolved, targetPerm)
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+	}
+	if err := sandbox.AssertRegular(info); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+	}
+	if err := sandbox.AssertWriteLinkCount(info); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+	}
+	if err := sandbox.WriteCapped(ctx, f, []byte(content)); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+	}
+	// fchmod on the open descriptor: unlike path chmod it cannot be
+	// redirected by a final-path swap between write and chmod.
+	if err := f.Chmod(targetPerm); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
+	}
 
 	return tools.Result{Content: fmt.Sprintf("wrote %d bytes to %s", len(content), path)}, nil
 }

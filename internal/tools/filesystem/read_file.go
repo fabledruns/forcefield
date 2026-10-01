@@ -5,7 +5,6 @@ package filesystem
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 
 	"forcefield/internal/sandbox"
@@ -67,10 +66,13 @@ func (ReadFile) InputSchema() map[string]any {
 	}
 }
 
-func (r ReadFile) Execute(_ context.Context, args map[string]any) (tools.Result, error) {
+func (r ReadFile) Execute(ctx context.Context, args map[string]any) (tools.Result, error) {
 	path, err := tools.StringArg(args, "path")
 	if err != nil {
 		return tools.Result{}, err
+	}
+	if err := sandbox.CheckCtx(ctx); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
 	}
 
 	// Workspace confinement is unconditional: canonicalize and resolve
@@ -81,11 +83,12 @@ func (r ReadFile) Execute(_ context.Context, args map[string]any) (tools.Result,
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
 	}
 
-	// TOCTOU mitigation: open with O_NOFOLLOW where available so a
-	// symlink is not followed, then fstat the open descriptor. This
-	// narrows the Stat→Read window.
+	// Hardened open: no-follow where the platform allows (see
+	// internal/sandbox/fsaccess_* for the honest Windows caveat), then
+	// every check below runs against the open descriptor, never a
+	// path re-stat, closing the final-path race.
 	var f *os.File
-	f, err = openNoFollow(resolved)
+	f, err = sandbox.OpenNoFollowRead(resolved)
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
 	}
@@ -95,21 +98,21 @@ func (r ReadFile) Execute(_ context.Context, args map[string]any) (tools.Result,
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
 	}
-	if info.IsDir() {
-		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: is a directory", path)}, nil
+	if err := sandbox.AssertRegular(info); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
 	}
 	// maxBytes caps how much of a file read_file will return, so a model
 	// accidentally pointed at a huge file can't blow up memory or flood
 	// the context window. Over-limit files are refused with a note (not
 	// read partially), and the bound is configurable per tool.
 	maxBytes := int64(r.resolveLimits().MaxBytes)
-	if info.Size() > maxBytes {
+	if err := sandbox.AssertReadSize(info, maxBytes); err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf(
-			"cannot read %s: file is %d bytes, which exceeds the %d byte limit", path, info.Size(), maxBytes,
+			"cannot read %s: %v", path, err,
 		), Metadata: map[string]any{"limit_bytes": maxBytes, "file_bytes": info.Size()}}, nil
 	}
 
-	data, err := readLimited(f, maxBytes)
+	data, err := sandbox.ReadCapped(ctx, f, maxBytes)
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot read %s: %v", path, err)}, nil
 	}
@@ -131,13 +134,4 @@ func (r ReadFile) CheckBoundary(args map[string]any) (string, error) {
 		return "", err
 	}
 	return sandbox.ResolveWithinWorkspace(r.policy.Workspace, path)
-}
-
-func readLimited(f *os.File, limit int64) ([]byte, error) {
-	// Read up to limit+1 to detect overflow
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
 }
