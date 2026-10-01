@@ -26,7 +26,7 @@ func TestFormatToolFinishSummarizesListFiles(t *testing.T) {
 		Success:  true,
 		Duration: 150 * time.Millisecond,
 	}, runtime.EventToolFinish)
-	if got != "✳ Found 3 entries (150ms)" {
+	if got != "* Found 3 entries (150ms)" {
 		t.Errorf("formatToolFinish() = %q", got)
 	}
 }
@@ -38,7 +38,7 @@ func TestFormatToolFinishSearchUsesStar(t *testing.T) {
 		Success:  true,
 		Duration: 210 * time.Millisecond,
 	}, runtime.EventToolFinish)
-	if got != "✳ Found 2 matches (210ms)" {
+	if got != "* Found 2 matches (210ms)" {
 		t.Errorf("formatToolFinish() = %q", got)
 	}
 }

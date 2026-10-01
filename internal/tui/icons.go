@@ -6,6 +6,11 @@ import "strings"
 // language: geometric and typographic symbols that render in a typical
 // developer terminal. They are not emoji and not Nerd Font private-use
 // characters.
+//
+// Hard rule: every glyph must have Unicode text presentation (never
+// emoji presentation), or Windows terminals substitute color emoji
+// through font fallback (see TestIconsHaveTextPresentation). Model
+// message rendering is unaffected by this set.
 type Icon string
 
 func (i Icon) String() string { return string(i) }
@@ -21,7 +26,7 @@ const (
 	// Status glyphs for compact tool/thinking rows. The distinction
 	// between outcomes comes from the glyph, not from bright colors.
 	IconDiamond  Icon = "◈" // normal successful tool result
-	IconStar8    Icon = "✳" // countable search/listing result
+	IconStar8    Icon = "*" // countable search/listing result
 	IconThinking Icon = "◇" // thinking status line
 	IconWarning  Icon = "!"
 	IconCancel   Icon = "⊘"
@@ -37,7 +42,7 @@ const (
 	IconFile     Icon = "□"
 	IconGit      Icon = "◇"
 	IconSearch   Icon = "⌕"
-	IconSettings Icon = "⚙"
+	IconSettings Icon = "≡"
 	IconMemory   Icon = "▤"
 	IconModel    Icon = "◈"
 	IconSession  Icon = "◉"

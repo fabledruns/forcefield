@@ -93,5 +93,5 @@ func compactError(err error) string {
 	if len(text) > maxStatusChars {
 		text = text[:maxStatusChars-1] + "…"
 	}
-	return fmt.Sprintf("⚠ %s", text)
+	return fmt.Sprintf("! %s", text)
 }

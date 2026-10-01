@@ -173,7 +173,7 @@ func TestModelPickerFailureKeepsModelsAndShowsStatus(t *testing.T) {
 	if picker.fetching {
 		t.Error("picker stuck fetching after failure")
 	}
-	if !strings.Contains(picker.status, "⚠") {
+	if !strings.Contains(picker.status, "!") {
 		t.Errorf("status = %q, want a concise warning line", picker.status)
 	}
 
