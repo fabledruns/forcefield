@@ -157,6 +157,13 @@ type Observation struct {
 	Valid         bool
 	InvalidReason string
 	Attrs         map[string]string
+	// Unavailable marks owned metrics this iteration could not
+	// measure, each with its reason (e.g. a missing marker endpoint).
+	// Such a metric is excluded from that metric's statistics instead
+	// of being reported as a real zero, and it never invalidates the
+	// iteration: an unavailable optional metric is a gap in the data,
+	// not a failed run.
+	Unavailable map[string]string
 }
 
 // Benchmark is one HPOV benchmark: untimed setup, one timed

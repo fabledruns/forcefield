@@ -378,24 +378,33 @@ func (b *headlessBench) Setup(ctx context.Context, env *bench.RunEnv, subj bench
 	}
 	// Untimed priming run: generates the real default config.yaml so
 	// measured iterations start from identical steady preconditions.
-	// The workload exits 1 by design; anything else means this
-	// subject does not reach the intended boundary.
+	if err := primeHeadlessHome(ctx, subj.Path, home, work, timeout); err != nil {
+		return bench.Fixture{}, err
+	}
+	return bench.Fixture{HomeDir: home, WorkDir: work, Timeout: timeout}, nil
+}
+
+// primeHeadlessHome runs the headless workload once, untimed, to
+// generate the real default config.yaml. The workload exits 1 by
+// design; anything else means the subject does not reach the
+// intended boundary.
+func primeHeadlessHome(ctx context.Context, subjPath, home, work string, timeout time.Duration) error {
 	res, err := spawn.Run(ctx, spawn.Options{
-		Path: subj.Path, Args: headlessArgs(),
+		Path: subjPath, Args: headlessArgs(),
 		Env: launchEnv(home, false), Dir: work, Timeout: timeout,
 	})
 	if err != nil {
-		return bench.Fixture{}, fmt.Errorf("priming run: %w", err)
+		return fmt.Errorf("priming run: %w", err)
 	}
 	if res.ExitCode != 1 || res.TimedOut {
-		return bench.Fixture{}, &bench.SkipError{
+		return &bench.SkipError{
 			Status: schema.StatusInvalid,
 			Code:   schema.ErrInvalidWorkload,
 			Detail: fmt.Sprintf("priming: exit=%d timed_out=%v, want the unknown-agent exit 1",
 				res.ExitCode, res.TimedOut),
 		}
 	}
-	return bench.Fixture{HomeDir: home, WorkDir: work, Timeout: timeout}, nil
+	return nil
 }
 
 func (b *headlessBench) Iterate(ctx context.Context, fx bench.Fixture, subj bench.Subject, it bench.Iter) (bench.Observation, error) {

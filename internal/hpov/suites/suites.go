@@ -14,5 +14,8 @@ func All() []bench.Registered {
 	for _, b := range LaunchBenchmarks() {
 		out = append(out, bench.Registered{Bench: b})
 	}
+	for _, b := range TUIBenchmarks() {
+		out = append(out, bench.Registered{Bench: b})
+	}
 	return out
 }

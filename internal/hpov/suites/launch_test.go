@@ -23,10 +23,19 @@ import (
 //	                 prints the unknown-agent error unless
 //	                 HPOV_FAKE_NO_ERROR=1.
 func TestMain(m *testing.M) {
-	if os.Getenv("HPOV_SUITES_FAKE") != "1" {
+	if os.Getenv("HPOV_SUITES_FAKE") != "1" && os.Getenv("HPOV_TUI_FAKE") != "1" {
 		os.Exit(m.Run())
 	}
-	os.Exit(fakeMain(os.Args[1:]))
+	os.Exit(dispatchFake(os.Args[1:]))
+}
+
+// dispatchFake routes bare invocations (the interactive TUI path) to
+// the TUI fake and everything else to the launch fake.
+func dispatchFake(args []string) int {
+	if len(args) == 0 && os.Getenv("HPOV_TUI_FAKE") == "1" {
+		return tuiFakeMain()
+	}
+	return fakeMain(args)
 }
 
 func fakeMain(args []string) int {
@@ -106,8 +115,8 @@ func testRunEnv(t *testing.T) *bench.RunEnv {
 
 func TestLaunchRegistration(t *testing.T) {
 	all := All()
-	if len(all) != 5 {
-		t.Fatalf("registered = %d, want 5", len(all))
+	if len(all) != 6 {
+		t.Fatalf("registered = %d, want 6", len(all))
 	}
 	seen := map[string]int{}
 	kinds := map[string]string{}

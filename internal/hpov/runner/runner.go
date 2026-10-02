@@ -420,6 +420,18 @@ func toIteration(it bench.Iter, t0 time.Time, obs bench.Observation, oerr error)
 		Attrs:     obs.Attrs,
 		Values:    obs.Values,
 	}
+	// The unavailable mask is stored per iteration so statistics stay
+	// recomputable from the document alone (plan §9.1): a reader who
+	// ignores attrs still sees an aligned values vector, and `hpov
+	// validate` reproduces the exact same mask the writer used.
+	if len(obs.Unavailable) > 0 {
+		if out.Attrs == nil {
+			out.Attrs = map[string]string{}
+		}
+		for name, reason := range obs.Unavailable {
+			out.Attrs[schema.UnavailablePrefix+name] = reason
+		}
+	}
 	if oerr != nil {
 		out.Valid = false
 		if out.Attrs == nil {
@@ -447,12 +459,22 @@ func normalize(obs bench.Observation, oerr error, spec bench.Spec) bench.Observa
 		obs.InvalidReason = "invalid"
 	}
 	for _, m := range spec.Metrics {
-		if _, ok := obs.Values[m.Name]; !ok {
+		if _, ok := obs.Values[m.Name]; ok {
+			continue
+		}
+		if reason, declared := obs.Unavailable[m.Name]; declared {
+			// Declared-unavailable: keep the vector aligned with a
+			// zero, but the metric is dropped from this sample's
+			// statistics (see buildMetrics) and the iteration stays
+			// valid.
 			obs.Values[m.Name] = 0
-			obs.Valid = false
-			if obs.InvalidReason == "" {
-				obs.InvalidReason = "missing metric " + m.Name
-			}
+			obs.Unavailable[m.Name] = reason
+			continue
+		}
+		obs.Values[m.Name] = 0
+		obs.Valid = false
+		if obs.InvalidReason == "" {
+			obs.InvalidReason = "missing metric " + m.Name
 		}
 	}
 	return obs
@@ -477,11 +499,27 @@ func buildMetrics(spec bench.Spec, obs []bench.Observation, seed int64) []schema
 	for _, m := range spec.Metrics {
 		vals := make([]float64, 0, len(obs))
 		valid := make([]bool, 0, len(obs))
+		missing := 0
 		for _, o := range obs {
 			vals = append(vals, o.Values[m.Name])
+			// A sample that declares this metric unavailable counts
+			// as no sample at all, so an absent optional endpoint can
+			// never enter the distribution as a zero.
+			if _, na := o.Unavailable[m.Name]; na {
+				missing++
+				valid = append(valid, false)
+				continue
+			}
 			valid = append(valid, o.Valid)
 		}
 		sm := stats.Summarize(vals, valid, seed)
+		if sm != nil && missing > 0 {
+			if sm.Nulls == nil {
+				sm.Nulls = map[string]string{}
+			}
+			sm.Nulls["missing_samples"] = itoa(missing) + " of " + itoa(len(obs)) +
+				" samples could not measure this metric"
+		}
 		var st *schema.Statistics
 		if sm != nil && sm.ValidN > 0 {
 			st = &schema.Statistics{
@@ -543,6 +581,9 @@ func metricFlags(spec bench.Spec, obs []bench.Observation, metrics []schema.Metr
 func validValues(obs []bench.Observation, metric string) []float64 {
 	var out []float64
 	for _, o := range obs {
+		if _, na := o.Unavailable[metric]; na {
+			continue
+		}
 		if o.Valid {
 			out = append(out, o.Values[metric])
 		}

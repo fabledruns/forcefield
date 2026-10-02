@@ -240,6 +240,13 @@ type Probe struct {
 	Checks map[string]bool `json:"checks,omitempty"`
 }
 
+// UnavailablePrefix marks an iteration attribute recording that an
+// owned metric could not be measured in that iteration; the attribute
+// value is the reason. The metric keeps a placeholder value in `values`
+// so the vector stays indexable, but it is excluded from that metric's
+// statistics: an absent endpoint is never reported as a real zero.
+const UnavailablePrefix = "unavailable."
+
 // Iteration is one stored sample. Warm-up samples are stored with
 // phase "warmup" and never enter statistics. Values carries the
 // observed metric values so warm-up drift stays inspectable;

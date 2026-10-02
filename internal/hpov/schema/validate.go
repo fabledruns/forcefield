@@ -78,14 +78,18 @@ func Validate(r *Result) []string {
 				continue
 			}
 			valid := make([]bool, 0, measure)
-			k := 0
 			for _, it := range b.Iterations {
 				if it.Phase != "measure" {
 					continue
 				}
-				_ = k
+				// A declared gap excludes the sample from this metric
+				// without invalidating the iteration, matching how the
+				// writer summarized it.
+				if _, na := it.Attrs[UnavailablePrefix+m.Name]; na {
+					valid = append(valid, false)
+					continue
+				}
 				valid = append(valid, it.Valid)
-				k++
 			}
 			got := stats.Summarize(m.Values, valid, r.Run.Seed)
 			checkSummary(b.ID, m.Name, m.Statistics, got, &problems)

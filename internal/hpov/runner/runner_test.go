@@ -182,6 +182,110 @@ func TestNoopEndToEnd(t *testing.T) {
 	}
 }
 
+// gapBench reports a second metric only on some iterations, declaring
+// the rest unavailable.
+type gapBench struct {
+	mu sync.Mutex
+	i  int
+}
+
+func (f *gapBench) Spec() bench.Spec {
+	return bench.Spec{
+		ID: "test.gap", DefinitionVersion: 1, Tier: 1, Kind: bench.KindE2E,
+		Metrics: []bench.MetricSpec{
+			{Name: "always_ms", Unit: "ms", Direction: bench.LowerIsBetter},
+			{Name: "sometimes_ms", Unit: "ms", Direction: bench.LowerIsBetter},
+		},
+	}
+}
+
+func (f *gapBench) Setup(_ context.Context, _ *bench.RunEnv, _ bench.Subject) (bench.Fixture, error) {
+	return bench.Fixture{}, nil
+}
+
+func (f *gapBench) Iterate(_ context.Context, _ bench.Fixture, _ bench.Subject, it bench.Iter) (bench.Observation, error) {
+	if it.Phase != bench.PhaseMeasure {
+		return bench.Observation{Values: map[string]float64{"always_ms": 1, "sometimes_ms": 2}, Valid: true}, nil
+	}
+	f.mu.Lock()
+	f.i++
+	i := f.i
+	f.mu.Unlock()
+	obs := bench.Observation{Values: map[string]float64{"always_ms": 10}, Valid: true}
+	if i%2 == 0 {
+		// Declared gap: absent from Values, with a reason.
+		obs.Unavailable = map[string]string{"sometimes_ms": "endpoint not observed"}
+	} else {
+		obs.Values["sometimes_ms"] = 20
+	}
+	return obs, nil
+}
+
+func (f *gapBench) Teardown(_ context.Context, _ bench.Fixture) error { return nil }
+
+func TestUnavailableMetricExcludedFromStats(t *testing.T) {
+	n, w := 4, 0
+	out := filepath.Join(t.TempDir(), "r.json")
+	oc, err := Run(context.Background(), Config{
+		Benchmarks: []bench.Benchmark{&gapBench{}},
+		Subjects:   testSubjects(t)[:1],
+		Select:     []string{"test.gap"},
+		Tier:       -1,
+		Profile:    "quick",
+		N:          &n,
+		Warmup:     &w,
+		Seed:       424242,
+		Out:        out,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := oc.Result.Benchmarks[0]
+	// Every sample stays valid: a declared gap is not a failed run.
+	for _, it := range b.Iterations {
+		if it.Phase == "measure" && !it.Valid {
+			t.Fatalf("unavailable metric must not invalidate the sample: %+v", it)
+		}
+	}
+	byName := map[string]schema.Metric{}
+	for _, m := range b.Metrics {
+		byName[m.Name] = m
+	}
+	always := byName["always_ms"]
+	if always.Statistics == nil || always.Statistics.ValidN != n {
+		t.Fatalf("always_ms stats = %+v, want valid_n %d", always.Statistics, n)
+	}
+	sometimes := byName["sometimes_ms"]
+	if sometimes.Statistics == nil {
+		t.Fatal("sometimes_ms must keep statistics from the samples that had it")
+	}
+	// Zeros must not leak in: only odd iterations (value 20) count.
+	if sometimes.Statistics.ValidN != n/2 {
+		t.Fatalf("valid_n = %d, want %d (only measured samples)",
+			sometimes.Statistics.ValidN, n/2)
+	}
+	if sometimes.Statistics.Min != 20 || sometimes.Statistics.Max != 20 {
+		t.Fatalf("measured samples must be 20: %+v", sometimes.Statistics)
+	}
+	if reason := sometimes.Statistics.Nulls["missing_samples"]; !strings.Contains(reason, "2 of 4") {
+		t.Fatalf("missing_samples reason = %q", reason)
+	}
+	// The mask is stored on the iteration, so the document alone
+	// reproduces the writer's statistics.
+	gapped := 0
+	for _, it := range b.Iterations {
+		if _, ok := it.Attrs[schema.UnavailablePrefix+"sometimes_ms"]; ok {
+			gapped++
+		}
+	}
+	if gapped != n/2 {
+		t.Fatalf("stored unavailable attrs = %d, want %d", gapped, n/2)
+	}
+	if _, problems, err := schema.ValidateFile(out); err != nil || len(problems) != 0 {
+		t.Fatalf("validate: %v %v", err, problems)
+	}
+}
+
 func TestTierFilterNoMatch(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "r.json")
 	_, err := Run(context.Background(), Config{
