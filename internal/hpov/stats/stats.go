@@ -225,8 +225,21 @@ func bootstrapCI(values []float64, seed int64, resamples, block int, blocked boo
 // medians (cur - base). Paired uses pair differences (interleaved
 // A/B); unpaired resamples both sides independently.
 func DifferenceCI50(base, cur []float64, paired bool, seed int64) (lo, hi float64) {
+	return differencePercentileCI(base, cur, 50, paired, seed)
+}
+
+// DifferencePercentileCI is DifferenceCI50 for an arbitrary percentile:
+// the 95% bootstrap CI of cur(pct) - base(pct). It exists because a tail
+// verdict needs the same evidence rule as the median — a threshold alone
+// on p95 fires on noise at every n.
+func DifferencePercentileCI(base, cur []float64, pct float64, paired bool, seed int64) (lo, hi float64) {
+	return differencePercentileCI(base, cur, pct, paired, seed)
+}
+
+func differencePercentileCI(base, cur []float64, pct float64, paired bool, seed int64) (lo, hi float64) {
 	const resamples = 5000
 	rng := rand.New(rand.NewPCG(uint64(seed), uint64(seed>>32|1)))
+	meds := make([]float64, resamples)
 	if paired {
 		n := len(base)
 		if len(cur) < n {
@@ -239,7 +252,6 @@ func DifferenceCI50(base, cur []float64, paired bool, seed int64) (lo, hi float6
 		for i := range d {
 			d[i] = cur[i] - base[i]
 		}
-		meds := make([]float64, resamples)
 		buf := make([]float64, n)
 		for r := 0; r < resamples; r++ {
 			for i := range buf {
@@ -247,7 +259,7 @@ func DifferenceCI50(base, cur []float64, paired bool, seed int64) (lo, hi float6
 			}
 			tmp := append([]float64(nil), buf...)
 			sort.Float64s(tmp)
-			meds[r] = Median(tmp)
+			meds[r] = NearestRank(tmp, pct)
 		}
 		sort.Float64s(meds)
 		return NearestRank(meds, 2.5), NearestRank(meds, 97.5)
@@ -256,7 +268,6 @@ func DifferenceCI50(base, cur []float64, paired bool, seed int64) (lo, hi float6
 	if nb == 0 || nc == 0 {
 		return math.NaN(), math.NaN()
 	}
-	meds := make([]float64, resamples)
 	bb := make([]float64, nb)
 	cc := make([]float64, nc)
 	for r := 0; r < resamples; r++ {
@@ -270,7 +281,7 @@ func DifferenceCI50(base, cur []float64, paired bool, seed int64) (lo, hi float6
 		tc := append([]float64(nil), cc...)
 		sort.Float64s(tb)
 		sort.Float64s(tc)
-		meds[r] = Median(tc) - Median(tb)
+		meds[r] = NearestRank(tc, pct) - NearestRank(tb, pct)
 	}
 	sort.Float64s(meds)
 	return NearestRank(meds, 2.5), NearestRank(meds, 97.5)
