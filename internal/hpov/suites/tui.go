@@ -307,6 +307,19 @@ func missingReason(tl markers.Timeline, ev string) string {
 // The reader goroutine keeps draining to EOF after the main loop
 // stops consuming, so a child can never stall on a full buffer.
 func collectTimeline(src *os.File, timeout time.Duration, nbytes *atomic.Int64) (lines []markers.StampedLine, eof, timedOut bool, readErr error) {
+	return collectTimelineHooked(src, timeout, nbytes, nil)
+}
+
+// collectTimelineHooked is collectTimeline with an optional callback
+// invoked the instant a marker is observed, on the collector's
+// goroutine, before any further reading.
+//
+// It exists so another suite can act at a marker without duplicating
+// the pty, marker parsing, or teardown machinery: mem.tui.ready-rss
+// samples process memory in this callback. The callback runs inline,
+// so its own cost delays the next read; the measured lag is recorded
+// as metadata rather than hidden.
+func collectTimelineHooked(src *os.File, timeout time.Duration, nbytes *atomic.Int64, onMark func(ev string, at time.Time)) (lines []markers.StampedLine, eof, timedOut bool, readErr error) {
 	lineCh := make(chan markers.StampedLine, 64)
 	errCh := make(chan error, 1)
 	go func() {
@@ -356,8 +369,12 @@ func collectTimeline(src *os.File, timeout time.Duration, nbytes *atomic.Int64) 
 				return lines, true, false, drainErr()
 			}
 			lines = append(lines, l)
-			if ev, ok := markers.Event(l.Text); ok {
+			ev, isMark := markers.Event(l.Text)
+			if isMark {
 				have[ev] = true
+				if onMark != nil {
+					onMark(ev, l.At)
+				}
 			}
 			if have[tuiPrimaryMark] && tailC == nil {
 				tailC = time.After(DefaultTUITail)

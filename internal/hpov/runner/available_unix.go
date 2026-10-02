@@ -2,7 +2,10 @@
 
 package runner
 
-import "os"
+import (
+	"os"
+	"runtime"
+)
 
 // havePTY reports /dev/ptmx availability for the openpty path.
 func havePTY() bool {
@@ -13,3 +16,7 @@ func havePTY() bool {
 	_ = f.Close()
 	return true
 }
+
+// haveMemory reports OS memory-measurement availability. Linux exposes
+// VmRSS/VmHWM in /proc; macOS exposes resident size through kern.proc.
+func haveMemory() bool { return runtime.GOOS == "linux" || runtime.GOOS == "darwin" }

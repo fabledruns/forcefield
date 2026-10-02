@@ -40,6 +40,17 @@ type Options struct {
 	CaptureStdout bool
 	CaptureStderr bool
 	Timeout       time.Duration // 0 = DefaultTimeout
+	// SampleInterval enables polling of the child's pid while it runs,
+	// calling Sample once per interval. It exists for quantities the OS
+	// does not track per process (a process-tree total), which cannot be
+	// derived from the root's own peak after exit.
+	//
+	// Zero disables polling: the default, because a benchmark that only
+	// needs the kernel-tracked peak must not pay for sampling.
+	SampleInterval time.Duration
+	// Sample receives the live pid. It runs on the sampler's goroutine,
+	// so it must be cheap and safe for concurrent use.
+	Sample func(pid int)
 }
 
 // Result is one spawn's measurement.
@@ -163,6 +174,27 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 	tr := trackStart(cmd)
 
+	// Sampling runs for the whole process lifetime, so a peak between
+	// spawn and exit is captured. Stopped by a channel closed as soon as
+	// the wait below finishes, which also bounds the last sample's
+	// staleness to one interval.
+	stopSample := make(chan struct{})
+	if opts.Sample != nil && opts.SampleInterval > 0 {
+		pid := cmd.Process.Pid
+		go func() {
+			t := time.NewTicker(opts.SampleInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-stopSample:
+					return
+				case <-t.C:
+					opts.Sample(pid)
+				}
+			}
+		}()
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	waitCh := make(chan error, 1)
@@ -175,12 +207,14 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			res.TimedOut = true
 		} else {
+			close(stopSample)
 			finishTrack(cmd, tr, cmd.ProcessState, &res)
 			wg.Wait()
 			fillCaptured(&res, outBuf, errBuf)
 			return res, fmt.Errorf("spawn: aborted: %w", ctx.Err())
 		}
 	}
+	close(stopSample)
 	tExit := time.Now()
 
 	finishTrack(cmd, tr, cmd.ProcessState, &res)

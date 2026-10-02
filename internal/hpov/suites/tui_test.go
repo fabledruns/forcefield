@@ -16,15 +16,17 @@ import (
 // it emits the required marker set to stderr (never touching the
 // pty), selected by HPOV_TUI_MODE:
 //
-//	full          all marks, then clean exit 0 (simulates /exit quit)
-//	no-ready      everything except first-useful-frame, then sleep
-//	no-stage-tools  all marks except stage-tools, then clean exit 0
-//	ignore-quit   all marks, then sleep through the quit grace
+// full               all marks, then clean exit 0 (simulates /exit quit)
+// no-ready           everything except first-useful-frame, then sleep
+// no-stage-tools     all marks except stage-tools, then clean exit 0
+// ignore-quit        all marks, then sleep through the quit grace
+// no-memory-fields   all marks without alloc=/sys= fields
 func tuiFakeMain() int {
 	mode := os.Getenv("HPOV_TUI_MODE")
+	withMem := mode != "no-memory-fields"
 	emit := func(ev string) {
 		line := "ff-perf " + ev
-		if ev == "first-frame" || ev == "runtime-ready" || ev == "first-useful-frame" {
+		if withMem && (ev == "first-frame" || ev == "runtime-ready" || ev == tuiPrimaryMark) {
 			line += " alloc=1000 sys=2000"
 		}
 		_, _ = os.Stderr.WriteString(line + "\n")

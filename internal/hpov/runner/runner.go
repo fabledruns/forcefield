@@ -60,6 +60,7 @@ func Available() map[string]bool {
 	have["rg"] = lookOK("rg")
 	have["pty"] = havePTY()
 	have["markers"] = true // parse capability; subject support is probed
+	have["memory"] = haveMemory()
 	return have
 }
 

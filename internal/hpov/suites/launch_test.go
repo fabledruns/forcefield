@@ -115,8 +115,9 @@ func testRunEnv(t *testing.T) *bench.RunEnv {
 
 func TestLaunchRegistration(t *testing.T) {
 	all := All()
-	if len(all) != 6 {
-		t.Fatalf("registered = %d, want 6", len(all))
+	// 5 launch + 1 TUI timeline + 3 memory benchmarks.
+	if want := len(LaunchIDs) + 1 + len(MemBenchmarkIDs); len(all) != want {
+		t.Fatalf("registered = %d, want %d", len(all), want)
 	}
 	seen := map[string]int{}
 	kinds := map[string]string{}
