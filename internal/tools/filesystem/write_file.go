@@ -50,7 +50,7 @@ func (WriteFile) InputSchema() map[string]any {
 	}
 }
 
-func (w WriteFile) Execute(ctx context.Context, args map[string]any) (tools.Result, error) {
+func (w WriteFile) Execute(ctx context.Context, args map[string]any) (res tools.Result, retErr error) {
 	path, err := tools.StringArg(args, "path")
 	if err != nil {
 		return tools.Result{}, err
@@ -118,7 +118,11 @@ func (w WriteFile) Execute(ctx context.Context, args map[string]any) (tools.Resu
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil && retErr == nil && !res.IsError {
+			res = tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, closeErr)}
+		}
+	}()
 	info, err := f.Stat()
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
@@ -141,7 +145,8 @@ func (w WriteFile) Execute(ctx context.Context, args map[string]any) (tools.Resu
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot write %s: %v", path, err)}, nil
 	}
 
-	return tools.Result{Content: fmt.Sprintf("wrote %d bytes to %s", len(content), path)}, nil
+	res = tools.Result{Content: fmt.Sprintf("wrote %d bytes to %s", len(content), path)}
+	return res, nil
 }
 
 // CheckBoundary implements tools.BoundaryChecker: it dry-runs the
