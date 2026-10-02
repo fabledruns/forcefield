@@ -15,7 +15,10 @@ limitations under the License.
 */
 package main
 
-import "forcefield/cmd"
+import (
+	"forcefield/cmd"
+	"forcefield/internal/perfmark"
+)
 
 // Version is set at build time via ldflags for backwards compatibility
 // with Makefile's -X main.Version. Prefer forcefield/cmd.Version, but keep
@@ -23,6 +26,10 @@ import "forcefield/cmd"
 var Version = "dev"
 
 func main() {
+	// First observable marker: process + Go runtime + package init
+	// are done; cobra dispatch follows. Env-gated (perfmark): no
+	// output unless FF_PERF_MARKERS is set.
+	perfmark.Event("main-entry")
 	if Version != "dev" && cmd.Version == "dev" {
 		cmd.Version = Version
 	}

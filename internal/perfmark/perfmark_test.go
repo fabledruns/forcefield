@@ -55,3 +55,85 @@ func TestFormat(t *testing.T) {
 		t.Fatalf("Format = %q", got)
 	}
 }
+
+func TestDisabledWritesNothing(t *testing.T) {
+	old := enabled
+	enabled = false
+	defer func() { enabled = old }()
+	var buf bytes.Buffer
+	restore := swapOutput(&buf)
+	defer restore()
+	Event("main-entry")
+	EventMem("first-frame")
+	if buf.Len() != 0 {
+		t.Fatalf("disabled markers wrote %q", buf.String())
+	}
+}
+
+func TestTimestampMode(t *testing.T) {
+	oldE, oldT := enabled, tsMode
+	enabled, tsMode = true, true
+	defer func() { enabled, tsMode = oldE, oldT }()
+	var buf bytes.Buffer
+	restore := swapOutput(&buf)
+	defer restore()
+	Event("main-entry")
+	line := buf.String()
+	if !strings.HasPrefix(line, "ff-perf main-entry t=") || !strings.HasSuffix(line, "\n") {
+		t.Fatalf("ts Event wrote %q", line)
+	}
+	ts := strings.TrimSuffix(strings.TrimPrefix(line, "ff-perf main-entry t="), "\n")
+	if ts == "" || ts[0] == '-' {
+		t.Fatalf("ts field missing/non-monotonic: %q", line)
+	}
+	for _, c := range ts {
+		if c < '0' || c > '9' {
+			t.Fatalf("ts field not numeric: %q", line)
+		}
+	}
+	buf.Reset()
+	EventMem("runtime-ready")
+	got := buf.String()
+	if !strings.HasPrefix(got, "ff-perf runtime-ready t=") ||
+		!strings.Contains(got, " alloc=") || !strings.Contains(got, " sys=") {
+		t.Fatalf("ts EventMem wrote %q", got)
+	}
+}
+
+func TestDefaultFormatUnchangedInTSMode(t *testing.T) {
+	// Format itself never gains a t= field: only the ts emission
+	// path uses formatTS, so default output stays byte-compatible.
+	if got := Format("config-loaded", 0, 0); got != "ff-perf config-loaded\n" {
+		t.Fatalf("Format = %q", got)
+	}
+}
+
+func TestFormatTSNonNegative(t *testing.T) {
+	got := formatTS("x", 0, 0)
+	if !strings.HasPrefix(got, "ff-perf x t=") {
+		t.Fatalf("formatTS = %q", got)
+	}
+}
+
+// BenchmarkEventDisabled measures the normal-path cost: one branch,
+// no output, no allocs.
+func BenchmarkEventDisabled(b *testing.B) {
+	old := enabled
+	enabled = false
+	defer func() { enabled = old }()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		Event("bench-probe")
+	}
+}
+
+// BenchmarkEventMemDisabled measures the EventMem normal-path cost.
+func BenchmarkEventMemDisabled(b *testing.B) {
+	old := enabled
+	enabled = false
+	defer func() { enabled = old }()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		EventMem("bench-probe")
+	}
+}

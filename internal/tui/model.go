@@ -30,6 +30,15 @@ import (
 // a benchmark measures one TUI run per process.
 var firstFrameMarked atomic.Bool
 
+// firstUsefulFrameMarked fires the first-useful-frame startup marker
+// exactly once per process: the first View with m.ready true, i.e.
+// after the first WindowSizeMsg installed real dimensions. The
+// initial View renders before that message (bubbletea draws once
+// before handling resize), so first-frame can represent the
+// "Starting Forcefield…" placeholder; first-useful-frame is the
+// first frame that renders real content.
+var firstUsefulFrameMarked atomic.Bool
+
 // minTranscriptHeight is the smallest the scrollable transcript area is
 // ever allowed to shrink to, so a very short terminal window still shows
 // something usable instead of a zero-height viewport.
@@ -1674,6 +1683,12 @@ func (m model) View() string {
 	}
 	if !m.ready {
 		return "Starting Forcefield…\n"
+	}
+	// First frame with real dimensions and content: WindowSizeMsg has
+	// arrived (m.ready) and this is not the startup placeholder.
+	// first-frame above is left untouched for continuity.
+	if firstUsefulFrameMarked.CompareAndSwap(false, true) {
+		perfmark.EventMem("first-useful-frame")
 	}
 
 	if m.picker != nil {

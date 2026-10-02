@@ -135,6 +135,11 @@ func New() (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+	// The configuration is loaded and usable here. Headless startup
+	// paths (ff run) build through New; the TUI path loads config in
+	// tui.Start and emits its own config-loaded there, so each
+	// process emits this marker at most once per path.
+	perfmark.Event("config-loaded")
 	return NewFromConfig(cfg)
 }
 
@@ -151,6 +156,10 @@ func NewFromConfig(cfg *config.Config) (*Runtime, error) {
 }
 
 func newRuntime(cfg *config.Config) (*Runtime, error) {
+	// Runtime construction starts here on every path (headless via
+	// New, interactive via NewFromConfig). The TUI builds it on a
+	// background goroutine while the first frame renders.
+	perfmark.Event("runtime-init-start")
 	forcefieldHome, err := config.Dir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve forcefield home: %w", err)
