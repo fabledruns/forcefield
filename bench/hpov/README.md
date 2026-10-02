@@ -37,6 +37,29 @@ Same-machine A/B with paired statistics:
 
 Full flag reference: `docs/HPOV.md` §7, or run `hpov` with no arguments.
 
+Full flag reference: `docs/HPOV.md` §7, or run `hpov` with no arguments.
+
+## A/A calibration campaigns
+
+```bash
+./bin/hpov calibrate --ff aa=./bin/ff --profile standard --repeats 20 --out results/aa-campaign
+```
+
+Measures the same binary against itself, repeatedly, and reports how often the
+comparison claims something when there is nothing to claim. It writes each
+trial's `hpov.result` and `hpov.compare` (existing formats, still the source of
+truth) plus one `calibration.json` (`hpov.calibration` v1, schema in
+[`schema/hpov-calibration.v1.schema.json`](schema/hpov-calibration.v1.schema.json)).
+Re-derive the report later without re-measuring:
+
+```bash
+./bin/hpov calibrate --report results/aa-campaign/calibration.json
+```
+
+It measures only. It never changes a threshold, never selects gating metrics
+and never fails a build. Methodology and how to read the numbers:
+`docs/HPOV.md` §14.
+
 ## What you get
 
 - `hpov.result` documents with raw samples, derived statistics, host

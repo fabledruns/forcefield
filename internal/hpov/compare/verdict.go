@@ -12,6 +12,12 @@ import (
 // multiple-comparison correction (plan §10.3: p < 0.01).
 const familyAlpha = 0.01
 
+// FamilyAlpha reports the per-test significance level the engine applies
+// before Holm correction. It is exported so tooling that describes a
+// decision — a calibration campaign, a report — can name the rule the
+// engine actually used instead of restating the number.
+func FamilyAlpha() float64 { return familyAlpha }
+
 // minNPerSide is the smallest n for which the Mann-Whitney test is
 // used at all (plan §10.3: needs n >= 8 per side). Below it the test
 // reports no evidence rather than a weakly significant p.

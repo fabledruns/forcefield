@@ -25,6 +25,7 @@ mentions HPOV links here.
 11. [What HPOV does not claim](#11-what-hpov-does-not-claim)
 12. [Developer quickstart](#12-developer-quickstart)
 13. [Known deviations from the design plan](#13-known-deviations-from-the-design-plan)
+14. [A/A calibration campaign](#14-aa-calibration-campaign)
 
 ---
 
@@ -35,17 +36,18 @@ industry-standard benchmark. There is no leaderboard, no cross-vendor ranking,
 and no published result corpus other than what you produce on your own
 hardware.
 
-It does four distinct things, and keeping them separate matters when reading
+It does five distinct things, and keeping them separate matters when reading
 any output:
 
 | Stage | What happens | Where it shows up |
 | --- | --- | --- |
 | **Measurement** | Run a defined workload N times, record every raw sample, the environment, and the quality signals. | `hpov run` → `hpov.result` |
 | **Comparison** | Decide, per metric, whether a candidate moved relative to a baseline, using stated statistical and practical rules. | `hpov compare`, `hpov compare-live` → `hpov.compare` |
+| **Calibration** | Measure how often the comparison claims something about identical inputs, before anyone trusts it with a gate. | `hpov calibrate` → `hpov.calibration` ([§14](#14-aa-calibration-campaign)) |
 | **Interpretation** | A human reads the verdicts, the coverage section, the quality flags and the limitations before drawing any conclusion. | `hpov show`, `hpov compare` output |
 | **CI gating (not in v1)** | Automatically failing a build on a regression. | **Not implemented.** See [§11](#11-what-hpov-does-not-claim). |
 
-HPOV v1 ships the first three. It deliberately does **not** ship gating: no
+HPOV v1 ships the first four. It deliberately does **not** ship gating: no
 CI integration, no selected "gating metric" list, no `accepted_changes`
 allowlist. `hpov compare` exits 0 on a regression unless you pass
 `--fail-on-regression`, and that flag is yours to add, not HPOV's to impose.
@@ -1056,6 +1058,9 @@ hpov compare-live --base label=path --head label=path [--select GLOB,…]
              [--tier N] [--profile P] [--n N] [--warmup N] [--seed S]
              [--thresholds FILE] [--fail-on-regression] [--explain]
              --out result.json [--comparison-out comparison.json]
+hpov calibrate --ff label=path [--repeats N] [--select GLOB,…] [--tier N]
+             [--profile P] [--n N] [--warmup N] [--seed S]
+             [--thresholds FILE] [--out DIR] [--report calibration.json]
 ```
 
 ### 7.2 `hpov list`
@@ -1176,6 +1181,7 @@ Two versioned document schemas, both strict JSON, both shipped with the tool:
 | --- | --- | --- | --- |
 | `hpov.result` | `1.0.0` | [`bench/hpov/schema/hpov-result.v1.schema.json`](../bench/hpov/schema/hpov-result.v1.schema.json) | `hpov run`, `hpov compare-live` |
 | `hpov.compare` | `1.0.0` | [`bench/hpov/schema/hpov-compare.v1.schema.json`](../bench/hpov/schema/hpov-compare.v1.schema.json) | `hpov compare`, `hpov compare-live` |
+| `hpov.calibration` | `1.0.0` | [`bench/hpov/schema/hpov-calibration.v1.schema.json`](../bench/hpov/schema/hpov-calibration.v1.schema.json) | `hpov calibrate` ([§14](#14-aa-calibration-campaign)) |
 
 `schema_version` follows semver: MAJOR for removed or repurposed fields,
 MINOR for additive changes, PATCH for clarifications. Readers must ignore
@@ -1457,7 +1463,7 @@ knowing:
 | `definitions.json` `compat` entries for equivalent definition changes | not implemented; a `definition_version` difference is `incompatible` and appears in coverage | an intended-but-equivalent change must be read from coverage, not auto-accepted |
 | `accepted.json` accepted-change allowlist | not implemented | an expected regression is still reported; suppress it by bumping `definition_version` or by reading the comparison yourself |
 | `--require ID,…` turns a named missing benchmark into a failure | not implemented; coverage always reports missing benchmarks, never fails | missing benchmarks are visible but not gateable in v1 |
-| Select ≈6 gating metrics; A/A-calibrate thresholds | not done | thresholds are uncalibrated defaults ([§10.2](#102-other-standing-limitations)) |
+| Select ≈6 gating metrics; A/A-calibrate thresholds | A/A measurement tooling exists (`hpov calibrate`, [§14](#14-aa-calibration-campaign)) and one 20-trial campaign has been run on the development host; no threshold was changed and no gating set exists | thresholds remain uncalibrated engineering defaults ([§10.2](#102-other-standing-limitations), [§14.5](#145-what-the-first-campaign-did-and-did-not-establish)) |
 | CI integration | not implemented; no workflow runs HPOV | no automatic regression history |
 | `mcp.*`, `hot.*`, `*.micro` benchmark families | thresholds defined; no benchmarks implemented | those rows of the threshold table are unused |
 | Spawn-floor calibration subtracted from results | never subtracted; start/end drift is reported as a quality signal | numbers include the harness floor, honestly, instead of a corrected figure |
@@ -1477,6 +1483,157 @@ this commit:
 | --- | --- | --- |
 | The poor-quality, quick-profile and `--allow-cross-host` gates were applied only to `regressed`/`improved`, before tail verdicts existed in that code path | A `tail_regressed` could be reported from a `poor` run, and `--allow-cross-host` — documented as degrading *every* verdict — did not degrade tail verdicts, so `--fail-on-regression` could exit 3 on a cross-host comparison | The gates moved into one shared `degradeVerdict` applied to median and tail paths alike |
 | The noise-doubling rule appeared not to cover p95 | no behaviour difference: a noisy metric is already `inconclusive` before the tail path is reached | none needed; the interaction is now stated in the code and covered by `TestNoisyMetricCannotEscapeThroughTheTailPath` |
+
+---
+
+## 14. A/A calibration campaign
+
+### 14.1 What an A/A campaign is for
+
+An A/A campaign measures the same binary against itself, repeatedly, and asks
+one question: **how often does the comparison make a claim when there is
+nothing to claim?**
+
+Any verdict the comparison emits on identical inputs is, by construction, a
+false claim. That makes the A/A behaviour the first thing to measure before
+anyone trusts a regression gate, and the campaign exists to measure it, not to
+quieten it. It does not change thresholds, does not select gating metrics, and
+never fails a build.
+
+The comparison logic is not involved. Every trial is an ordinary interleaved
+run of the one binary under two labels (`aa-base`, `aa-head`), followed by the
+ordinary paired comparison of those two subjects, with the same thresholds,
+quality gates, noise handling and Holm correction a real A/B would use.
+
+### 14.2 Running it
+
+```bash
+make build hpov
+
+./bin/hpov calibrate \
+  --ff aa=./bin/ff \
+  --select "launch.*,mem.headless.peak-rss" \
+  --profile standard \
+  --repeats 20 \
+  --out results/aa-campaign
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--ff aa=PATH` | the single binary measured as both subjects (exactly one) |
+| `--repeats N` | A/A trials to run (default 10) |
+| `--select`, `--exclude`, `--tier` | the usual benchmark selection |
+| `--profile quick\|standard\|full` | iteration plan per trial |
+| `--n`, `--warmup` | override measured and warm-up iterations |
+| `--seed S` | base seed; trial *i* uses `S+i` |
+| `--thresholds FILE` | the table every trial decides against |
+| `--out DIR` | output directory (default `hpov-calibration`) |
+| `--workroot DIR` | fixture root (default OS temp) |
+| `--report FILE` | re-summarize a stored `calibration.json` and exit; measures nothing |
+
+Trial *i* uses `seed+i` so each trial's interleaving order is reproducible
+while the campaign as a whole samples more than one order. Use `--profile
+standard` for anything you intend to act on: the quick profile is directional
+only and would report every trial as `informational`.
+
+Re-derive the report from stored evidence at any time, without re-measuring:
+
+```bash
+./bin/hpov calibrate --report results/aa-campaign/calibration.json
+```
+
+### 14.3 What a campaign writes
+
+| File | Contents |
+| --- | --- |
+| `trial-NN.json` | the trial's `hpov.result` — raw samples, statistics, quality, provenance |
+| `trial-NN-compare.json` | the trial's `hpov.compare` — per-metric verdicts with their evidence |
+| `calibration.json` | the campaign document: `hpov.calibration` v1 |
+
+The per-trial files are the existing formats and remain the source of truth.
+`calibration.json` keeps every trial's every metric decision with the numbers
+that produced it — sample counts, centres, p95s, observed deltas, both
+intervals, both p-values, thresholds, quality, noise flags and the verdict
+reason — so the roll-up can be recomputed and every claim checked against the
+evidence behind it. JSON Schema:
+[`bench/hpov/schema/hpov-calibration.v1.schema.json`](../bench/hpov/schema/hpov-calibration.v1.schema.json).
+
+The A/A identity is verified, not assumed: every trial re-probes both subjects
+and records their content hashes, and the campaign **fails** if a trial ever
+saw two different hashes. A campaign whose two sides were not the same build
+would be measuring something else, and its false-positive rate would be
+meaningless.
+
+### 14.4 How to read the numbers
+
+The campaign counts verdicts and never scores. The accounting rules matter more
+than the headline figure:
+
+| Term | Meaning |
+| --- | --- |
+| **decision** | one metric's verdict in one trial |
+| **quality-rejected decision** | a decision from a trial whose run quality is `poor`. The comparison withholds judgment on such data, so it can be neither a false positive nor a true negative. Counted and shown, excluded from the denominator. |
+| **withheld** | a decision whose verdict is `inconclusive`, `invalid`, `not_comparable`, `incompatible` or `informational`. Nothing was claimed, so it is not a successful non-regression either. |
+| **eligible decision** | everything else — a decision the comparison actually weighed and was free to call a regression. This is the denominator. |
+| **A/A regression** | `regressed` or `tail_regressed` on an eligible decision |
+| **A/A improvement** | `improved` or `tail_improved` on an eligible decision — the same defect in the other direction, reported for the same reason |
+
+`decisions = eligible + quality-rejected + withheld`, and the campaign's own
+tests assert that identity.
+
+Improvements are counted alongside regressions on purpose. Reporting only the
+regression direction would hide half of the engine's tendency to assert
+something, and on the development host the first campaign's only claims were
+improvements (see [§14.5](#145-what-the-first-campaign-did-and-did-not-establish)).
+
+`rate` is omitted entirely when the denominator is zero. A rate over a handful
+of decisions would read as precision the evidence cannot carry.
+
+### 14.5 What the first campaign did and did not establish
+
+One campaign was run on the development host (AMD Ryzen 7 7435HS, Windows 11,
+16 logical CPUs, ~1 ms clock, AC power, `ff` built from the working tree) with
+`--select "launch.*,mem.headless.peak-rss" --profile standard --repeats 20`,
+giving 20 trials × 11 metrics = **220 decisions**, of which **93 were
+eligible**.
+
+**It did not establish a false-positive rate.** It established these
+observations:
+
+| Question | Observation |
+| --- | --- |
+| Any A/A regressions? | **0** of 93 eligible decisions (0 `regressed`, 0 `tail_regressed`) |
+| Any A/A improvement claims? | **2**, both `tail_improved` — 2 of 93 eligible decisions |
+| How much do metrics naturally vary? | median observed movement 0.27–0.79% of the baseline centre; worst single observation 1.85%, against practical thresholds of 10% (`launch.*`) and 5% (`mem.*`) |
+| Does the practical threshold suppress normal noise? | Yes, decisively on this host: `threshold_met` was 0 in every eligible decision. Observed wobble was 5–25× below the bar |
+| Does statistical significance misfire on identical subjects? | Barely on the median: the median CI excluded zero in 3 of 220 decisions and none produced a verdict. On the **p95 path** it fired often — 74 decisions carried tail evidence excluding zero |
+| Which metrics are frequently withheld? | every `cpu_ms` metric: **0 eligible decisions out of 20 trials**, withheld every time by `noisy_effect_below_2x_threshold`. Windows process CPU time quantises, so the distribution is persistently bimodal and the noise rule fires every time. `cpu_ms` is not usable as a gating metric on this host as written |
+| Do quality gates work? | Yes. 5 of 20 trials were `poor`, contributing 55 decisions that were excluded from the denominator rather than scored. None of those trials produced a verdict |
+| Does Holm behave as intended? | No test survived correction in any eligible decision, and none needed withdrawing: no raw p-value reached α, so the correction had nothing to remove on this campaign |
+| Do tail verdicts stay safe? | **This is where the one finding is.** Both A/A claims came from the tail path, on `launch.headless-init.first-run` and `launch.headless-init.steady` `wall_ms`. In each case p50 was unchanged, p95 moved 5–8 ms, and that cleared the 5 ms **absolute floor** because `max(10% × ~45 ms, 5 ms) = 5 ms` — the floor binds, not the percentage. The p95 bootstrap CI excluded zero, so the verdict was emitted exactly as [§6.6](#66-verdicts) specifies. The tail path has no p-value gate and no Holm correction: only the threshold plus the p95 interval |
+
+The tail finding is a documented sensitivity observation, **not** a bug and
+**not** something this milestone changed. What it suggests is that the tail path
+is the loosest path in the comparison and the one most worth measuring again: a
+candidate change would be to require a larger n for tail claims, or to require
+the median evidence to agree. That decision needs its own campaign; changing a
+threshold on one 20-trial run would be exactly the over-fitting this milestone
+exists to avoid.
+
+### 14.6 Interpreting a result you did not expect
+
+- **A regression on identical subjects** is a genuine false positive. Check the
+  trial's `quality_rejected`, its quality label, and that the two subject hashes
+  matched, before counting it.
+- **All-inconclusive** means the machine was too noisy or the samples too few
+  for the comparison to decide. That is the quality gate working, and the
+  campaign records it rather than hiding it.
+- **One campaign is not a rate.** The plan's own target is ≤ 1% false positives
+  over ≥ 100 independent A/A comparisons per benchmark per host class. One
+  campaign of 20 trials over 11 metrics on one host is a first look.
+- **Thresholds stay as they are.** Nothing in this milestone recalibrates a
+  threshold, and the campaign document says so in its `conclusion` field so a
+  copied-out report keeps the caveat.
 
 ---
 

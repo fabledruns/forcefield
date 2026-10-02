@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"testing"
 
 	"forcefield/internal/hpov/compare"
@@ -72,5 +73,35 @@ func TestCompareUsageErrors(t *testing.T) {
 	}
 	if got := run([]string{"compare-live"}); got != exitUsage {
 		t.Errorf("compare-live without --out exit = %d, want %d", got, exitUsage)
+	}
+}
+
+// An A/A campaign measures one binary as both subjects, so it takes
+// exactly one --ff. Zero or two would make the two sides different
+// things and quietly turn a calibration campaign into an A/B one.
+func TestCalibrateRequiresExactlyOneSubject(t *testing.T) {
+	if got := run([]string{"calibrate"}); got != exitUsage {
+		t.Errorf("calibrate without --ff exit = %d, want %d", got, exitUsage)
+	}
+	dir := t.TempDir()
+	a := dir + string(filepath.Separator) + "a"
+	b := dir + string(filepath.Separator) + "b"
+	if got := run([]string{"calibrate", "--ff", "a=" + a, "--ff", "b=" + b,
+		"--repeats", "1", "--out", dir}); got != exitUsage {
+		t.Errorf("calibrate with two subjects exit = %d, want %d", got, exitUsage)
+	}
+	if got := run([]string{"calibrate", "--ff", "aa=" + a}); got != exitBench {
+		t.Errorf("calibrate with a missing binary exit = %d, want %d", got, exitBench)
+	}
+}
+
+// calibrate is a report about observed behaviour, so it never gates: an
+// A/A regression is a finding to read, not a build failure. The exit
+// code for a successful campaign is 0 regardless of what it found.
+func TestCalibrateDoesNotGateOnVerdicts(t *testing.T) {
+	if compareExit(&compare.Comparison{Metrics: []compare.Metric{
+		{Verdict: compare.VerdictRegressed},
+	}}, compare.Options{}) != exitOK {
+		t.Error("compare without --fail-on-regression must exit 0")
 	}
 }

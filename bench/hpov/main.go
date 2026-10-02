@@ -24,11 +24,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 
 	"forcefield/internal/hpov/bench"
+	"forcefield/internal/hpov/calibrate"
 	"forcefield/internal/hpov/compare"
 	"forcefield/internal/hpov/envinfo"
 	"forcefield/internal/hpov/report"
@@ -78,6 +80,8 @@ func run(args []string) int {
 		return cmdCompare(args[1:])
 	case "compare-live":
 		return cmdCompareLive(args[1:], all)
+	case "calibrate":
+		return cmdCalibrate(args[1:], all)
 	default:
 		fmt.Fprintf(os.Stderr, "hpov: unknown command %q\n", args[0])
 		usage()
@@ -111,6 +115,9 @@ func usage() {
                [--tier N] [--profile P] [--n N] [--warmup N] [--seed S]
                [--thresholds FILE] [--fail-on-regression] [--explain]
                --out result.json [--comparison-out comparison.json]
+  hpov calibrate --ff path [--repeats N] [--select GLOB,...] [--tier N]
+               [--profile P] [--n N] [--warmup N] [--seed S]
+               [--thresholds FILE] [--out DIR]
 `)
 }
 
@@ -462,6 +469,88 @@ func compareOptions(thresholdPath string, failOnRegression, allowCrossHost, expl
 		AllowCrossHost:   allowCrossHost,
 		Explain:          explain,
 	}, nil
+}
+
+// cmdCalibrate runs an A/A campaign: the same binary measured as both
+// subjects, repeated, and every trial decided by the ordinary
+// comparison. It reports what it observed; it never changes a threshold
+// and never exits on a verdict, because an A/A regression is a finding
+// to read, not a build failure.
+func cmdCalibrate(args []string, all []bench.Benchmark) int {
+	fs := flag.NewFlagSet("calibrate", flag.ContinueOnError)
+	var subjects ffList
+	fs.Var(&subjects, "ff", "the single binary measured as both subjects (exactly one)")
+	selectS := fs.String("select", "", "comma-separated ID globs")
+	tier := fs.Int("tier", 1, "tier to run (-1 = all)")
+	profile := fs.String("profile", "standard", "quick|standard|full")
+	n := fs.Int("n", 0, "override measured iterations (0 = plan)")
+	warmup := fs.Int("warmup", -1, "override warm-up iterations (-1 = plan)")
+	repeats := fs.Int("repeats", 10, "A/A trials to run")
+	seed := fs.Int64("seed", 424242, "base run seed (trial i uses seed+i)")
+	source := fs.String("source", "local-build", "subject provenance release|local-build")
+	thresholds := fs.String("thresholds", "", "threshold table (default: the plan's §10.3 values)")
+	outDir := fs.String("out", "hpov-calibration", "output directory for trials and the report")
+	workroot := fs.String("workroot", "", "filesystem root for fixtures (default os temp)")
+	reReport := fs.String("report", "", "re-summarize an existing calibration.json and exit (no measurement)")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	// Re-reading stored evidence is how a report is regenerated without
+	// re-measuring: the trials in the document are the source of truth.
+	if *reReport != "" {
+		campaign, err := calibrate.Read(*reReport)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hpov calibrate: %v\n", err)
+			return exitBench
+		}
+		calibrate.Resummarize(campaign)
+		fmt.Print(calibrate.Render(campaign))
+		return exitOK
+	}
+	if len(subjects) != 1 {
+		fmt.Fprintln(os.Stderr, "hpov calibrate: A/A needs exactly one --ff label=path (it is measured as both subjects)")
+		return exitUsage
+	}
+	tbl, err := compare.LoadThresholdFile(*thresholds)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hpov calibrate: %v\n", err)
+		return exitUsage
+	}
+	cfg := calibrate.Config{
+		Benchmarks:  all,
+		SubjectPath: subjects[0].Path,
+		Source:      *source,
+		Select:      splitList(*selectS),
+		Tier:        *tier,
+		Profile:     *profile,
+		Repeats:     *repeats,
+		SeedBase:    *seed,
+		OutDir:      *outDir,
+		WorkRoot:    *workroot,
+		CommandLine: os.Args,
+		Thresholds:  tbl,
+	}
+	if *n > 0 {
+		n := *n
+		cfg.N = &n
+	}
+	if *warmup >= 0 {
+		w := *warmup
+		cfg.Warmup = &w
+	}
+	campaign, err := calibrate.Run(context.Background(), cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hpov calibrate: %v\n", err)
+		return exitBench
+	}
+	path := filepath.Join(*outDir, "calibration.json")
+	if err := campaign.Write(path); err != nil {
+		fmt.Fprintf(os.Stderr, "hpov calibrate: write %s: %v\n", path, err)
+		return exitBench
+	}
+	fmt.Print(calibrate.Render(campaign))
+	fmt.Printf("wrote %s\n", path)
+	return exitOK
 }
 
 // compareExit maps verdicts onto the documented exit codes. Only an
