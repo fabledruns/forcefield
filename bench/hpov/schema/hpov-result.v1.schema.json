@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forcefield.local/hpov/schema/hpov-result.v1.schema.json",
+  "title": "hpov.result v1",
+  "description": "HPOV benchmark result document. Readers must ignore unknown fields; minor additions do not bump major.",
+  "type": "object",
+  "required": ["schema", "schema_version", "suite", "run", "subjects", "host", "environment", "benchmarks"],
+  "properties": {
+    "schema": { "const": "hpov.result" },
+    "schema_version": { "type": "string", "pattern": "^1\\." },
+    "suite": {
+      "type": "object",
+      "required": ["name", "version", "profile", "definition_set"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "profile": { "enum": ["quick", "standard", "full"] },
+        "definition_set": { "type": "string" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["id", "started_at", "finished_at", "command_line", "seed", "quantile_method", "bootstrap", "quality"],
+      "properties": {
+        "id": { "type": "string" },
+        "started_at": { "type": "string" },
+        "finished_at": { "type": "string" },
+        "command_line": { "type": "array", "items": { "type": "string" } },
+        "seed": { "type": "integer" },
+        "quantile_method": { "const": "nearest-rank" },
+        "bootstrap": {
+          "type": "object",
+          "required": ["resamples", "seed", "method"],
+          "properties": {
+            "resamples": { "type": "integer" },
+            "seed": { "type": "integer" },
+            "method": { "type": "string" }
+          }
+        },
+        "quality": {
+          "type": "object",
+          "required": ["label"],
+          "properties": {
+            "label": { "enum": ["good", "degraded", "poor"] },
+            "flags": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "subjects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "product", "binary"],
+        "properties": {
+          "label": { "type": "string" },
+          "product": { "type": "string" },
+          "version": { "type": "string" },
+          "git_commit": { "type": "string" },
+          "git_dirty": { "type": "boolean" },
+          "binary": {
+            "type": "object",
+            "required": ["basename", "sha256", "size_bytes", "source"],
+            "properties": {
+              "basename": { "type": "string" },
+              "sha256": { "type": "string" },
+              "size_bytes": { "type": "integer" },
+              "source": { "enum": ["release", "local-build"] },
+              "go_version": { "type": "string" },
+              "goos": { "type": "string" },
+              "goarch": { "type": "string" },
+              "vcs_revision": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "host": {
+      "type": "object",
+      "required": ["host_id", "os", "arch", "env", "cpu", "gomaxprocs", "power", "clock", "fs", "tools", "hpov_go_version"],
+      "properties": {
+        "host_id": { "type": "string" },
+        "os": { "type": "string" },
+        "os_version": { "type": "string" },
+        "arch": { "type": "string" },
+        "env": { "enum": ["native", "wsl2", "vm", "ci", "unknown"] },
+        "cpu": {
+          "type": "object",
+          "required": ["logical"],
+          "properties": {
+            "model": { "type": "string" },
+            "logical": { "type": "integer" },
+            "physical": { "type": "integer" }
+          }
+        },
+        "memory_total_bytes": { "type": "integer" },
+        "gomaxprocs": { "type": "integer" },
+        "power": {
+          "type": "object",
+          "properties": { "source": { "type": "string" }, "plan": { "type": "string" } }
+        },
+        "clock": {
+          "type": "object",
+          "required": ["source", "resolution_ns"],
+          "properties": { "source": { "type": "string" }, "resolution_ns": { "type": "integer" } }
+        },
+        "fs": { "type": "object", "properties": { "workroot": { "type": "string" } } },
+        "tools": {
+          "type": "object",
+          "properties": {
+            "git": { "type": ["string", "null"] },
+            "rg": { "type": ["string", "null"] },
+            "go": { "type": ["string", "null"] }
+          }
+        },
+        "hpov_go_version": { "type": "string" }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["home_isolated", "stdin", "markers_wall_pass", "env_overrides", "calibration", "quality"],
+      "properties": {
+        "home_isolated": { "type": "boolean" },
+        "stdin": { "type": "string" },
+        "markers_wall_pass": { "type": "string" },
+        "env_overrides": {
+          "type": "object",
+          "properties": {
+            "removed": { "type": "array", "items": { "type": "string" } },
+            "set": { "type": "object" }
+          }
+        },
+        "calibration": {
+          "type": "object",
+          "required": ["spawn_floor_ms"],
+          "properties": {
+            "spawn_floor_ms": {
+              "type": "object",
+              "required": ["start", "end"],
+              "properties": {
+                "start": { "$ref": "#/$defs/calibrationPoint" },
+                "end": { "$ref": "#/$defs/calibrationPoint" }
+              }
+            }
+          }
+        },
+        "quality": {
+          "type": "object",
+          "properties": {
+            "idle_cpu_pct": { "type": "number" },
+            "drift_spawn_floor_pct": { "type": "number" },
+            "flags": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "benchmarks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "definition_version", "tier", "kind", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "definition_version": { "type": "integer" },
+          "tier": { "type": "integer" },
+          "kind": { "enum": ["e2e", "micro", "static"] },
+          "status": { "enum": ["ok", "skipped", "unsupported", "invalid", "error"] },
+          "status_detail": { "type": "string" },
+          "subject": { "type": "string" },
+          "params": { "type": "object" },
+          "plan": {
+            "type": "object",
+            "required": ["warmup", "n"],
+            "properties": {
+              "warmup": { "type": "integer" },
+              "n": { "type": "integer" },
+              "interleaved": { "type": "boolean" }
+            }
+          },
+          "validity": {
+            "type": "object",
+            "required": ["predicate"],
+            "properties": {
+              "predicate": { "type": "string" },
+              "probe_pre": { "$ref": "#/$defs/probe" },
+              "probe_post": { "$ref": "#/$defs/probe" }
+            }
+          },
+          "iterations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["i", "phase", "valid", "t_offset_ms"],
+              "properties": {
+                "i": { "type": "integer" },
+                "phase": { "enum": ["warmup", "measure"] },
+                "valid": { "type": "boolean" },
+                "t_offset_ms": { "type": "number" },
+                "attrs": { "type": "object" },
+                "values": { "type": "object" }
+              }
+            }
+          },
+          "metrics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "unit", "direction", "values"],
+              "properties": {
+                "name": { "type": "string" },
+                "unit": { "type": "string" },
+                "direction": { "type": "string" },
+                "platform_semantics": { "type": "string" },
+                "values": { "type": "array", "items": { "type": "number" } },
+                "statistics": { "$ref": "#/$defs/statistics" }
+              }
+            }
+          },
+          "flags": { "type": "array", "items": { "type": "string" } },
+          "warnings": { "type": "array", "items": { "type": "string" } },
+          "error": {
+            "type": "object",
+            "required": ["code", "phase", "message"],
+            "properties": {
+              "code": { "type": "string" },
+              "phase": { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "calibrationPoint": {
+      "type": "object",
+      "required": ["p50", "n"],
+      "properties": {
+        "p50": { "type": "number" },
+        "p95": { "type": "number" },
+        "n": { "type": "integer" }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "checks": { "type": "object" }
+      }
+    },
+    "statistics": {
+      "type": "object",
+      "required": ["n", "valid_n", "min", "p50", "max", "mean", "stdev", "mad", "iqr", "robust_cv", "ci95_p50"],
+      "properties": {
+        "n": { "type": "integer" },
+        "valid_n": { "type": "integer" },
+        "min": { "type": "number" },
+        "p50": { "type": "number" },
+        "p90": { "type": "number" },
+        "p95": { "type": "number" },
+        "p99": { "type": "number" },
+        "max": { "type": "number" },
+        "mean": { "type": "number" },
+        "stdev": { "type": "number" },
+        "mad": { "type": "number" },
+        "iqr": { "type": "number" },
+        "robust_cv": { "type": "number" },
+        "ci95_p50": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "nulls": { "type": "object" }
+      }
+    }
+  }
+}
