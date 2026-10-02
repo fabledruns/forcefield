@@ -9,6 +9,7 @@ package bench
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 // Kind distinguishes end-to-end process benchmarks (release-comparable
@@ -144,6 +145,9 @@ type RunEnv struct {
 type Fixture struct {
 	HomeDir string
 	WorkDir string
+	// Timeout is the per-iteration spawn budget, resolved from the
+	// Spec plan in Setup. Zero means the spawn default.
+	Timeout time.Duration
 }
 
 // Observation is one iteration's raw result. Values maps owned metric
@@ -156,10 +160,12 @@ type Observation struct {
 }
 
 // Benchmark is one HPOV benchmark: untimed setup, one timed
-// iteration, untimed teardown.
+// iteration, untimed teardown. Setup receives the subject because
+// fixtures are per (benchmark, subject): steady-state priming runs
+// the subject binary, and subjects must never share fixture state.
 type Benchmark interface {
 	Spec() Spec
-	Setup(ctx context.Context, env *RunEnv) (Fixture, error)
+	Setup(ctx context.Context, env *RunEnv, subj Subject) (Fixture, error)
 	Iterate(ctx context.Context, fx Fixture, subj Subject, it Iter) (Observation, error)
 	Teardown(ctx context.Context, fx Fixture) error
 }

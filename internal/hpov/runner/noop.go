@@ -46,7 +46,7 @@ func (n *noopBench) Spec() bench.Spec {
 	}
 }
 
-func (n *noopBench) Setup(_ context.Context, _ *bench.RunEnv) (bench.Fixture, error) {
+func (n *noopBench) Setup(_ context.Context, _ *bench.RunEnv, _ bench.Subject) (bench.Fixture, error) {
 	return bench.Fixture{}, nil
 }
 

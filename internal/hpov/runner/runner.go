@@ -151,6 +151,10 @@ func Run(ctx context.Context, cfg Config) (Outcome, error) {
 		},
 	}
 
+	for _, pr := range probed {
+		res.Subjects = append(res.Subjects, pr.Subject)
+	}
+
 	// Spawn-floor calibration brackets the run; it quantifies runner
 	// overhead and drift and is never subtracted.
 	calStart, calWarn := calibrate(ctx, cfg.Seed)
@@ -306,7 +310,7 @@ func runOne(ctx context.Context, b bench.Benchmark, spec bench.Spec, probed []su
 
 	for _, w := range works {
 		emit(map[string]any{"event": "benchmark.start", "id": spec.ID, "subject": w.subj.Label})
-		fx, err := b.Setup(ctx, runEnv)
+		fx, err := b.Setup(ctx, runEnv, w.subj)
 		if err != nil {
 			if se, ok := err.(*bench.SkipError); ok {
 				w.skip = se

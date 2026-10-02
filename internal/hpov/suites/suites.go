@@ -10,5 +10,9 @@ import (
 // All returns every registered benchmark. Launch, TUI, and memory
 // suites register here as they land; tiers and kinds filter at run.
 func All() []bench.Registered {
-	return []bench.Registered{}
+	var out []bench.Registered
+	for _, b := range LaunchBenchmarks() {
+		out = append(out, bench.Registered{Bench: b})
+	}
+	return out
 }

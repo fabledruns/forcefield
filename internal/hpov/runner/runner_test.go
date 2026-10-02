@@ -39,7 +39,7 @@ func (f *recordBench) Spec() bench.Spec {
 	}
 }
 
-func (f *recordBench) Setup(_ context.Context, _ *bench.RunEnv) (bench.Fixture, error) {
+func (f *recordBench) Setup(_ context.Context, _ *bench.RunEnv, _ bench.Subject) (bench.Fixture, error) {
 	return bench.Fixture{}, nil
 }
 
@@ -87,6 +87,15 @@ func runFake(t *testing.T, seed int64) ([]schema.Benchmark, []string) {
 	}
 	if len(oc.Result.Benchmarks) != 2 {
 		t.Fatalf("want 2 entries (one per subject), got %d", len(oc.Result.Benchmarks))
+	}
+	// Subject provenance must be stored at run level.
+	if len(oc.Result.Subjects) != 2 {
+		t.Fatalf("want 2 stored subjects, got %d", len(oc.Result.Subjects))
+	}
+	for _, s := range oc.Result.Subjects {
+		if s.Binary.SHA256 == "" || s.Binary.SizeBytes <= 0 {
+			t.Fatalf("subject %s lacks provenance: %+v", s.Label, s.Binary)
+		}
 	}
 	return oc.Result.Benchmarks, fb.order
 }
