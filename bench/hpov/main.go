@@ -11,6 +11,11 @@
 //	    [--n N] [--warmup N] [--seed S] --out result.json
 //	hpov show [--metric GLOB] result.json
 //	hpov validate result.json
+//	hpov compare baseline.json candidate.json [--fail-on-regression] [--out comparison.json]
+//	hpov compare-live --base label=path --head label=path --out result.json
+//
+// The methodology behind every metric and verdict is documented in
+// docs/HPOV.md; usage() below is the authoritative flag list.
 package main
 
 import (

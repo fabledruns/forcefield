@@ -133,7 +133,7 @@ func Build(base, cand *schema.Result, opt Options, basePath, candPath string) (*
 	c.Method.ThresholdVersion = opt.Thresholds.Version
 	c.Method.DirectionalOnly = opt.profileBase == ProfileQuick || opt.profileCand == ProfileQuick
 	applyHolm(tests, familyAlpha, metrics)
-	annotateTails(metrics, decided)
+	annotateTails(metrics, decided, &opt)
 	tradeOffs := annotateTradeOffs(metrics)
 	c.Metrics = metrics
 	c.TradeOffs = tradeOffs
@@ -208,7 +208,7 @@ func buildSubjects(r *schema.Result, baseLabel, headLabel string, opt Options, p
 	c.Method.ThresholdVersion = opt.Thresholds.Version
 	c.Method.DirectionalOnly = opt.profileBase == ProfileQuick || opt.profileCand == ProfileQuick
 	applyHolm(tests, familyAlpha, metrics)
-	annotateTails(metrics, decided)
+	annotateTails(metrics, decided, &opt)
 	c.TradeOffs = annotateTradeOffs(metrics)
 	c.Metrics = metrics
 	c.Summary = summarise(metrics)

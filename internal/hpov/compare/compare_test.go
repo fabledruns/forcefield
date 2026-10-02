@@ -10,13 +10,9 @@ import (
 	"forcefield/internal/hpov/stats"
 )
 
-// ---------------------------------------------------------------------------
-// Synthetic result builders.
-//
-// The statistical logic is tested against small deterministic datasets:
-// a verdict that only reproduces on a real machine run cannot be trusted
-// to be correct.
-// ---------------------------------------------------------------------------
+// The statistical logic is tested against small deterministic datasets: a
+// verdict that only reproduces on a real machine run cannot be trusted to be
+// correct.
 
 const testSeed = 424242
 
@@ -113,9 +109,7 @@ func only(c *Comparison) Metric {
 	return c.Metrics[0]
 }
 
-// ---------------------------------------------------------------------------
 // Core verdict states
-// ---------------------------------------------------------------------------
 
 func TestIdenticalBaselineCandidate(t *testing.T) {
 	base, cand := mkPair("launch.version", "wall_ms", "ms", "lower_is_better",
@@ -216,9 +210,7 @@ func TestHigherIsBetterDirection(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // The evidence rules, one at a time
-// ---------------------------------------------------------------------------
 
 func TestThresholdBoundary(t *testing.T) {
 	// Exactly at the 10% launch threshold: the rule is ">=", so a change
@@ -304,9 +296,7 @@ func TestBothSignificantAndThresholdCrossing(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Compatibility
-// ---------------------------------------------------------------------------
 
 func TestIncompatibleUnit(t *testing.T) {
 	base, cand := mkPair("launch.version", "wall_ms", "ms", "lower_is_better",
@@ -502,9 +492,7 @@ func TestInvalidBenchmarkStatus(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Quality
-// ---------------------------------------------------------------------------
 
 func TestNoisyMetricNeedsDoubleThreshold(t *testing.T) {
 	// launch.version threshold: 10% of 100ms = 10ms. +15% is 1.5x that:
@@ -613,9 +601,7 @@ func TestQualityFlagsSurviveComparison(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Trade-offs and tails
-// ---------------------------------------------------------------------------
 
 func TestTradeOffAnnotation(t *testing.T) {
 	// One benchmark where latency improves and memory regresses. The
@@ -670,6 +656,85 @@ func TestTailVerdict(t *testing.T) {
 	}
 }
 
+// A tail claim must obey the same weakening gates as a median claim:
+// --allow-cross-host promises that every verdict becomes informational,
+// and a poor run cannot support a claim. A tail verdict that escaped
+// either gate would let --fail-on-regression exit 3 on exactly the data
+// the gates exist to withhold.
+func TestTailVerdictObeysWeakeningGates(t *testing.T) {
+	pair := func() (*schema.Result, *schema.Result) {
+		return mkResult("tui.startup.timeline", "t_runtime_ready", "ms", "lower_is_better",
+				tailSpike(100, 240, 20)),
+			mkResult("tui.startup.timeline", "t_runtime_ready", "ms", "lower_is_better",
+				tailSpike(100, 480, 20))
+	}
+
+	t.Run("cross-host", func(t *testing.T) {
+		base, cand := pair()
+		cand.Host.HostID = "host-2"
+		m := only(comparePair(t, base, cand, Options{AllowCrossHost: true}))
+		if m.Verdict == VerdictTailRegressed {
+			t.Fatalf("a waived host difference must not assert a tail regression: %s (%s)",
+				m.Verdict, m.VerdictReason)
+		}
+		if m.Verdict != VerdictInformational {
+			t.Errorf("verdict = %s, want informational", m.Verdict)
+		}
+	})
+
+	t.Run("poor run quality", func(t *testing.T) {
+		base, cand := pair()
+		cand.Run.Quality.Label = "poor"
+		cand.Run.Quality.Flags = []string{"many_noisy_benchmarks"}
+		m := only(comparePair(t, base, cand, Options{}))
+		if m.Verdict != VerdictInconclusive {
+			t.Fatalf("a poor candidate run must not assert a tail regression: %s (%s)",
+				m.Verdict, m.VerdictReason)
+		}
+		if m.VerdictReason != ReasonPoorRunQuality {
+			t.Errorf("reason = %q, want %q", m.VerdictReason, ReasonPoorRunQuality)
+		}
+	})
+
+	t.Run("quick profile", func(t *testing.T) {
+		base, cand := pair()
+		base.Suite.Profile = ProfileQuick
+		cand.Suite.Profile = ProfileQuick
+		m := only(comparePair(t, base, cand, Options{}))
+		if m.Verdict != VerdictInformational {
+			t.Errorf("verdict = %s, want informational (quick profile is directional only)", m.Verdict)
+		}
+	})
+}
+
+// Noise blocks the tail path too: the p50 gate returns inconclusive for a
+// noisy metric whose centre effect is below 2x threshold, and every effect
+// small enough for the tail path to consider is below that. So a noisy
+// metric can never be reported as a tail verdict by reporting the movement
+// as a tail instead.
+func TestNoisyMetricCannotEscapeThroughTheTailPath(t *testing.T) {
+	base := mkResult("tui.startup.timeline", "t_runtime_ready", "ms", "lower_is_better",
+		tailSpike(100, 240, 20))
+	// The tail more than doubles: without the noise flag this is a tail
+	// regression.
+	cand := mkResult("tui.startup.timeline", "t_runtime_ready", "ms", "lower_is_better",
+		tailSpike(100, 480, 20))
+	clean := only(comparePair(t, base, cand, Options{}))
+	if clean.Verdict != VerdictTailRegressed {
+		t.Fatalf("precondition: clean data = %s, want tail_regressed", clean.Verdict)
+	}
+
+	base.Benchmarks[0].Flags = []string{"noisy:t_runtime_ready"}
+	cand.Benchmarks[0].Flags = []string{"noisy:t_runtime_ready"}
+	m := only(comparePair(t, base, cand, Options{}))
+	if m.Verdict != VerdictInconclusive {
+		t.Fatalf("noisy data = %s, want inconclusive", m.Verdict)
+	}
+	if m.VerdictReason != ReasonNoisyNotDouble {
+		t.Errorf("reason = %q, want %q", m.VerdictReason, ReasonNoisyNotDouble)
+	}
+}
+
 func TestTailNotReportedWhenSampleTooSmall(t *testing.T) {
 	// Below MinNForP95 a p95 shift must not be read as a tail verdict.
 	base := mkResult("tui.startup.timeline", "t_runtime_ready", "ms", "lower_is_better",
@@ -682,9 +747,7 @@ func TestTailNotReportedWhenSampleTooSmall(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Holm correction
-// ---------------------------------------------------------------------------
 
 func TestHolmAdjustmentBasics(t *testing.T) {
 	tests := []testResult{
@@ -803,9 +866,7 @@ func TestHolmWeakensRegressionVerdict(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Determinism and output
-// ---------------------------------------------------------------------------
 
 func TestOutputIsDeterministic(t *testing.T) {
 	base, cand := mkPair("launch.version", "wall_ms", "ms", "lower_is_better",
@@ -874,9 +935,7 @@ func TestMethodIsRecorded(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Threshold table
-// ---------------------------------------------------------------------------
 
 func TestBuiltinThresholdsMatchThePlan(t *testing.T) {
 	tbl := BuiltinThresholds()
@@ -981,9 +1040,7 @@ func TestLoadThresholdFileRejectsBadInput(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Fixtures with more than one metric
-// ---------------------------------------------------------------------------
 
 // f returns a pointer to a copy of v, for the nullable fields a stored
 // document carries.

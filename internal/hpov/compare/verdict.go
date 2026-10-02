@@ -103,16 +103,28 @@ func decide(p MetricPair, th Threshold, opt *Options) (Metric, testResult) {
 	}
 
 	// Quality may only weaken a verdict, never strengthen one.
+	degradeVerdict(&m, opt)
+	if p.Confounded {
+		m.VerdictReason += " | confounded_build: toolchain/flags differ"
+	}
+	return m, tr
+}
+
+// degradeVerdict applies the gates that may only weaken a claim: poor run
+// quality, the quick profile's too-small plan, and an explicitly waived
+// host difference. It is shared by the median and the tail paths so a tail
+// verdict cannot claim what the median path refuses to claim.
+func degradeVerdict(m *Metric, opt *Options) {
 	if opt.qualityBase == "poor" || opt.qualityCand == "poor" {
-		if m.Verdict == VerdictRegressed || m.Verdict == VerdictImproved {
+		switch m.Verdict {
+		case VerdictRegressed, VerdictImproved, VerdictTailRegressed, VerdictTailImproved:
 			m.Verdict = VerdictInconclusive
 			m.VerdictReason = ReasonPoorRunQuality
 		}
 	}
-	// The quick profile is directional only: its plan is too small to
-	// support a verdict, so movement is reported without a claim.
 	if opt.profileBase == ProfileQuick || opt.profileCand == ProfileQuick {
-		if m.Verdict == VerdictRegressed || m.Verdict == VerdictImproved {
+		switch m.Verdict {
+		case VerdictRegressed, VerdictImproved, VerdictTailRegressed, VerdictTailImproved:
 			m.Verdict = VerdictInformational
 			m.VerdictReason = ReasonQuickProfile
 		}
@@ -124,10 +136,6 @@ func decide(p MetricPair, th Threshold, opt *Options) (Metric, testResult) {
 			m.VerdictReason = "cross-host comparison: informational only"
 		}
 	}
-	if p.Confounded {
-		m.VerdictReason += " | confounded_build: toolchain/flags differ"
-	}
-	return m, tr
 }
 
 // signedDelta applies the metric's declared direction: positive always
@@ -229,11 +237,19 @@ func noiseDemandDouble(p MetricPair, m Metric) bool {
 // annotateTails upgrades a p50-unchanged metric to a tail verdict when
 // p95 moved beyond its own threshold. It applies the same evidence rule
 // as the median (plan §10.3): the threshold is relative to the baseline
-// p50, and the bootstrap CI of the p95 difference must exclude zero. A
-// metric whose p95 is not resolvable at its n, or whose tail shift has
-// no interval behind it, stays unchanged rather than implying a tail it
+// p50 and the bootstrap CI of the p95 difference must exclude zero. The
+// weakening gates (poor run quality, quick profile, waived cross-host
+// comparison) are applied afterwards, for the same reason. A metric
+// whose p95 is not resolvable at its n, or whose tail shift has no
+// interval behind it, stays unchanged rather than implying a tail it
 // cannot support.
-func annotateTails(metrics []Metric, pairs []MetricPair) {
+//
+// A noisy metric never reaches this function: verdictOf already returns
+// inconclusive for it whenever the p50 effect is below 2x threshold,
+// which includes every effect small enough for the tail path to consider.
+// So the noise rule cannot be sidestepped by reporting the movement as a
+// tail instead.
+func annotateTails(metrics []Metric, pairs []MetricPair, opt *Options) {
 	byIndex := make(map[int]*MetricPair, len(pairs))
 	for i := range pairs {
 		byIndex[pairs[i].index] = &pairs[i]
@@ -280,11 +296,13 @@ func annotateTails(metrics []Metric, pairs []MetricPair) {
 		switch {
 		case signed > 0:
 			m.Verdict = VerdictTailRegressed
-			m.VerdictReason = "p50 unchanged; p95 beyond threshold with a CI excluding zero"
 		case signed < 0:
 			m.Verdict = VerdictTailImproved
-			m.VerdictReason = "p50 unchanged; p95 beyond threshold with a CI excluding zero"
+		default:
+			continue
 		}
+		m.VerdictReason = "p50 unchanged; p95 beyond threshold with a CI excluding zero"
+		degradeVerdict(m, opt)
 	}
 }
 

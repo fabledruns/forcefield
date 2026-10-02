@@ -37,6 +37,7 @@ Important references:
 - docs/CLI.md
 - docs/Config.md
 - docs/Agent.md
+- docs/HPOV.md (performance benchmarks; only when touching internal/hpov, bench/hpov, or internal/perfmark)
 
 The documentation describes the intended architecture.
 

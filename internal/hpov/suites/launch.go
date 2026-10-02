@@ -178,10 +178,6 @@ func cpuMs(res spawn.Result) float64 {
 	return res.UserMS + res.SysMS
 }
 
-// ---------------------------------------------------------------------------
-// launch.version
-// ---------------------------------------------------------------------------
-
 type versionBench struct{}
 
 func (b *versionBench) Spec() bench.Spec {
@@ -247,10 +243,6 @@ func (b *versionBench) Iterate(ctx context.Context, fx bench.Fixture, subj bench
 
 func (b *versionBench) Teardown(_ context.Context, _ bench.Fixture) error { return nil }
 
-// ---------------------------------------------------------------------------
-// launch.help
-// ---------------------------------------------------------------------------
-
 type helpBench struct{}
 
 func (b *helpBench) Spec() bench.Spec {
@@ -305,10 +297,6 @@ func (b *helpBench) Iterate(ctx context.Context, fx bench.Fixture, subj bench.Su
 }
 
 func (b *helpBench) Teardown(_ context.Context, _ bench.Fixture) error { return nil }
-
-// ---------------------------------------------------------------------------
-// launch.headless-init.{steady,first-run}
-// ---------------------------------------------------------------------------
 
 type headlessBench struct {
 	firstRun bool
@@ -469,10 +457,6 @@ func (b *headlessBench) Probe(ctx context.Context, fx bench.Fixture, subj bench.
 
 func (b *headlessBench) Teardown(_ context.Context, _ bench.Fixture) error { return nil }
 
-// ---------------------------------------------------------------------------
-// launch.artifact-size
-// ---------------------------------------------------------------------------
-
 type artifactSizeBench struct{}
 
 func (b *artifactSizeBench) Spec() bench.Spec {
@@ -520,10 +504,6 @@ func (b *artifactSizeBench) Iterate(_ context.Context, _ bench.Fixture, subj ben
 }
 
 func (b *artifactSizeBench) Teardown(_ context.Context, _ bench.Fixture) error { return nil }
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
 
 // planTimeout resolves the spawn budget for a profile.
 func planTimeout(spec bench.Spec, profile string) time.Duration {

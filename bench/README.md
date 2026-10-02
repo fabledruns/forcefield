@@ -2,6 +2,25 @@
 
 Benchmarking and performance measurements for Forcefield.
 
+## HPOV: the Forcefield benchmark suite
+
+`bench/hpov` is Forcefield's own performance benchmark suite: it measures the
+real `ff` binary (launch, interactive startup, memory), records every raw
+sample, and decides with stated rules whether a candidate moved relative to a
+baseline.
+
+- Methodology: [`docs/HPOV.md`](../docs/HPOV.md)
+- Runner quickstart: [`bench/hpov/README.md`](hpov/README.md)
+
+```bash
+make build hpov
+./bin/hpov list --here --long
+./bin/hpov run --ff head=./bin/ff --profile standard --out results/run.json
+```
+
+The rest of this file documents a separate, earlier cross-harness comparison
+campaign.
+
 ## FF vs Other Harnesses
 
 This benchmark compares Forcefield v1.3.1 with Claude Code 2.1.224, OpenCode 1.18.31, Codex CLI 0.153.4, and Grok CLI 1.0.34 using the same launch-profiling methodology.

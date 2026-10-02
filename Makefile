@@ -1,6 +1,9 @@
 BINARY_NAME=ff
 CMD_PATH=.
 
+HPOV_BINARY=hpov
+HPOV_CMD_PATH=./bench/hpov
+
 VERSION?=dev
 BUILD_DIR=./bin
 LDFLAGS=-s -w -X forcefield/cmd.Version=$(VERSION) -X main.Version=$(VERSION)
@@ -13,13 +16,19 @@ else
 	BINARY_EXT=
 endif
 
-.PHONY: all build run test clean fmt vet cue-check lint install tidy coverage-gate help
+.PHONY: all build hpov run test clean fmt vet cue-check lint install tidy coverage-gate help
 
 all: build
 
 build:
 	@echo "Building $(BINARY_NAME)$(BINARY_EXT)..."
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)$(BINARY_EXT) $(CMD_PATH)
+
+# HPOV is the performance benchmark runner (bench/hpov). Methodology:
+# docs/HPOV.md. It measures the built ff binary, so build that first.
+hpov:
+	@echo "Building $(HPOV_BINARY)$(BINARY_EXT)..."
+	$(GO) build -o $(BUILD_DIR)/$(HPOV_BINARY)$(BINARY_EXT) $(HPOV_CMD_PATH)
 
 run:
 	$(GO) run $(CMD_PATH)
@@ -93,6 +102,7 @@ endif
 help:
 	@echo "Forcefield Make Commands:"
 	@echo "  make build      Build binary"
+	@echo "  make hpov       Build the HPOV benchmark runner (docs/HPOV.md)"
 	@echo "  make run        Run locally"
 	@echo "  make test       Run tests"
 	@echo "  make coverage   Generate coverage"

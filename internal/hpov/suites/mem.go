@@ -78,10 +78,6 @@ func MemoryBenchmarks() []bench.Benchmark {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// mem.headless.peak-rss
-// ---------------------------------------------------------------------------
-
 type memHeadlessBench struct{}
 
 func (b *memHeadlessBench) Spec() bench.Spec {
@@ -280,10 +276,6 @@ func boolAttr(b bool) string {
 	}
 	return "false"
 }
-
-// ---------------------------------------------------------------------------
-// mem.tui.ready-rss
-// ---------------------------------------------------------------------------
 
 // readyRSSSample is the memory reading taken at the readiness boundary.
 type readyRSSSample struct {
@@ -574,10 +566,6 @@ func rootReadReason(s *readyRSSSample) string {
 }
 
 func (b *memReadyRSSBench) Teardown(_ context.Context, _ bench.Fixture) error { return nil }
-
-// ---------------------------------------------------------------------------
-// mem.tui.go-heap
-// ---------------------------------------------------------------------------
 
 // memGoHeapBench reports the Go runtime's own view of memory at the
 // readiness boundary.
