@@ -28,21 +28,25 @@ import (
 
 // Config controls one hpov run.
 type Config struct {
-	Benchmarks    []bench.Benchmark
-	Subjects      []bench.Subject
-	SubjectSource string // "release" | "local-build"
-	Select        []string
-	Exclude       []string
-	Tier          int // negative = all tiers
-	Kind          string
-	Profile       string
-	N             *int
-	Warmup        *int
-	Seed          int64
-	Out           string
-	WorkRoot      string
-	FailFast      bool
-	CommandLine   []string
+	Benchmarks []bench.Benchmark
+	Subjects   []bench.Subject
+	// SubjectProfile describes the workload contract every subject in
+	// this run is measured under. Zero means the zero contract, which
+	// supports only subject-independent benchmarks.
+	SubjectProfile subject.Profile
+	SubjectSource  string // "release" | "local-build"
+	Select         []string
+	Exclude        []string
+	Tier           int // negative = all tiers
+	Kind           string
+	Profile        string
+	N              *int
+	Warmup         *int
+	Seed           int64
+	Out            string
+	WorkRoot       string
+	FailFast       bool
+	CommandLine    []string
 }
 
 // Outcome summarizes a finished run.
@@ -83,8 +87,9 @@ func Run(ctx context.Context, cfg Config) (Outcome, error) {
 		return Outcome{}, fmt.Errorf("no benchmarks selected")
 	}
 	probed := make([]subject.ProbeResult, 0, len(cfg.Subjects))
+	contract := cfg.SubjectProfile.Contract
 	for _, s := range cfg.Subjects {
-		pr, err := subject.Probe(s.Label, s.Path, cfg.SubjectSource)
+		pr, err := subject.Probe(s.Label, s.Path, contract, cfg.SubjectSource)
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -98,7 +103,7 @@ func Run(ctx context.Context, cfg Config) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	_, removed := fixture.ScrubEnv(nil)
+	_, removed := fixture.ScrubEnv(nil, contract.Env)
 
 	runID := newRunID()
 	started := time.Now().UTC()
@@ -122,11 +127,21 @@ func Run(ctx context.Context, cfg Config) (Outcome, error) {
 		_ = pw.WriteByte('\n')
 		_ = pw.Flush()
 	}
-	emit(map[string]any{"event": "run.start", "id": runID, "profile": profile})
+	emit(map[string]any{"event": "run.start", "id": runID, "profile": profile,
+		"subject_profile": cfg.SubjectProfile.Name})
 	defer func() {
 		_ = pw.Flush()
 		_ = pf.Close()
 	}()
+
+	// Provenance records the environment the harness actually applied.
+	// Marker instrumentation is named only when the subject's contract
+	// turns it on, so a subject that declares none is never described
+	// with another product's variables.
+	set := map[string]string{"HOME|USERPROFILE": "<isolated-home>"}
+	for k, v := range subject.MarkerEnvNote(contract) {
+		set[k] = v
+	}
 
 	res := &schema.Result{
 		Schema:        schema.SchemaName,
@@ -139,6 +154,7 @@ func Run(ctx context.Context, cfg Config) (Outcome, error) {
 			Seed:           cfg.Seed,
 			QuantileMethod: schema.QuantileMethod,
 			Bootstrap:      schema.Bootstrap{Resamples: schema.BootstrapResamples, Seed: cfg.Seed, Method: "percentile"},
+			SubjectProfile: cfg.SubjectProfile.Name,
 		},
 		Host: info.Host,
 		Environment: schema.Environment{
@@ -147,7 +163,7 @@ func Run(ctx context.Context, cfg Config) (Outcome, error) {
 			MarkersWallPass: "off",
 			EnvOverrides: schema.EnvOverrides{
 				Removed: removed,
-				Set:     map[string]string{"HOME|USERPROFILE": "<isolated-home>", "FF_PERF_MARKERS": "1 (marker pass only)"},
+				Set:     set,
 			},
 		},
 	}
@@ -251,6 +267,7 @@ func runOne(ctx context.Context, b bench.Benchmark, spec bench.Spec, probed []su
 
 	type work struct {
 		subj     bench.Subject
+		spec     bench.Spec
 		fx       bench.Fixture
 		setupErr error
 		skip     *bench.SkipError
@@ -263,9 +280,9 @@ func runOne(ctx context.Context, b bench.Benchmark, spec bench.Spec, probed []su
 	}
 	var works []*work
 	if !needsSubject(b) {
-		works = append(works, &work{subj: bench.Subject{}})
+		works = append(works, &work{subj: bench.Subject{}, spec: spec})
 	} else if len(probed) == 0 {
-		d := "no subject: pass --ff label=path"
+		d := "no subject: pass --subject label=path"
 		return []schema.Benchmark{{
 			ID: spec.ID, DefinitionVersion: spec.DefinitionVersion,
 			Tier: spec.Tier, Kind: string(spec.Kind),
@@ -274,16 +291,24 @@ func runOne(ctx context.Context, b bench.Benchmark, spec bench.Spec, probed []su
 		}}
 	} else {
 		for _, p := range probed {
-			works = append(works, &work{subj: bench.Subject{Label: p.Label, Path: p.Path}})
+			s := bench.Subject{
+				Label:    p.Label,
+				Path:     p.Path,
+				Contract: cfg.SubjectProfile.Contract,
+			}
+			// A benchmark whose metric set depends on the subject's
+			// contract (the marker-derived families) is described per
+			// subject; everything else keeps the static spec.
+			works = append(works, &work{subj: s, spec: bench.SpecFor(b, s)})
 		}
 	}
 
 	have := Available()
-	entryFor := func(w *work, spec bench.Spec) schema.Benchmark {
+	entryFor := func(w *work) schema.Benchmark {
 		e := schema.Benchmark{
-			ID: spec.ID, DefinitionVersion: spec.DefinitionVersion,
-			Tier: spec.Tier, Kind: string(spec.Kind),
-			Params: spec.Params,
+			ID: w.spec.ID, DefinitionVersion: w.spec.DefinitionVersion,
+			Tier: w.spec.Tier, Kind: string(w.spec.Kind),
+			Params: w.spec.Params,
 			Plan:   schema.PlanOut{Warmup: plan.Warmup, N: plan.N, Interleaved: len(works) > 1},
 		}
 		if w.subj.Label != "" {
@@ -300,7 +325,7 @@ func runOne(ctx context.Context, b bench.Benchmark, spec bench.Spec, probed []su
 		}
 		var out []schema.Benchmark
 		for _, w := range works {
-			e := entryFor(w, spec)
+			e := entryFor(w)
 			e.Status = status
 			d := reason
 			e.StatusDetail = &d
@@ -356,14 +381,14 @@ func runOne(ctx context.Context, b bench.Benchmark, spec bench.Spec, probed []su
 			w.idx++
 			obs, oerr := b.Iterate(ctx, w.fx, w.subj, it)
 			w.iters = append(w.iters, toIteration(it, w.t0, obs, oerr))
-			w.obs = append(w.obs, normalize(obs, oerr, spec))
+			w.obs = append(w.obs, normalize(obs, oerr, w.spec))
 			emit(map[string]any{"event": "iteration", "id": spec.ID, "subject": w.subj.Label, "phase": bench.PhaseMeasure})
 		}
 	}
 
 	var out []schema.Benchmark
 	for _, w := range works {
-		e := entryFor(w, spec)
+		e := entryFor(w)
 		switch {
 		case w.skip != nil:
 			e.Status = w.skip.Status
@@ -378,7 +403,7 @@ func runOne(ctx context.Context, b bench.Benchmark, spec bench.Spec, probed []su
 			if p, ok := b.(bench.Prober); ok {
 				w.post = runProbe(ctx, p, w.fx, w.subj, timeout)
 				e.Validity = &schema.Validity{
-					Predicate: spec.Predicate,
+					Predicate: w.spec.Predicate,
 					ProbePre:  w.pre, ProbePost: w.post,
 				}
 			}
@@ -386,7 +411,7 @@ func runOne(ctx context.Context, b bench.Benchmark, spec bench.Spec, probed []su
 				e.Warnings = append(e.Warnings, "teardown: "+err.Error())
 			}
 			e.Iterations = w.iters
-			e.Metrics = buildMetrics(spec, w.obs, cfg.Seed)
+			e.Metrics = buildMetrics(w.spec, w.obs, cfg.Seed)
 			probesOK := w.pre == nil || (w.pre.OK && (w.post == nil || w.post.OK))
 			if !probesOK {
 				e.Status = schema.StatusInvalid
@@ -402,7 +427,7 @@ func runOne(ctx context.Context, b bench.Benchmark, spec bench.Spec, probed []su
 			} else {
 				e.Status = schema.StatusOK
 			}
-			e.Flags = metricFlags(spec, w.obs, e.Metrics)
+			e.Flags = metricFlags(w.spec, w.obs, e.Metrics)
 		}
 		emit(map[string]any{"event": "benchmark.end", "id": spec.ID, "subject": w.subj.Label, "status": e.Status})
 		out = append(out, e)

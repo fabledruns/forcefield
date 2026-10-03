@@ -33,10 +33,10 @@ type Timeline struct {
 // the driver on the child's own stderr pipe, one per line and in
 // emission order; the first occurrence of each event wins and
 // malformed lines are skipped.
-func Build(lines []StampedLine) Timeline {
+func (p Protocol) Build(lines []StampedLine) Timeline {
 	tl := Timeline{Marks: map[string]time.Time{}, Mem: map[string]MemMark{}}
 	for _, l := range lines {
-		ev, ok := Event(l.Text)
+		ev, ok := p.Event(l.Text)
 		if !ok {
 			continue
 		}
@@ -45,14 +45,16 @@ func Build(lines []StampedLine) Timeline {
 		}
 		tl.Marks[ev] = l.At
 		tl.Order = append(tl.Order, ev)
-		tl.Mem[ev] = memMark(l.Text)
+		tl.Mem[ev] = memMark(l.Text, p.Prefix)
 	}
 	return tl
 }
 
 // memMark reads the EventMem alloc=/sys= fields from a marker line.
-func memMark(line string) MemMark {
-	_, body, ok := strings.Cut(line, Prefix)
+// These describe the subject's language runtime and exist only for
+// subjects whose instrumentation reports them.
+func memMark(line, prefix string) MemMark {
+	_, body, ok := strings.Cut(line, prefix)
 	if !ok {
 		return MemMark{}
 	}

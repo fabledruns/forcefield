@@ -26,15 +26,15 @@ func tuiFakeMain() int {
 	withMem := mode != "no-memory-fields"
 	emit := func(ev string) {
 		line := "ff-perf " + ev
-		if withMem && (ev == "first-frame" || ev == "runtime-ready" || ev == tuiPrimaryMark) {
+		if withMem && (ev == "first-frame" || ev == "runtime-ready" || ev == ffPrimary) {
 			line += " alloc=1000 sys=2000"
 		}
 		_, _ = os.Stderr.WriteString(line + "\n")
 		time.Sleep(15 * time.Millisecond)
 	}
-	for _, ev := range tuiMarks {
+	for _, ev := range ffMarks {
 		switch {
-		case mode == "no-ready" && ev == tuiPrimaryMark:
+		case mode == "no-ready" && ev == ffPrimary:
 			continue
 		case mode == "no-stage-tools" && ev == "stage-tools":
 			continue
@@ -55,7 +55,7 @@ func tuiFakeEnv(t *testing.T, mode string) {
 	t.Helper()
 	// Both fakes: priming uses the launch `run` mode, measurement
 	// uses the bare-invocation TUI mode.
-	testEnvPassthrough = map[string]string{
+	fakeEnvVars = map[string]string{
 		"HPOV_SUITES_FAKE": "1",
 		"HPOV_TUI_FAKE":    "1",
 		"HPOV_TUI_MODE":    mode,
@@ -82,7 +82,9 @@ func TestTUIRegistration(t *testing.T) {
 	if !found {
 		t.Fatalf("%s not registered", TUIBenchmarkID)
 	}
-	spec := (&timelineBench{}).Spec()
+	// The metric set is derived from the subject's marker set, so it is
+	// resolved against the Forcefield profile here.
+	spec := (&timelineBench{}).SpecFor(ffSubject("ff", "p", nil))
 	if spec.Tier != 1 || string(spec.Kind) != "e2e" {
 		t.Fatalf("tier/kind = %d/%s", spec.Tier, spec.Kind)
 	}
@@ -101,8 +103,8 @@ func TestTUIRegistration(t *testing.T) {
 	if got := spec.PlanFor("standard"); got.Warmup != 3 || got.N != 20 {
 		t.Fatalf("standard plan = %+v, want warmup 3 n 20", got)
 	}
-	if len(spec.Metrics) != len(tuiMarks)+len(tuiSegments) {
-		t.Fatalf("metrics = %d, want %d", len(spec.Metrics), len(tuiMarks)+len(tuiSegments))
+	if len(spec.Metrics) != len(ffMarks)+len(ffContract.TUI.Segments) {
+		t.Fatalf("metrics = %d, want %d", len(spec.Metrics), len(ffMarks)+len(ffContract.TUI.Segments))
 	}
 	wantMarks := []string{"t_main_entry", "t_config_loaded", "t_runtime_init_start",
 		"t_stage_skills", "t_stage_memory", "t_stage_provider", "t_stage_tools",
@@ -178,7 +180,7 @@ func TestTUIMissingReady(t *testing.T) {
 	if obs.Valid {
 		t.Fatal("missing first-useful-frame must be invalid")
 	}
-	if !strings.Contains(obs.InvalidReason, tuiPrimaryMark) {
+	if !strings.Contains(obs.InvalidReason, ffPrimary) {
 		t.Fatalf("reason must name the primary marker: %q", obs.InvalidReason)
 	}
 	// Invalid samples still carry aligned (zeroed) values so the raw
@@ -222,13 +224,13 @@ func TestTUIMissingOptionalMarkStaysValid(t *testing.T) {
 
 func TestTUISegmentNeedsBothEndpoints(t *testing.T) {
 	base := time.Now()
-	tl := markers.Build([]markers.StampedLine{
+	tl := ffProto.Build([]markers.StampedLine{
 		{At: base.Add(10 * time.Millisecond), Text: "ff-perf main-entry"},
 		{At: base.Add(30 * time.Millisecond), Text: "ff-perf first-useful-frame"},
 	})
 	values := map[string]float64{}
 	unavailable := map[string]string{}
-	fillTimelineValues(values, unavailable, tl, base)
+	fillTimelineValues(values, unavailable, tl, base, ffContract.TUI)
 	if _, ok := values["seg_main_entry_to_config_loaded"]; ok {
 		t.Fatal("segment with an absent endpoint must not be reported")
 	}
@@ -275,13 +277,13 @@ func TestTUITimelineMath(t *testing.T) {
 		{At: base.Add(110 * time.Millisecond), Text: "ff-perf first-useful-frame"},
 		{At: base.Add(200 * time.Millisecond), Text: "ff-perf runtime-ready alloc=5 sys=6"},
 	}
-	tl := markers.Build(lines)
-	if missing := tl.Missing(tuiMarks); len(missing) != 0 {
+	tl := ffProto.Build(lines)
+	if missing := tl.Missing(ffMarks); len(missing) != 0 {
 		t.Fatalf("missing = %v", missing)
 	}
 	values := map[string]float64{}
 	unavailable := map[string]string{}
-	fillTimelineValues(values, unavailable, tl, base)
+	fillTimelineValues(values, unavailable, tl, base, ffContract.TUI)
 	if len(unavailable) != 0 {
 		t.Fatalf("unavailable on a complete timeline: %v", unavailable)
 	}

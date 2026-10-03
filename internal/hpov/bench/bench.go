@@ -8,8 +8,11 @@ package bench
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
+
+	"forcefield/internal/hpov/schema"
 )
 
 // Kind distinguishes end-to-end process benchmarks (release-comparable
@@ -120,11 +123,34 @@ func (s Spec) RunnableOn(goos string, have map[string]bool) (ok bool, reason str
 	return true, ""
 }
 
-// Subject is one binary under measurement. Benchmarks never hard-code
-// a path to ff.
+// Subject is one binary under measurement plus the workload contract
+// that describes how to drive it. Benchmarks never hard-code a
+// product's command syntax, output text, exit status or marker names:
+// they read them from Contract.
 type Subject struct {
 	Label string
 	Path  string
+	// Contract is the subject's workload semantics. The zero contract
+	// measures nothing a subject-specific benchmark can use: those
+	// benchmarks report unsupported, and generic ones (artifact size)
+	// are unaffected.
+	Contract Contract
+}
+
+// Unsupported reports a benchmark as inapplicable to this subject,
+// naming the contract field that is missing. Callers return it from
+// Setup so the entry carries an explicit state instead of a wrong
+// measurement.
+func (s Subject) Unsupported(missing string) error {
+	product := s.Contract.Product
+	if product == "" {
+		product = "(none)"
+	}
+	return &SkipError{
+		Status: schema.StatusUnsupported,
+		Code:   schema.ErrSubjectContract,
+		Detail: fmt.Sprintf("subject %s (profile %s) does not declare %s", s.Label, product, missing),
+	}
 }
 
 // Iter identifies one iteration passed to Benchmark.Iterate.
@@ -197,6 +223,25 @@ func (e *SkipError) Error() string { return e.Status + ": " + e.Detail }
 // reaches its intended boundary.
 type Prober interface {
 	Probe(ctx context.Context, fx Fixture, subj Subject) (ok bool, checks map[string]bool, err error)
+}
+
+// SubjectSpecifier is an optional Benchmark extension for benchmarks
+// whose shape depends on the subject's workload contract. The TUI
+// families derive their metric set from the subject's marker names, so
+// their metrics cannot be known before the subject is known.
+//
+// The runner prefers SpecFor over Spec. Benchmarks that do not implement
+// it are described entirely by Spec.
+type SubjectSpecifier interface {
+	SpecFor(subj Subject) Spec
+}
+
+// SpecFor resolves a benchmark's spec for one subject.
+func SpecFor(b Benchmark, subj Subject) Spec {
+	if ss, ok := b.(SubjectSpecifier); ok {
+		return ss.SpecFor(subj)
+	}
+	return b.Spec()
 }
 
 // Match reports whether a dotted id matches a glob supporting "*"

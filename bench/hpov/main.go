@@ -36,6 +36,7 @@ import (
 	"forcefield/internal/hpov/report"
 	"forcefield/internal/hpov/runner"
 	"forcefield/internal/hpov/schema"
+	"forcefield/internal/hpov/subject"
 	"forcefield/internal/hpov/suites"
 )
 
@@ -99,10 +100,11 @@ func registeredBenchmarks(self string) []bench.Benchmark {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `hpov — Forcefield performance benchmarks
+	fmt.Fprint(os.Stderr, `hpov — harness performance benchmarks
   hpov list [--tier N] [--kind e2e|micro|static] [--here] [--long]
   hpov env [--json]
-  hpov run --ff label=path [--ff ...] [--select GLOB,...] [--exclude GLOB,...]
+  hpov run --subject label=path [--subject ...] [--subject-profile REF]
+           [--select GLOB,...] [--exclude GLOB,...]
            [--tier N] [--kind K] [--profile quick|standard|full]
            [--n N] [--warmup N] [--seed S] [--source release|local-build]
            [--fail-fast] [--require-quality good] [--workroot DIR] --out result.json
@@ -115,24 +117,36 @@ func usage() {
                [--tier N] [--profile P] [--n N] [--warmup N] [--seed S]
                [--thresholds FILE] [--fail-on-regression] [--explain]
                --out result.json [--comparison-out comparison.json]
-  hpov calibrate --ff path [--repeats N] [--select GLOB,...] [--tier N]
+  hpov calibrate --subject path [--repeats N] [--select GLOB,...] [--tier N]
                [--profile P] [--n N] [--warmup N] [--seed S]
                [--thresholds FILE] [--out DIR]
+
+Subjects are measured under a subject profile: the workload contract that
+says how to invoke a harness and what counts as reaching its intended
+boundary. --subject-profile takes "builtin:forcefield" (the default) or a
+path to a JSON profile; see docs/HPOV.md.
 `)
 }
 
-// ffList is a repeatable --ff label=path flag.
-type ffList []bench.Subject
+// subjectList is a repeatable --subject label=path flag. --ff is
+// accepted as an alias so existing Forcefield commands keep working.
+type subjectList []bench.Subject
 
-func (f *ffList) String() string { return fmt.Sprint(*f) }
+func (f *subjectList) String() string { return fmt.Sprint(*f) }
 
-func (f *ffList) Set(v string) error {
+func (f *subjectList) Set(v string) error {
 	label, path, ok := strings.Cut(v, "=")
 	if !ok || label == "" || path == "" {
-		return fmt.Errorf("want --ff label=path, got %q", v)
+		return fmt.Errorf("want --subject label=path, got %q", v)
 	}
 	*f = append(*f, bench.Subject{Label: label, Path: path})
 	return nil
+}
+
+// subjectFlag registers --subject and its --ff alias on one value.
+func subjectFlag(fs *flag.FlagSet, dst *subjectList, usage string) {
+	fs.Var(dst, "subject", usage)
+	fs.Var(dst, "ff", usage+" (alias for --subject)")
 }
 
 func cmdList(args []string, all []bench.Benchmark) int {
@@ -203,8 +217,10 @@ func cmdEnv(args []string) int {
 
 func cmdRun(args []string, all []bench.Benchmark) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	var subjects ffList
-	fs.Var(&subjects, "ff", "subject binary as label=path (repeatable)")
+	var subjects subjectList
+	subjectFlag(fs, &subjects, "subject binary as label=path (repeatable)")
+	subjectProfile := fs.String("subject-profile", subject.DefaultProfileRef,
+		"subject workload contract: builtin:forcefield or a JSON profile path")
 	selectS := fs.String("select", "", "comma-separated ID globs")
 	excludeS := fs.String("exclude", "", "comma-separated ID globs")
 	tier := fs.Int("tier", 1, "tier to run (-1 = all)")
@@ -225,20 +241,26 @@ func cmdRun(args []string, all []bench.Benchmark) int {
 		fmt.Fprintln(os.Stderr, "hpov run: --out is required")
 		return exitUsage
 	}
+	prof, err := subject.LoadProfile(*subjectProfile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hpov run: %v\n", err)
+		return exitUsage
+	}
 	cfg := runner.Config{
-		Benchmarks:    all,
-		Subjects:      []bench.Subject(subjects),
-		SubjectSource: *source,
-		Select:        splitList(*selectS),
-		Exclude:       splitList(*excludeS),
-		Tier:          *tier,
-		Kind:          *kind,
-		Profile:       *profile,
-		Seed:          *seed,
-		Out:           *out,
-		WorkRoot:      *workroot,
-		FailFast:      *failFast,
-		CommandLine:   os.Args,
+		Benchmarks:     all,
+		Subjects:       prof.ApplyTo(subjects),
+		SubjectProfile: prof,
+		SubjectSource:  *source,
+		Select:         splitList(*selectS),
+		Exclude:        splitList(*excludeS),
+		Tier:           *tier,
+		Kind:           *kind,
+		Profile:        *profile,
+		Seed:           *seed,
+		Out:            *out,
+		WorkRoot:       *workroot,
+		FailFast:       *failFast,
+		CommandLine:    os.Args,
 	}
 	if *n > 0 {
 		cfg.N = n
@@ -373,9 +395,11 @@ func cmdCompare(args []string) int {
 // portable (plan §10.6).
 func cmdCompareLive(args []string, all []bench.Benchmark) int {
 	fs := flag.NewFlagSet("compare-live", flag.ContinueOnError)
-	var baseSubjects, headSubjects ffList
+	var baseSubjects, headSubjects subjectList
 	fs.Var(&baseSubjects, "base", "baseline subject as label=path")
 	fs.Var(&headSubjects, "head", "candidate subject as label=path")
+	subjectProfile := fs.String("subject-profile", subject.DefaultProfileRef,
+		"subject workload contract: builtin:forcefield or a JSON profile path")
 	selectS := fs.String("select", "", "comma-separated ID globs")
 	tier := fs.Int("tier", 1, "tier to run (-1 = all)")
 	profile := fs.String("profile", "standard", "quick|standard|full")
@@ -410,18 +434,24 @@ func cmdCompareLive(args []string, all []bench.Benchmark) int {
 		fmt.Fprintf(os.Stderr, "hpov compare-live: %v\n", err)
 		return exitUsage
 	}
-	subjects := []bench.Subject{baseSubjects[0], headSubjects[0]}
+	prof, err := subject.LoadProfile(*subjectProfile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hpov compare-live: %v\n", err)
+		return exitUsage
+	}
+	subjects := prof.ApplyTo([]bench.Subject{baseSubjects[0], headSubjects[0]})
 	cfg := runner.Config{
-		Benchmarks:    all,
-		Subjects:      subjects,
-		SubjectSource: *source,
-		Select:        splitList(*selectS),
-		Tier:          *tier,
-		Profile:       *profile,
-		Seed:          *seed,
-		Out:           *out,
-		WorkRoot:      *workroot,
-		CommandLine:   os.Args,
+		Benchmarks:     all,
+		Subjects:       subjects,
+		SubjectProfile: prof,
+		SubjectSource:  *source,
+		Select:         splitList(*selectS),
+		Tier:           *tier,
+		Profile:        *profile,
+		Seed:           *seed,
+		Out:            *out,
+		WorkRoot:       *workroot,
+		CommandLine:    os.Args,
 	}
 	if *n > 0 {
 		n := *n
@@ -478,8 +508,10 @@ func compareOptions(thresholdPath string, failOnRegression, allowCrossHost, expl
 // to read, not a build failure.
 func cmdCalibrate(args []string, all []bench.Benchmark) int {
 	fs := flag.NewFlagSet("calibrate", flag.ContinueOnError)
-	var subjects ffList
-	fs.Var(&subjects, "ff", "the single binary measured as both subjects (exactly one)")
+	var subjects subjectList
+	subjectFlag(fs, &subjects, "the single binary measured as both subjects (exactly one)")
+	subjectProfile := fs.String("subject-profile", subject.DefaultProfileRef,
+		"subject workload contract: builtin:forcefield or a JSON profile path")
 	selectS := fs.String("select", "", "comma-separated ID globs")
 	tier := fs.Int("tier", 1, "tier to run (-1 = all)")
 	profile := fs.String("profile", "standard", "quick|standard|full")
@@ -508,7 +540,12 @@ func cmdCalibrate(args []string, all []bench.Benchmark) int {
 		return exitOK
 	}
 	if len(subjects) != 1 {
-		fmt.Fprintln(os.Stderr, "hpov calibrate: A/A needs exactly one --ff label=path (it is measured as both subjects)")
+		fmt.Fprintln(os.Stderr, "hpov calibrate: A/A needs exactly one --subject label=path (it is measured as both subjects)")
+		return exitUsage
+	}
+	prof, err := subject.LoadProfile(*subjectProfile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hpov calibrate: %v\n", err)
 		return exitUsage
 	}
 	tbl, err := compare.LoadThresholdFile(*thresholds)
@@ -517,18 +554,19 @@ func cmdCalibrate(args []string, all []bench.Benchmark) int {
 		return exitUsage
 	}
 	cfg := calibrate.Config{
-		Benchmarks:  all,
-		SubjectPath: subjects[0].Path,
-		Source:      *source,
-		Select:      splitList(*selectS),
-		Tier:        *tier,
-		Profile:     *profile,
-		Repeats:     *repeats,
-		SeedBase:    *seed,
-		OutDir:      *outDir,
-		WorkRoot:    *workroot,
-		CommandLine: os.Args,
-		Thresholds:  tbl,
+		Benchmarks:     all,
+		SubjectPath:    subjects[0].Path,
+		SubjectProfile: prof,
+		Source:         *source,
+		Select:         splitList(*selectS),
+		Tier:           *tier,
+		Profile:        *profile,
+		Repeats:        *repeats,
+		SeedBase:       *seed,
+		OutDir:         *outDir,
+		WorkRoot:       *workroot,
+		CommandLine:    os.Args,
+		Thresholds:     tbl,
 	}
 	if *n > 0 {
 		n := *n

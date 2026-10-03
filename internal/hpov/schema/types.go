@@ -58,11 +58,15 @@ type Suite struct {
 
 // Run carries run-level provenance.
 type Run struct {
-	ID             string     `json:"id"`
-	StartedAt      string     `json:"started_at"`
-	FinishedAt     string     `json:"finished_at"`
-	CommandLine    []string   `json:"command_line"`
-	Seed           int64      `json:"seed"`
+	ID          string   `json:"id"`
+	StartedAt   string   `json:"started_at"`
+	FinishedAt  string   `json:"finished_at"`
+	CommandLine []string `json:"command_line"`
+	Seed        int64    `json:"seed"`
+	// SubjectProfile names the workload contract the subjects were
+	// measured under, so a result states which subject semantics the
+	// numbers describe.
+	SubjectProfile string     `json:"subject_profile,omitempty"`
 	QuantileMethod string     `json:"quantile_method"`
 	Bootstrap      Bootstrap  `json:"bootstrap"`
 	Quality        RunQuality `json:"quality"`
@@ -307,6 +311,7 @@ const (
 	ErrSpawnFailed         = "spawn_failed"
 	ErrTimeout             = "timeout"
 	ErrInvalidWorkload     = "invalid_workload"
+	ErrSubjectContract     = "subject_contract_unsupported"
 	ErrMarkerProtocol      = "marker_protocol_error"
 	ErrInternal            = "internal"
 )

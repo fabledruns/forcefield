@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"forcefield/internal/hpov/bench"
-	"forcefield/internal/hpov/markers"
 )
 
 // TestMain re-execs the test binary as a scripted fake ff when
@@ -87,24 +86,39 @@ func fakeMain(args []string) int {
 	return 2
 }
 
+// fakeEnvVars is the environment the next fake subject attaches to its
+// contract. It stands in for what a real profile would declare for its
+// own harness: production reads the child environment from the
+// contract, and these tests set it the same way, through the subject.
+var fakeEnvVars = map[string]string{"HPOV_SUITES_FAKE": "1"}
+
+// fakeSubject builds the re-exec fake under the Forcefield profile.
 func fakeSubject(t *testing.T, extra ...string) bench.Subject {
 	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return bench.Subject{Label: "fake", Path: self}
-}
-
-func fakeEnv(t *testing.T, extra ...string) {
-	t.Helper()
-	// Reset per test: the scrubbed child environment only carries
-	// what launchEnv forwards, so stale knobs must not leak across
-	// tests.
-	testEnvPassthrough = map[string]string{"HPOV_SUITES_FAKE": "1"}
+	env := map[string]string{}
+	for k, v := range fakeEnvVars {
+		env[k] = v
+	}
 	for _, kv := range extra {
 		k, v, _ := strings.Cut(kv, "=")
-		testEnvPassthrough[k] = v
+		env[k] = v
+	}
+	return ffSubject("fake", self, env)
+}
+
+// fakeEnv resets the knobs the next fake subject forwards.
+func fakeEnv(t *testing.T, extra ...string) {
+	t.Helper()
+	// Reset per test: the scrubbed child environment only carries what
+	// the contract forwards, so stale knobs must not leak across tests.
+	fakeEnvVars = map[string]string{"HPOV_SUITES_FAKE": "1"}
+	for _, kv := range extra {
+		k, v, _ := strings.Cut(kv, "=")
+		fakeEnvVars[k] = v
 	}
 }
 
@@ -237,7 +251,7 @@ func TestHeadlessSteadySharesHome(t *testing.T) {
 		t.Fatalf("steady home not shared: %q err=%v", raw, err)
 	}
 	// A second subject gets an isolated parent.
-	fx2, err := b.Setup(context.Background(), env, bench.Subject{Label: "other", Path: subj.Path})
+	fx2, err := b.Setup(context.Background(), env, ffSubject("other", subj.Path, fakeEnvVars))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +376,7 @@ func TestArtifactSize(t *testing.T) {
 }
 
 func TestMarkersPackageUsed(t *testing.T) {
-	if !markers.Has("ff-perf stage-agents\n", "stage-agents") {
+	if !ffProto.Has("ff-perf stage-agents\n", "stage-agents") {
 		t.Fatal("markers helper must detect stage-agents")
 	}
 }

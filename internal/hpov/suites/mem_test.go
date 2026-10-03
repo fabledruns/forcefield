@@ -119,11 +119,11 @@ func TestGoHeapSanityRejectsImpossibleValues(t *testing.T) {
 	obs := bench.Observation{Values: map[string]float64{}, Attrs: map[string]string{}}
 	_ = obs
 	base := time.Now()
-	tl := markers.Build([]markers.StampedLine{
+	tl := ffProto.Build([]markers.StampedLine{
 		{At: base, Text: "ff-perf first-useful-frame alloc=900 sys=100\n"},
 		{At: base.Add(time.Millisecond), Text: "ff-perf runtime-ready\n"},
 	})
-	mem := tl.Mem[tuiPrimaryMark]
+	mem := tl.Mem[ffPrimary]
 	if mem.Alloc <= mem.Sys {
 		t.Fatalf("test fixture must be impossible: alloc=%d sys=%d", mem.Alloc, mem.Sys)
 	}
@@ -136,15 +136,15 @@ func TestGoHeapMissingMarkerFieldsAreUnavailable(t *testing.T) {
 	// A marker line without alloc= yields unavailable metrics, not
 	// zero-byte heap claims.
 	base := time.Now()
-	tl := markers.Build([]markers.StampedLine{
+	tl := ffProto.Build([]markers.StampedLine{
 		{At: base, Text: "ff-perf first-useful-frame\n"},
 		{At: base.Add(time.Millisecond), Text: "ff-perf runtime-ready alloc=5 sys=6\n"},
 	})
-	mem := tl.Mem[tuiPrimaryMark]
+	mem := tl.Mem[ffPrimary]
 	if mem.Alloc != 0 || mem.Sys != 0 {
 		t.Fatalf("mem = %+v, want zero-valued (fields absent)", mem)
 	}
-	if _, ok := tl.Mem[tuiPrimaryMark]; !ok {
+	if _, ok := tl.Mem[ffPrimary]; !ok {
 		t.Fatal("mark must still be recorded even without memory fields")
 	}
 }
@@ -315,7 +315,7 @@ func TestReadyRSSAndGoHeapFullRun(t *testing.T) {
 	if obs.Values["ready_rss_bytes"] <= 0 {
 		t.Fatalf("ready_rss_bytes = %v", obs.Values["ready_rss_bytes"])
 	}
-	if obs.Attrs["readiness_mark"] != tuiPrimaryMark {
+	if obs.Attrs["readiness_mark"] != ffPrimary {
 		t.Errorf("readiness mark = %q", obs.Attrs["readiness_mark"])
 	}
 	if obs.Attrs["sample_method"] != "marker_callback_query" {
@@ -379,7 +379,7 @@ func TestReadyRSSMissingReadinessInvalidates(t *testing.T) {
 	if obs.Valid {
 		t.Fatal("missing readiness must invalidate the sample")
 	}
-	if !strings.Contains(obs.InvalidReason, tuiPrimaryMark) {
+	if !strings.Contains(obs.InvalidReason, ffPrimary) {
 		t.Errorf("reason = %q", obs.InvalidReason)
 	}
 	// No sample was possible, so no memory value may be claimed.

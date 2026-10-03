@@ -1,9 +1,13 @@
-# HPOV — Forcefield Performance Benchmark Methodology
+# HPOV — Harness Performance Benchmark Methodology
 
-HPOV is Forcefield's own performance benchmark suite. It measures what
-Forcefield actually does on a real machine, records every raw sample, and
-decides — with stated evidence rules — whether a candidate build moved relative
-to a baseline.
+HPOV is a general-purpose benchmark suite for measuring executable and agent
+harnesses. It measures what a subject actually does on a real machine, records
+every raw sample, and decides — with stated evidence rules — whether a candidate
+build moved relative to a baseline.
+
+Forcefield is HPOV's built-in subject profile, not an assumption baked into the
+engine. See [1.1 Architecture](#11-architecture) for how a subject is described
+and how to measure a different harness.
 
 This document is the canonical methodology reference. Everything else that
 mentions HPOV links here.
@@ -51,6 +55,109 @@ HPOV v1 ships the first four. It deliberately does **not** ship gating: no
 CI integration, no selected "gating metric" list, no `accepted_changes`
 allowlist. `hpov compare` exits 0 on a regression unless you pass
 `--fail-on-regression`, and that flag is yours to add, not HPOV's to impose.
+
+### 1.1 Architecture
+
+HPOV is a generic measurement engine plus a set of subject profiles. The split
+matters, because it is the difference between "HPOV measures harnesses" and
+"HPOV measures Forcefield with extra steps".
+
+```text
+generic engine                        subject-specific data
+----------------------------------    ----------------------------------
+bench      vocabulary + contracts      subject.Builtin()  the Forcefield profile
+runner     loop, probes, metrics       <name>.json       any other harness
+spawn     process + process tree
+pty       interactive hosting          never in the engine:
+collect   per-OS memory sampling        · a command line
+stats     robust statistics             · an expected exit status
+compare   pairing + verdicts            · a stdout/stderr predicate
+schema    documents + validation        · marker names and prefix
+report    rendering                     · readiness and quit behavior
+envinfo   host classification           · environment to set or scrub
+fixture   isolation                     · the subject's product identity
+```
+
+**The engine never names a product.** There is no `if subject == "forcefield"`
+in any benchmark, no `--version` flag literal, no `ff-perf` constant, no `FF_*`
+handling in the fixture scrubber, and no hard-coded `product` in a result. The
+only place Forcefield's contract exists is the built-in profile
+(`internal/hpov/subject/profile.go`), and the profile is *data about*
+Forcefield, not code linked to it: HPOV imports no Forcefield application
+package.
+
+#### Subject profiles
+
+A profile is a named workload contract. It declares everything a benchmark needs
+to know about a subject:
+
+| Field | Meaning |
+| --- | --- |
+| `product` | Subject identity recorded in the result document. |
+| `bin` | Command name, used in workload descriptions. |
+| `marker_prefix` | Discriminator for the subject's instrumentation lines. |
+| `enable_env` | Variables that turn that instrumentation on. |
+| `version` / `help` | Command, required exit status, stdout predicate. |
+| `headless` | Command, boundary exit status, priming flag, probe checks. |
+| `tui` | Readiness mark, reported marks, segments, quit input, heap fields. |
+| `env` | Variables to keep out of a measured process. |
+
+```bash
+# The built-in Forcefield profile (the default).
+hpov run --subject ff=./ff --select launch.version --out result.json
+
+# Any other harness: describe it, do not code it.
+hpov run --subject hx=./hx \
+         --subject-profile ./harnessx.json \
+         --select "launch.*" --out result.json
+```
+
+A profile document is `{"name": ..., "contract": {...}}` with exactly the shape
+above. Unknown fields are rejected, and an incomplete contract is refused at the
+command line rather than silently invalidating every sample.
+
+`--subject` is the generic spelling; `--ff` remains as an alias so existing
+Forcefield commands keep working.
+
+#### Generic versus implementation-specific measurements
+
+Not every metric is meaningful for every harness, and HPOV says so instead of
+producing a zero:
+
+| Benchmark | Scope |
+| --- | --- |
+| `launch.artifact-size` | Subject-independent. Needs no contract at all. |
+| `launch.version`, `launch.help` | Generic measurement, subject-defined workload. |
+| `launch.headless-init.*`, `mem.headless.peak-rss` | Generic measurement, subject-defined workload and boundary. |
+| `tui.startup.timeline`, `mem.tui.ready-rss` | Generic measurement, subject-defined markers and readiness. Metrics are derived from the subject's mark set, so two harnesses are comparable only where their marks coincide. |
+| `mem.tui.go-heap` | **Implementation-specific.** It reads `alloc=`/`sys=` fields that a Go runtime's instrumentation reports. A contract without `heap_fields` makes it `unsupported`. |
+
+A subject whose profile omits a workload gets an explicit `unsupported` entry
+naming the missing contract field. Nothing is measured against a command the
+subject never declared, and no metric is zero-filled to hide the gap.
+
+#### Cross-harness comparison
+
+One invocation measures every subject under one profile, which is what
+interleaving requires. Comparing two harnesses that need *different* contracts
+means two runs fed to `hpov compare`:
+
+```bash
+hpov run --subject ff=./ff --subject-profile builtin:forcefield --out ff.json
+hpov run --subject hx=./hx --subject-profile ./harnessx.json     --out hx.json
+hpov compare ff.json hx.json --explain
+```
+
+Subject identity in comparison is the profile's product plus the binary's
+content hash, so the two sides are matched by what they are, not by what they
+are called.
+
+#### Repository boundary
+
+HPOV currently lives at `internal/hpov` in the Forcefield module. That blocks
+*importing* HPOV as a Go library from another repository; it does not block
+measuring an external executable, because measurement is a process spawn, not a
+link. Repository extraction is a separate milestone and has not happened yet.
 
 ### Why it exists
 
@@ -236,8 +343,25 @@ the same build.
 ## 3. Benchmark catalog
 
 Nine benchmarks are implemented. `calibration.noop` is infrastructure (tier 0),
-not a measurement of Forcefield, and is documented separately in
+not a measurement of a subject, and is documented separately in
 [§3.11](#311-calibrationnoop).
+
+The **Workload** row below states the Forcefield contract, because Forcefield is
+the built-in profile. What each benchmark actually requires of a subject is the
+`contract` row; a subject whose profile omits that section gets an explicit
+`unsupported` entry ([§1.1](#11-architecture)).
+
+| Benchmark | contract | Forcefield workload |
+| --- | --- | --- |
+| `launch.version` | `version` | `ff --version` |
+| `launch.help` | `help` | `ff --help` |
+| `launch.headless-init.steady` | `headless` | `ff run --agent __bench_bogus__ x` |
+| `launch.headless-init.first-run` | `headless` | same workload, fresh home |
+| `launch.artifact-size` | *none* | subject executable, stat + sha256 |
+| `tui.startup.timeline` | `tui` | `ff` under a pty, markers on |
+| `mem.headless.peak-rss` | `headless` | `ff run --agent __bench_bogus__ x` |
+| `mem.tui.ready-rss` | `tui` | `ff` under a pty, sampled at readiness |
+| `mem.tui.go-heap` | `tui` + `heap_fields` | as above, Go heap from marker fields |
 
 ### 3.1 launch.version
 
@@ -765,6 +889,13 @@ next read. That is why the lag is recorded rather than assumed away.
 
 The Go runtime's own accounting, at the same `first-useful-frame` boundary.
 
+This benchmark is **implementation-specific**, not generic. It reads `alloc=`
+and `sys=` fields that a Go runtime's instrumentation attaches to its readiness
+marker, so no other language runtime can satisfy it. A subject profile without
+`tui.heap_fields` yields `unsupported`, never a fabricated zero
+([§1.1](#11-architecture)). The metric is kept separate from the OS memory
+metrics precisely so this distinction stays visible.
+
 | Metric | Meaning |
 | --- | --- |
 | `go_heap_alloc_bytes` | `runtime.MemStats.HeapAlloc` — bytes of allocated heap objects, **including** unreachable objects not yet freed |
@@ -1048,7 +1179,7 @@ argument; it never hard-codes a path to `ff`.
 ```
 hpov list [--tier N] [--kind e2e|micro|static] [--here] [--long]
 hpov env  [--json]
-hpov run  --ff label=path [--ff …] [--select GLOB,…] [--exclude GLOB,…]
+hpov run  --subject label=path [--subject …] [--subject-profile REF] [--select GLOB,…] [--exclude GLOB,…]
           [--tier N] [--kind K] [--profile quick|standard|full]
           [--n N] [--warmup N] [--seed S] [--source release|local-build]
           [--fail-fast] [--require-quality good] [--workroot DIR] --out result.json
@@ -1061,7 +1192,7 @@ hpov compare-live --base label=path --head label=path [--select GLOB,…]
              [--tier N] [--profile P] [--n N] [--warmup N] [--seed S]
              [--thresholds FILE] [--fail-on-regression] [--explain]
              --out result.json [--comparison-out comparison.json]
-hpov calibrate --ff label=path [--repeats N] [--select GLOB,…] [--tier N]
+hpov calibrate --subject label=path [--subject-profile REF] [--repeats N] [--select GLOB,…] [--tier N]
              [--profile P] [--n N] [--warmup N] [--seed S]
              [--thresholds FILE] [--out DIR] [--report calibration.json]
 ```
@@ -1091,7 +1222,7 @@ the run is not going to be worth much.
 
 Runs the selected benchmarks against one or more subjects.
 
-- `--ff label=path` (repeatable) — the binary under measurement. Each subject
+- `--subject label=path` (repeatable; `--ff` is a backward-compatible alias) — the binary under measurement. Each subject
   is probed for SHA-256, size, Go build info and `--version` before any
   iteration, and that provenance is stored per run.
 - `--select` / `--exclude` — dotted ID globs; `launch.*` matches the subtree.
@@ -1134,7 +1265,7 @@ go build -o bin/hpov ./bench/hpov
 ./bin/hpov list --here
 
 # 5. Collect a baseline.
-./bin/hpov run --ff base=./bin/ff \
+./bin/hpov run --subject base=./bin/ff \
   --select "launch.*,mem.*" \
   --profile standard \
   --out results/baseline.json
@@ -1143,7 +1274,7 @@ go build -o bin/hpov ./bench/hpov
 ./bin/hpov validate results/baseline.json
 
 # 7. Collect a candidate (after your change).
-./bin/hpov run --ff head=./bin/ff \
+./bin/hpov run --subject head=./bin/ff \
   --select "launch.*,mem.*" \
   --profile standard \
   --out results/candidate.json
@@ -1197,8 +1328,8 @@ describe the same thing.
 | Section | Contents |
 | --- | --- |
 | `suite` | name, tool version, profile, `definition_set` |
-| `run` | id, timestamps, command line, seed, quantile method, bootstrap config, quality label + flags |
-| `subjects[]` | per binary: label, product, version string, git commit + dirty flag, and `binary` (basename, sha256, size_bytes, source, go_version, goos, goarch) |
+| `run` | id, timestamps, command line, seed, subject profile name, quantile method, bootstrap config, quality label + flags |
+| `subjects[]` | per binary: label, product (from the subject profile), version string, git commit + dirty flag, and `binary` (basename, sha256, size_bytes, source, go_version, goos, goarch) |
 | `host` | salted host fingerprint, os/arch, env label, CPU model/topology, memory, GOMAXPROCS, power, clock source + resolution, fs kind, tool versions |
 | `environment` | home isolation, stdin, marker policy, env allowlist + overrides, spawn-floor calibration, environment quality |
 | `benchmarks[]` | per (benchmark, subject): id, `definition_version`, tier, kind, status, params, resolved plan, validity predicate + probes, every iteration, every metric, flags, warnings, error |
@@ -1421,7 +1552,7 @@ go build -o bin/hpov ./bench/hpov
 ./bin/hpov list --here
 
 # 4. Run one benchmark and validate the result.
-./bin/hpov run --ff head=./bin/ff --select launch.version \
+./bin/hpov run --subject head=./bin/ff --select launch.version \
   --profile quick --out results/smoke.json
 ./bin/hpov validate results/smoke.json
 
@@ -1488,6 +1619,39 @@ this commit:
 | The noise-doubling rule appeared not to cover p95 | no behaviour difference: a noisy metric is already `inconclusive` before the tail path is reached | none needed; the interaction is now stated in the code and covered by `TestNoisyMetricCannotEscapeThroughTheTailPath` |
 | The paired bootstrap of a *percentile* difference resampled the per-round differences and took their percentile, instead of differencing the two percentiles ([§14.7](#147-tail-calibration-a-focused-experiment)) | The tail interval estimated a different quantity from the one the threshold was applied to. On interleaved data at n = 30 the two can have opposite signs, so the interval excluded zero in **every** eligible A/A decision and tail claims were made on movements the interval never covered | `DifferencePercentileCI` now resamples rounds jointly and differences the percentiles inside each resample, so the interval brackets the tested quantity. `DifferenceCI50` keeps its paired estimator, which is correct for a location shift. Pinned by `TestDifferencePercentileCIPairedEstimatesThePercentileDifference` and `TestDifferenceCI50PairedStillUsesPairDifferences` |
 
+### 13.2 Subject-boundary extraction
+
+HPOV's engine was generic but its benchmark suite carried Forcefield's contract
+in code: `internal/hpov/subject` hard-coded `product: "forcefield"`, the fixture
+scrubber removed `FF_*` unconditionally, the marker parser hard-coded the
+`ff-perf ` prefix, every run recorded `FF_PERF_MARKERS` in its provenance, and
+each benchmark embedded its own command line, exit status, output predicate and
+marker names. A second executable was accepted by the CLI but rejected by eight
+of the nine benchmarks.
+
+That contract now lives in one place — the subject profile
+([§1.1](#11-architecture)) — and the engine reads it. Consequences worth
+recording:
+
+| Change | Why it is not a silent behaviour change |
+| --- | --- |
+| `--subject label=path` replaces `--ff label=path` | `--ff` is a registered alias on the same value; existing commands are unchanged. |
+| Subject `product` comes from the profile | For Forcefield runs the value is identical (`forcefield`); the hard-coded field that mislabelled every other executable is gone. |
+| `FF_PERF_MARKERS` and `FF_*` handling moved into the Forcefield profile | Forcefield runs record and scrub exactly as before. A profile that declares neither now records neither, instead of inheriting Forcefield's environment rules. |
+| Marker prefix is a parameter of `markers.Protocol` | The Forcefield profile supplies `"ff-perf "`, so parsing is byte-identical. |
+| Benchmark workloads and validity predicates derive from the contract | For Forcefield the recorded `workload` strings are unchanged (`ff --version`, `ff --help`, `ff run --agent __bench_bogus__ x`). |
+| The headless validity predicate now reads `unknown_agent_error and stage_agents_seen` instead of `unknown-agent error and stage-agents seen` | Same rule, derived from the contract's probe-check names instead of restating them; the wording is more precise about what is checked. |
+| TUI metric names derive from the contract's mark set | The Forcefield mark set is unchanged, so every `t_*` and `seg_*` metric keeps its name and order. |
+| `run.subject_profile` added to `hpov.result` | Optional and additive; readers that ignore unknown fields are unaffected. |
+| Subject executable paths are resolved to absolute before a fixture workdir is applied | Fixes a real defect: a relative `--subject` path previously failed in any benchmark that changed the working directory. |
+
+Not changed by this work: thresholds, bootstrap and Mann-Whitney behaviour,
+Hodges-Lehmann, Holm correction, the p95 tail path, noise handling, CPU
+measurement, A/A calibration, and comparison verdict semantics.
+
+HPOV is **not** yet repository-independent. It still lives at `internal/hpov`
+inside the Forcefield module; extracting it is a separate milestone.
+
 ---
 
 ## 14. A/A calibration campaign
@@ -1515,7 +1679,7 @@ quality gates, noise handling and Holm correction a real A/B would use.
 make build hpov
 
 ./bin/hpov calibrate \
-  --ff aa=./bin/ff \
+  --subject aa=./bin/ff \
   --select "launch.*,mem.headless.peak-rss" \
   --profile standard \
   --repeats 20 \
@@ -1524,7 +1688,7 @@ make build hpov
 
 | Flag | Meaning |
 | --- | --- |
-| `--ff aa=PATH` | the single binary measured as both subjects (exactly one) |
+| `--subject aa=PATH` | the single binary measured as both subjects (exactly one); `--ff` is an alias |
 | `--repeats N` | A/A trials to run (default 10) |
 | `--select`, `--exclude`, `--tier` | the usual benchmark selection |
 | `--profile quick\|standard\|full` | iteration plan per trial |
@@ -1647,7 +1811,7 @@ control from the same threshold family:
 
 ```bash
 ./bin/hpov calibrate \
-  --ff aa=./bin/ff \
+  --subject aa=./bin/ff \
   --select "launch.headless-init.first-run,launch.headless-init.steady,launch.version" \
   --profile standard \
   --seed 424320 --repeats 100 --out results/tail-campaign

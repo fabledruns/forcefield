@@ -2,8 +2,51 @@ package fixture
 
 import (
 	"os"
+	"strings"
 	"testing"
+
+	"forcefield/internal/hpov/bench"
 )
+
+// TestScrubEnvIsSubjectDriven pins the boundary: a variable namespace is
+// scrubbed because a subject's contract names it, not because HPOV
+// happens to know the name.
+func TestScrubEnvIsSubjectDriven(t *testing.T) {
+	t.Setenv("FF_PERF_MARKERS", "1")
+
+	// With no contract, HPOV records no opinion about another product's
+	// namespace: only its own generic rules (proxies, GIT_*) are
+	// recorded as deliberately removed.
+	_, removed := ScrubEnv(nil, bench.Env{})
+	for _, r := range removed {
+		if r == "FF_PERF_MARKERS" {
+			t.Fatal("an undeclared namespace must not be recorded as scrubbed by HPOV")
+		}
+	}
+
+	// The Forcefield profile's contract does declare FF_, so it is
+	// removed and recorded.
+	env, removed := ScrubEnv(nil, bench.Env{ScrubPrefixes: []string{"FF_"}})
+	if contains(strings.Join(env, "\n"), "FF_PERF_MARKERS=") {
+		t.Fatal("declared prefix must not reach the child")
+	}
+	found := false
+	for _, r := range removed {
+		if r == "FF_PERF_MARKERS" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("removed does not record the contract-scrubbed variable (got %v)", removed)
+	}
+
+	// A declared name is honored even when it is otherwise allowlisted,
+	// which is what makes the list a contract rather than a hint.
+	env, _ = ScrubEnv(nil, bench.Env{ScrubExact: []string{"PATH"}})
+	if contains(strings.Join(env, "\n"), "PATH=") {
+		t.Fatal("contract-declared exact name must not reach the child")
+	}
+}
 
 func TestRunRootAndDirs(t *testing.T) {
 	root, err := NewRunRoot("")
@@ -30,7 +73,10 @@ func TestScrubEnv(t *testing.T) {
 	t.Setenv("GIT_DIR", "/tmp/x")
 	t.Setenv("FF_PERF_MARKERS", "1")
 	t.Setenv("HTTP_PROXY", "http://proxy")
-	env, removed := ScrubEnv(map[string]string{"HPOV_TEST_SET": "1"})
+	// FF_* is scrubbed only because the subject's contract says so:
+	// HPOV itself has no product to hide.
+	scrub := bench.Env{ScrubPrefixes: []string{"FF_"}}
+	env, removed := ScrubEnv(map[string]string{"HPOV_TEST_SET": "1"}, scrub)
 	joined := ""
 	for _, kv := range env {
 		joined += kv + "\n"

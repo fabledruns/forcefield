@@ -12,6 +12,11 @@ import (
 	"forcefield/internal/hpov/markers"
 )
 
+// ffMarkers parses Forcefield's own marker protocol. The HPOV parser
+// takes the prefix as data, so a subject states which protocol it
+// speaks instead of the parser assuming one.
+var ffMarkers = markers.Protocol{Prefix: "ff-perf "}
+
 // TestMain re-execs the test binary as a marker-emitting child when
 // HPOV_RUNTIME_MARKERS_CHILD=1. The child builds a real Runtime with
 // an isolated home and exits 0; markers go to stderr. Modes:
@@ -111,7 +116,7 @@ func TestNewMarkerOrder(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("child exit = %d\nstderr:\n%s", code, stderr)
 	}
-	events := markers.Events(stderr)
+	events := ffMarkers.Events(stderr)
 	// Headless order: main-entry comes from main.main (absent here;
 	// the child starts inside the test binary). Config is loaded in
 	// New() before newRuntime starts, so config-loaded precedes
@@ -139,11 +144,11 @@ func TestNewFromConfigSkipsConfigLoaded(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("child exit = %d\nstderr:\n%s", code, stderr)
 	}
-	events := markers.Events(stderr)
+	events := ffMarkers.Events(stderr)
 	if len(events) == 0 || events[0] != "runtime-init-start" {
 		t.Fatalf("events = %v, want runtime-init-start first", events)
 	}
-	if markers.Has(stderr, "config-loaded") {
+	if ffMarkers.Has(stderr, "config-loaded") {
 		t.Fatalf("NewFromConfig must not emit config-loaded (events = %v)", events)
 	}
 }

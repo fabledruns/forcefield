@@ -51,7 +51,7 @@ func (n *noopBench) Setup(_ context.Context, _ *bench.RunEnv, _ bench.Subject) (
 }
 
 func (n *noopBench) Iterate(ctx context.Context, _ bench.Fixture, _ bench.Subject, _ bench.Iter) (bench.Observation, error) {
-	env, _ := fixture.ScrubEnv(nil)
+	env, _ := fixture.ScrubEnv(nil, bench.Env{})
 	self := n.self
 	if self == "" {
 		var err error

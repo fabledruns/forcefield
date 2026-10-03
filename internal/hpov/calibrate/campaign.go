@@ -12,6 +12,7 @@ import (
 	"forcefield/internal/hpov/compare"
 	"forcefield/internal/hpov/runner"
 	"forcefield/internal/hpov/schema"
+	"forcefield/internal/hpov/subject"
 )
 
 // Default subject labels. Two labels, one binary: the comparison needs
@@ -28,14 +29,18 @@ type Config struct {
 	Benchmarks []bench.Benchmark
 	// SubjectPath is the one binary measured as both subjects.
 	SubjectPath string
-	Source      string
-	BaseLabel   string
-	HeadLabel   string
-	Select      []string
-	Tier        int
-	Profile     string
-	N           *int
-	Warmup      *int
+	// SubjectProfile is the workload contract both presentations are
+	// measured under. The zero profile measures only what needs no
+	// contract, so a calibration of a real harness must name one.
+	SubjectProfile subject.Profile
+	Source         string
+	BaseLabel      string
+	HeadLabel      string
+	Select         []string
+	Tier           int
+	Profile        string
+	N              *int
+	Warmup         *int
 	// SeedBase is trial 0's seed; trial i uses SeedBase+i, so the
 	// interleaving order stays reproducible per trial while the campaign
 	// as a whole samples more than one order.
@@ -189,20 +194,21 @@ func runTrial(ctx context.Context, cfg Config, baseLabel, headLabel string, inde
 
 	outcome, err := runner.Run(ctx, runner.Config{
 		Benchmarks: cfg.Benchmarks,
-		Subjects: []bench.Subject{
+		Subjects: cfg.SubjectProfile.ApplyTo([]bench.Subject{
 			{Label: baseLabel, Path: cfg.SubjectPath},
 			{Label: headLabel, Path: cfg.SubjectPath},
-		},
-		SubjectSource: cfg.Source,
-		Select:        cfg.Select,
-		Tier:          cfg.Tier,
-		Profile:       cfg.Profile,
-		N:             cfg.N,
-		Warmup:        cfg.Warmup,
-		Seed:          seed,
-		Out:           resultPath,
-		WorkRoot:      cfg.WorkRoot,
-		CommandLine:   cfg.CommandLine,
+		}),
+		SubjectProfile: cfg.SubjectProfile,
+		SubjectSource:  cfg.Source,
+		Select:         cfg.Select,
+		Tier:           cfg.Tier,
+		Profile:        cfg.Profile,
+		N:              cfg.N,
+		Warmup:         cfg.Warmup,
+		Seed:           seed,
+		Out:            resultPath,
+		WorkRoot:       cfg.WorkRoot,
+		CommandLine:    cfg.CommandLine,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("run: %w", err)

@@ -16,7 +16,7 @@ func stamped(base time.Time, texts ...string) []StampedLine {
 
 func TestBuildOrderAndFirstWins(t *testing.T) {
 	base := time.Now()
-	tl := Build(stamped(base,
+	tl := ffp.Build(stamped(base,
 		"noise",
 		"ff-perf main-entry",
 		"ff-perf config-loaded",
@@ -38,7 +38,7 @@ func TestBuildDedicatedStderrPipe(t *testing.T) {
 	// Markers reach the driver on the child's own stderr pipe: one per
 	// line, in emission order, with a trailing CR tolerated.
 	base := time.Now()
-	tl := Build(stamped(base,
+	tl := ffp.Build(stamped(base,
 		"ff-perf first-frame alloc=5 sys=6\r\n",
 		"ff-perf runtime-ready alloc=7 sys=8\n",
 	))
@@ -55,7 +55,7 @@ func TestBuildRejectsConsoleNoise(t *testing.T) {
 	// marker line: the driver must never see console output on the
 	// marker pipe.
 	base := time.Now()
-	tl := Build(stamped(base, "\x1b[2Kff-perf runtime-ready alloc=1 sys=2\r"))
+	tl := ffp.Build(stamped(base, "\x1b[2Kff-perf runtime-ready alloc=1 sys=2\r"))
 	if len(tl.Order) != 0 {
 		t.Fatalf("console noise parsed as marks: %v", tl.Order)
 	}
@@ -63,7 +63,7 @@ func TestBuildRejectsConsoleNoise(t *testing.T) {
 
 func TestBuildSkipsMalformed(t *testing.T) {
 	base := time.Now()
-	tl := Build(stamped(base,
+	tl := ffp.Build(stamped(base,
 		"ff-perf ",
 		"ff-perf foo=bar",
 		"ff-perf good-name",
@@ -75,7 +75,7 @@ func TestBuildSkipsMalformed(t *testing.T) {
 
 func TestBuildIgnoresTSField(t *testing.T) {
 	base := time.Now()
-	tl := Build(stamped(base, "ff-perf main-entry t=17138300"))
+	tl := ffp.Build(stamped(base, "ff-perf main-entry t=17138300"))
 	ms, ok := tl.Ms("main-entry", base)
 	if !ok || ms != 0 {
 		t.Fatalf("ms = %v, %v (reader clock rules, not t=)", ms, ok)
@@ -83,7 +83,7 @@ func TestBuildIgnoresTSField(t *testing.T) {
 }
 
 func TestMissing(t *testing.T) {
-	tl := Build(stamped(time.Now(), "ff-perf main-entry"))
+	tl := ffp.Build(stamped(time.Now(), "ff-perf main-entry"))
 	if got := tl.Missing([]string{"main-entry", "first-useful-frame"}); !reflect.DeepEqual(got, []string{"first-useful-frame"}) {
 		t.Fatalf("missing = %v", got)
 	}
@@ -94,7 +94,7 @@ func TestMissing(t *testing.T) {
 
 func TestMsDeltas(t *testing.T) {
 	base := time.Now()
-	tl := Build(stamped(base, "ff-perf a", "ff-perf b"))
+	tl := ffp.Build(stamped(base, "ff-perf a", "ff-perf b"))
 	ma, _ := tl.Ms("a", base)
 	mb, _ := tl.Ms("b", base)
 	if ma != 0 || mb != 10 {

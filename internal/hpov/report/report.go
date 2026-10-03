@@ -15,6 +15,9 @@ func Render(r *schema.Result) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "hpov %s profile=%s suite=%s\n", r.Suite.Version, r.Suite.Profile, r.Suite.DefinitionSet)
 	fmt.Fprintf(&b, "run %s  seed=%d  quality=%s", r.Run.ID, r.Run.Seed, r.Run.Quality.Label)
+	if r.Run.SubjectProfile != "" {
+		fmt.Fprintf(&b, "  subject-profile=%s", r.Run.SubjectProfile)
+	}
 	if len(r.Run.Quality.Flags) > 0 {
 		fmt.Fprintf(&b, "  flags=%s", strings.Join(r.Run.Quality.Flags, ","))
 	}

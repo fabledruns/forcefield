@@ -1,41 +1,40 @@
-// Launch benchmarks: process-level end-to-end measurement of the ff
-// binary using only externally observable boundaries (spawn, exit,
+// Launch benchmarks: process-level end-to-end measurement of a subject
+// executable using only externally observable boundaries (spawn, exit,
 // exit code, stdout/stderr text, markers on a separate pass).
+//
+// Every command, output predicate and exit status comes from the
+// subject's contract; nothing here assumes a particular harness. A
+// subject whose contract omits a workload gets an explicit unsupported
+// entry rather than a measurement of something else.
 //
 // Contracts:
 //
-//	launch.version — `ff --version` in an isolated workdir.
-//	  Start: immediately before process start. End: Wait returns.
-//	  Exit 0, stdout begins with "ff version". Steady profile (home
-//	  pre-created, though --version never touches config).
+//	launch.version — the contract's version command in an isolated
+//	  workdir. Start: immediately before process start. End: Wait
+//	  returns. Validity: the contract's exit status and stdout prefix.
 //	  Metrics: wall_ms (primary), cpu_ms = user+sys (secondary).
 //
-//	launch.help — `ff --help`, same boundaries. Exit 0, stdout
-//	  contains "Usage:". Metrics: wall_ms, cpu_ms. Help byte count
-//	  recorded per iteration (command-set drift changes help size).
+//	launch.help — the contract's help command, same boundaries, with the
+//	  contract's stdout predicate. Help byte count recorded per
+//	  iteration (command-set drift changes help size).
 //
-//	launch.headless-init.steady — `ff run --agent __bench_bogus__ x`
-//	  with an existing isolated home + workdir: config load, skills,
-//	  repo root, memory store, provider, tools, policy/sandbox,
-//	  agents, then deliberate local exit at agent validation.
-//	  Exit 1 BY DESIGN (unknown agent after the full runtime is
-//	  built). Validity per sample: exit_code==1. Per run: pre/post
-//	  marker probes must see the unknown-agent error AND
-//	  `stage-agents`. Metrics: wall_ms, cpu_ms.
-//	  Steady = home primed once (untimed) so config.yaml exists;
-//	  every measured iteration shares the same preconditions and
-//	  performs no setup work inside the timed region.
+//	launch.headless-init.steady — the contract's headless workload with
+//	  an existing isolated home + workdir, primed once untimed so every
+//	  measured iteration shares identical preconditions. The workload
+//	  reaches its intended boundary by a deliberate non-zero exit.
+//	  Validity per sample: the contract's exit status. Per run: the
+//	  pre/post probe must satisfy every contract probe check.
+//	  Metrics: wall_ms, cpu_ms.
 //
 //	launch.headless-init.first-run — same workload, fresh isolated
-//	  home + workdir per iteration (config.Dir creates+chmods
-//	  ~/.forcefield, config.Load writes config.yaml and prints
-//	  "Created default config" to stderr). No warm-up. This is NOT
-//	  an OS-cold measurement: "first-run" means fresh home, never a
-//	  cold file cache.
+//	  home + workdir per iteration. No warm-up. This is NOT an OS-cold
+//	  measurement: "first-run" means fresh home, never a cold file
+//	  cache.
 //
 //	launch.artifact-size — stat() + sha256 of the subject binary.
 //	  Exact byte size, deterministic; executable size is not memory
-//	  usage. Repeated 3x for equality.
+//	  usage. Repeated 3x for equality. Subject-independent: it needs no
+//	  contract at all.
 package suites
 
 import (
@@ -54,11 +53,6 @@ import (
 	"forcefield/internal/hpov/schema"
 	"forcefield/internal/hpov/spawn"
 )
-
-// sentinelAgent exercises the full runtime construction path and
-// then fails local agent validation. Kept identical to
-// bench/startup.ps1 for continuity.
-const sentinelAgent = "__bench_bogus__"
 
 // LaunchIDs lists the launch family in registration order.
 var LaunchIDs = []string{
@@ -146,31 +140,24 @@ func freshDirs(parent, tag string) (home, work string, err error) {
 	return home, work, nil
 }
 
-// launchEnv builds the scrubbed child environment with home
-// isolation (USERPROFILE on Windows, HOME on Unix). markers enables
-// FF_PERF_MARKERS for the marker pass only; the wall pass never sets
-// it, so marker perturbation (ReadMemStats STW, stderr writes) is
-// never inside headline samples.
-func launchEnv(home string, withMarkers bool) []string {
+// launchEnv builds the scrubbed child environment with home isolation
+// (USERPROFILE on Windows, HOME on Unix). markers turns the subject's
+// own instrumentation on for the marker pass only; the wall pass never
+// sets it, so instrumentation perturbation is never inside headline
+// samples. Both the marker variables and the subject's scrub list come
+// from the contract, so a subject with neither is unaffected.
+func launchEnv(subj bench.Subject, home string, withMarkers bool) []string {
 	set := fixture.HomeEnv(home)
 	if withMarkers {
-		set["FF_PERF_MARKERS"] = "1"
+		for k, v := range subj.Contract.EnableEnv {
+			set[k] = v
+		}
 	}
-	for k, v := range testEnvPassthrough {
+	for k, v := range subj.Contract.Env.Passthrough {
 		set[k] = v
 	}
-	env, _ := fixture.ScrubEnv(set)
+	env, _ := fixture.ScrubEnv(set, subj.Contract.Env)
 	return env
-}
-
-// testEnvPassthrough forwards extra variables into the scrubbed child
-// environment. Production leaves it empty (like the repo's other
-// package-var test seams: rootTuiStarter, runtimeRun). The launch
-// tests use it to steer the re-exec fake subject.
-var testEnvPassthrough = map[string]string{}
-
-func headlessArgs() []string {
-	return []string{"run", "--agent", sentinelAgent, "x"}
 }
 
 // cpuAttr splits kernel CPU time for the secondary metric.
@@ -181,19 +168,26 @@ func cpuMs(res spawn.Result) float64 {
 type versionBench struct{}
 
 func (b *versionBench) Spec() bench.Spec {
+	return b.SpecFor(bench.Subject{})
+}
+
+// SpecFor describes the benchmark against the subject's contract: the
+// version command and its stdout predicate are the subject's, not HPOV's.
+func (b *versionBench) SpecFor(subj bench.Subject) bench.Spec {
+	c := subj.Contract
 	return bench.Spec{
 		ID:                "launch.version",
 		DefinitionVersion: 1,
-		Title:             "CLI floor: --version",
-		Purpose: "OS process creation + Go runtime/package init + cobra parse of " +
-			"--version. Not headline startup speed: it calibrates how much of " +
-			"every other launch number is fixed cost. Exit 0, stdout begins " +
-			"with \"ff version\".",
+		Title:             "CLI floor: version command",
+		Purpose: "OS process creation + runtime/package init + argument parsing of " +
+			"the subject's version command. Not headline startup speed: it " +
+			"calibrates how much of every other launch number is fixed cost. " +
+			"Validity is the contract's exit status and stdout predicate.",
 		Kind:      bench.KindE2E,
 		Tier:      1,
 		Metrics:   launchMetrics(),
-		Params:    map[string]string{"workload": "ff --version", "profile": "steady"},
-		Predicate: "exit_code==0 and stdout starts with 'ff version'",
+		Params:    map[string]string{"workload": c.Method(c.Version.Args), "profile": "steady"},
+		Predicate: c.Version.Predicate(),
 	}
 }
 
@@ -205,6 +199,9 @@ func launchMetrics() []bench.MetricSpec {
 }
 
 func (b *versionBench) Setup(_ context.Context, env *bench.RunEnv, subj bench.Subject) (bench.Fixture, error) {
+	if !subj.Contract.Version.Defined() {
+		return bench.Fixture{}, subj.Unsupported("a version command")
+	}
 	parent, err := launchParent(env.Root, "launch.version", subj)
 	if err != nil {
 		return bench.Fixture{}, err
@@ -217,9 +214,10 @@ func (b *versionBench) Setup(_ context.Context, env *bench.RunEnv, subj bench.Su
 }
 
 func (b *versionBench) Iterate(ctx context.Context, fx bench.Fixture, subj bench.Subject, _ bench.Iter) (bench.Observation, error) {
+	probe := subj.Contract.Version
 	res, err := spawn.Run(ctx, spawn.Options{
-		Path: subj.Path, Args: []string{"--version"},
-		Env: launchEnv(fx.HomeDir, false), Dir: fx.WorkDir,
+		Path: subj.Path, Args: probe.Args,
+		Env: launchEnv(subj, fx.HomeDir, false), Dir: fx.WorkDir,
 		CaptureStdout: true, Timeout: fx.Timeout,
 	})
 	if err != nil {
@@ -228,7 +226,7 @@ func (b *versionBench) Iterate(ctx context.Context, fx bench.Fixture, subj bench
 	first := strings.TrimSpace(strings.SplitN(res.Stdout, "\n", 2)[0])
 	obs := bench.Observation{
 		Values: map[string]float64{"wall_ms": res.WallMS, "cpu_ms": cpuMs(res)},
-		Valid:  res.ExitCode == 0 && !res.TimedOut && strings.HasPrefix(first, "ff version"),
+		Valid:  res.ExitCode == probe.WantExit() && !res.TimedOut && stdoutOK(first, res.Stdout, probe),
 		Attrs: map[string]string{
 			"exit_code":    itoa(uint64(res.ExitCode)),
 			"stdout_bytes": itoa(uint64(len(res.Stdout))),
@@ -236,32 +234,51 @@ func (b *versionBench) Iterate(ctx context.Context, fx bench.Fixture, subj bench
 		},
 	}
 	if !obs.Valid {
-		obs.InvalidReason = "expected exit 0 with 'ff version' stdout"
+		obs.InvalidReason = "expected " + probe.Predicate()
 	}
 	return obs, nil
+}
+
+// stdoutOK applies the contract's stdout predicate: a prefix on the first
+// line, a substring anywhere, or nothing beyond the exit status.
+func stdoutOK(first, all string, probe bench.Probe) bool {
+	switch {
+	case probe.StdoutPrefix != "":
+		return strings.HasPrefix(first, probe.StdoutPrefix)
+	case probe.StdoutContains != "":
+		return strings.Contains(all, probe.StdoutContains)
+	default:
+		return true
+	}
 }
 
 func (b *versionBench) Teardown(_ context.Context, _ bench.Fixture) error { return nil }
 
 type helpBench struct{}
 
-func (b *helpBench) Spec() bench.Spec {
+func (b *helpBench) Spec() bench.Spec { return b.SpecFor(bench.Subject{}) }
+
+func (b *helpBench) SpecFor(subj bench.Subject) bench.Spec {
+	c := subj.Contract
 	return bench.Spec{
 		ID:                "launch.help",
 		DefinitionVersion: 1,
-		Title:             "CLI floor: --help",
-		Purpose: "Same floor as --version plus cobra help rendering. Exit 0, " +
-			"stdout contains \"Usage:\". Help byte count is recorded per " +
-			"iteration: command-set drift changes help size.",
+		Title:             "CLI floor: help command",
+		Purpose: "Same floor as the version command plus help rendering. " +
+			"Help byte count is recorded per iteration: command-set drift " +
+			"changes help size.",
 		Kind:      bench.KindE2E,
 		Tier:      1,
 		Metrics:   launchMetrics(),
-		Params:    map[string]string{"workload": "ff --help", "profile": "steady"},
-		Predicate: "exit_code==0 and stdout contains 'Usage:'",
+		Params:    map[string]string{"workload": c.Method(c.Help.Args), "profile": "steady"},
+		Predicate: c.Help.Predicate(),
 	}
 }
 
 func (b *helpBench) Setup(_ context.Context, env *bench.RunEnv, subj bench.Subject) (bench.Fixture, error) {
+	if !subj.Contract.Help.Defined() {
+		return bench.Fixture{}, subj.Unsupported("a help command")
+	}
 	parent, err := launchParent(env.Root, "launch.help", subj)
 	if err != nil {
 		return bench.Fixture{}, err
@@ -274,9 +291,10 @@ func (b *helpBench) Setup(_ context.Context, env *bench.RunEnv, subj bench.Subje
 }
 
 func (b *helpBench) Iterate(ctx context.Context, fx bench.Fixture, subj bench.Subject, _ bench.Iter) (bench.Observation, error) {
+	probe := subj.Contract.Help
 	res, err := spawn.Run(ctx, spawn.Options{
-		Path: subj.Path, Args: []string{"--help"},
-		Env: launchEnv(fx.HomeDir, false), Dir: fx.WorkDir,
+		Path: subj.Path, Args: probe.Args,
+		Env: launchEnv(subj, fx.HomeDir, false), Dir: fx.WorkDir,
 		CaptureStdout: true, Timeout: fx.Timeout,
 	})
 	if err != nil {
@@ -284,14 +302,15 @@ func (b *helpBench) Iterate(ctx context.Context, fx bench.Fixture, subj bench.Su
 	}
 	obs := bench.Observation{
 		Values: map[string]float64{"wall_ms": res.WallMS, "cpu_ms": cpuMs(res)},
-		Valid:  res.ExitCode == 0 && !res.TimedOut && strings.Contains(res.Stdout, "Usage:"),
+		Valid: res.ExitCode == probe.WantExit() && !res.TimedOut &&
+			stdoutOK("", res.Stdout, probe),
 		Attrs: map[string]string{
 			"exit_code":    itoa(uint64(res.ExitCode)),
 			"stdout_bytes": itoa(uint64(len(res.Stdout))),
 		},
 	}
 	if !obs.Valid {
-		obs.InvalidReason = "expected exit 0 with 'Usage:' stdout"
+		obs.InvalidReason = "expected " + probe.Predicate()
 	}
 	return obs, nil
 }
@@ -309,35 +328,35 @@ func (b *headlessBench) id() string {
 	return "launch.headless-init.steady"
 }
 
-func (b *headlessBench) Spec() bench.Spec {
+func (b *headlessBench) Spec() bench.Spec { return b.SpecFor(bench.Subject{}) }
+
+func (b *headlessBench) SpecFor(subj bench.Subject) bench.Spec {
+	c := subj.Contract
 	profile := "steady"
-	purpose := "Full runtime construction on the headless path with an existing " +
-		"isolated home + workdir (primed once, untimed): config load, skills " +
-		"catalog, repo root, memory store, provider, tools, policy/sandbox " +
-		"executor, agents — then deliberate local exit at agent validation " +
-		"(exit 1 BY DESIGN). Every measured iteration shares identical " +
-		"preconditions; no setup work runs inside the timed region."
+	purpose := "Full subject initialization on the headless path with an existing " +
+		"isolated home + workdir (primed once, untimed), measured to the " +
+		"contract's deliberate boundary exit. Every measured iteration shares " +
+		"identical preconditions; no setup work runs inside the timed region."
 	if b.firstRun {
 		profile = "first-run"
 		purpose = "Same headless workload with a FRESH isolated home + workdir " +
-			"per iteration: config.Dir creates+chmods ~/.forcefield, " +
-			"config.Load writes config.yaml and prints \"Created default " +
-			"config\" to stderr. No warm-up. This is NOT an OS-cold " +
-			"measurement: first-run means fresh home, never a cold file cache."
+			"per iteration, including whatever first-run state the subject " +
+			"creates. No warm-up. This is NOT an OS-cold measurement: first-run " +
+			"means fresh home, never a cold file cache."
 	}
 	spec := bench.Spec{
 		ID:                b.id(),
 		DefinitionVersion: 1,
-		Title:             "Headless runtime init (" + profile + ")",
+		Title:             "Headless init (" + profile + ")",
 		Purpose:           purpose,
 		Kind:              bench.KindE2E,
 		Tier:              1,
 		Metrics:           launchMetrics(),
 		Params: map[string]string{
-			"workload": "ff run --agent __bench_bogus__ x",
+			"workload": c.Method(c.Headless.Args),
 			"profile":  profile, "repo": "none", "mcp_servers": "0",
 		},
-		Predicate: "exit_code==1; pre/post probe: unknown-agent error and stage-agents seen",
+		Predicate: c.Headless.Predicate(),
 	}
 	if b.firstRun {
 		spec.Plans = map[string]bench.Plan{
@@ -350,6 +369,9 @@ func (b *headlessBench) Spec() bench.Spec {
 }
 
 func (b *headlessBench) Setup(ctx context.Context, env *bench.RunEnv, subj bench.Subject) (bench.Fixture, error) {
+	if !subj.Contract.Headless.Defined() {
+		return bench.Fixture{}, subj.Unsupported("a headless workload")
+	}
 	parent, err := launchParent(env.Root, b.id(), subj)
 	if err != nil {
 		return bench.Fixture{}, err
@@ -364,38 +386,43 @@ func (b *headlessBench) Setup(ctx context.Context, env *bench.RunEnv, subj bench
 	if err != nil {
 		return bench.Fixture{}, err
 	}
-	// Untimed priming run: generates the real default config.yaml so
-	// measured iterations start from identical steady preconditions.
-	if err := primeHeadlessHome(ctx, subj.Path, home, work, timeout); err != nil {
-		return bench.Fixture{}, err
+	// Untimed priming run when the contract asks for one: it creates the
+	// subject's first-run state so measured iterations start from
+	// identical steady preconditions.
+	if subj.Contract.Headless.Primed {
+		if err := primeHeadlessHome(ctx, subj, home, work, timeout); err != nil {
+			return bench.Fixture{}, err
+		}
 	}
 	return bench.Fixture{HomeDir: home, WorkDir: work, Timeout: timeout}, nil
 }
 
-// primeHeadlessHome runs the headless workload once, untimed, to
-// generate the real default config.yaml. The workload exits 1 by
-// design; anything else means the subject does not reach the
-// intended boundary.
-func primeHeadlessHome(ctx context.Context, subjPath, home, work string, timeout time.Duration) error {
+// primeHeadlessHome runs the headless workload once, untimed, to create
+// the subject's first-run state. The workload reaches its boundary by
+// the contract's exit status; anything else means the subject does not
+// reach the intended boundary.
+func primeHeadlessHome(ctx context.Context, subj bench.Subject, home, work string, timeout time.Duration) error {
+	c := subj.Contract.Headless
 	res, err := spawn.Run(ctx, spawn.Options{
-		Path: subjPath, Args: headlessArgs(),
-		Env: launchEnv(home, false), Dir: work, Timeout: timeout,
+		Path: subj.Path, Args: c.Args,
+		Env: launchEnv(subj, home, false), Dir: work, Timeout: timeout,
 	})
 	if err != nil {
 		return fmt.Errorf("priming run: %w", err)
 	}
-	if res.ExitCode != 1 || res.TimedOut {
+	if res.ExitCode != c.ExitCode || res.TimedOut {
 		return &bench.SkipError{
 			Status: schema.StatusInvalid,
 			Code:   schema.ErrInvalidWorkload,
-			Detail: fmt.Sprintf("priming: exit=%d timed_out=%v, want the unknown-agent exit 1",
-				res.ExitCode, res.TimedOut),
+			Detail: fmt.Sprintf("priming: exit=%d timed_out=%v, want the contract's boundary exit %d",
+				res.ExitCode, res.TimedOut, c.ExitCode),
 		}
 	}
 	return nil
 }
 
 func (b *headlessBench) Iterate(ctx context.Context, fx bench.Fixture, subj bench.Subject, it bench.Iter) (bench.Observation, error) {
+	c := subj.Contract.Headless
 	home, work := fx.HomeDir, fx.WorkDir
 	if b.firstRun {
 		// Fresh pair per iteration, created OUTSIDE the timed
@@ -407,30 +434,32 @@ func (b *headlessBench) Iterate(ctx context.Context, fx bench.Fixture, subj benc
 		}
 	}
 	res, err := spawn.Run(ctx, spawn.Options{
-		Path: subj.Path, Args: headlessArgs(),
-		Env: launchEnv(home, false), Dir: work, Timeout: fx.Timeout,
+		Path: subj.Path, Args: c.Args,
+		Env: launchEnv(subj, home, false), Dir: work, Timeout: fx.Timeout,
 	})
 	if err != nil {
 		return bench.Observation{Valid: false, InvalidReason: err.Error()}, err
 	}
 	obs := bench.Observation{
 		Values: map[string]float64{"wall_ms": res.WallMS, "cpu_ms": cpuMs(res)},
-		// Exit 1 is expected application termination (unknown agent
-		// after the full runtime was built), not a failure.
-		Valid: res.ExitCode == 1 && !res.TimedOut,
+		// The contract's boundary exit is expected application
+		// termination, not a failure.
+		Valid: res.ExitCode == c.ExitCode && !res.TimedOut,
 		Attrs: exitAttr(res),
 	}
 	if !obs.Valid {
-		obs.InvalidReason = "expected exit_code==1 (unknown-agent termination)"
+		obs.InvalidReason = fmt.Sprintf("expected the contract's boundary exit_code==%d", c.ExitCode)
 	}
 	return obs, nil
 }
 
-// Probe runs the markers-on confirmation: the workload must still
-// reach agent validation (exit 1), print the unknown-agent error,
-// and emit stage-agents. Guards against validation moving earlier in
-// a future release, which would silently measure something else.
+// Probe runs the markers-on confirmation: the workload must still reach
+// the contract's boundary exit and satisfy every contract probe check
+// (stderr text, or an instrumentation marker). It guards against a
+// future release moving the boundary earlier, which would silently
+// measure something else.
 func (b *headlessBench) Probe(ctx context.Context, fx bench.Fixture, subj bench.Subject) (bool, map[string]bool, error) {
+	c := subj.Contract.Headless
 	home, work := fx.HomeDir, fx.WorkDir
 	if b.firstRun {
 		var err error
@@ -440,18 +469,26 @@ func (b *headlessBench) Probe(ctx context.Context, fx bench.Fixture, subj bench.
 		}
 	}
 	res, err := spawn.Run(ctx, spawn.Options{
-		Path: subj.Path, Args: headlessArgs(),
-		Env: launchEnv(home, true), Dir: work,
+		Path: subj.Path, Args: c.Args,
+		Env: launchEnv(subj, home, true), Dir: work,
 		CaptureStderr: true, Timeout: fx.Timeout,
 	})
 	checks := map[string]bool{}
 	if err != nil {
 		return false, checks, err
 	}
-	checks["exit_code_1"] = res.ExitCode == 1 && !res.TimedOut
-	checks["unknown_agent_error"] = strings.Contains(res.Stderr, `unknown agent "`+sentinelAgent+`"`)
-	checks["stage_agents_seen"] = markers.Has(res.Stderr, "stage-agents")
-	ok := checks["exit_code_1"] && checks["unknown_agent_error"] && checks["stage_agents_seen"]
+	ok := res.ExitCode == c.ExitCode && !res.TimedOut
+	checks["exit_code_"+itoa(uint64(c.ExitCode))] = ok
+	proto := markers.Protocol{Prefix: subj.Contract.MarkerPrefix}
+	for _, chk := range c.ProbeChecks {
+		switch {
+		case chk.Substring != "":
+			checks[chk.Name] = strings.Contains(res.Stderr, chk.Substring)
+		case chk.Marker != "":
+			checks[chk.Name] = proto.Has(res.Stderr, chk.Marker)
+		}
+		ok = ok && checks[chk.Name]
+	}
 	return ok, checks, nil
 }
 

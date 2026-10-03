@@ -10,6 +10,7 @@ import (
 
 	"forcefield/internal/hpov/bench"
 	"forcefield/internal/hpov/schema"
+	"forcefield/internal/hpov/subject"
 )
 
 // TestMain makes the test binary a valid __noop subject: the
@@ -62,8 +63,11 @@ func testSubjects(t *testing.T) []bench.Subject {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Probe only stats+hashes; --version failure is tolerated.
-	return []bench.Subject{{Label: "base", Path: self}, {Label: "head", Path: self}}
+	// Probe only stats+hashes; a version-command failure is tolerated.
+	return []bench.Subject{
+		{Label: "base", Path: self, Contract: subject.Builtin().Contract},
+		{Label: "head", Path: self, Contract: subject.Builtin().Contract},
+	}
 }
 
 func runFake(t *testing.T, seed int64) ([]schema.Benchmark, []string) {
@@ -72,15 +76,16 @@ func runFake(t *testing.T, seed int64) ([]schema.Benchmark, []string) {
 	n, w := 4, 1
 	out := filepath.Join(t.TempDir(), "r.json")
 	oc, err := Run(context.Background(), Config{
-		Benchmarks: []bench.Benchmark{fb},
-		Subjects:   testSubjects(t),
-		Select:     []string{"test.fake"},
-		Tier:       -1,
-		Profile:    "quick",
-		N:          &n,
-		Warmup:     &w,
-		Seed:       seed,
-		Out:        out,
+		Benchmarks:     []bench.Benchmark{fb},
+		Subjects:       testSubjects(t),
+		SubjectProfile: subject.Builtin(),
+		Select:         []string{"test.fake"},
+		Tier:           -1,
+		Profile:        "quick",
+		N:              &n,
+		Warmup:         &w,
+		Seed:           seed,
+		Out:            out,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -227,15 +232,16 @@ func TestUnavailableMetricExcludedFromStats(t *testing.T) {
 	n, w := 4, 0
 	out := filepath.Join(t.TempDir(), "r.json")
 	oc, err := Run(context.Background(), Config{
-		Benchmarks: []bench.Benchmark{&gapBench{}},
-		Subjects:   testSubjects(t)[:1],
-		Select:     []string{"test.gap"},
-		Tier:       -1,
-		Profile:    "quick",
-		N:          &n,
-		Warmup:     &w,
-		Seed:       424242,
-		Out:        out,
+		Benchmarks:     []bench.Benchmark{&gapBench{}},
+		Subjects:       testSubjects(t)[:1],
+		SubjectProfile: subject.Builtin(),
+		Select:         []string{"test.gap"},
+		Tier:           -1,
+		Profile:        "quick",
+		N:              &n,
+		Warmup:         &w,
+		Seed:           424242,
+		Out:            out,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -1,19 +1,24 @@
-// Memory benchmarks: what a Forcefield run costs in resident memory,
-// and what its Go runtime heap held at the same moment.
+// Memory benchmarks: what a subject run costs in resident memory, and
+// what its language runtime's heap held at the same moment.
 //
-// Three metrics, deliberately kept apart:
+// The measurement machinery is generic — kernel peak tracking and
+// sampled process-tree totals per OS. The workloads, the readiness
+// boundary and the instrumentation come from the subject's contract.
+//
+// Three metric families, deliberately kept apart:
 //
 //	mem.headless.peak-rss  OS peak resident memory of the headless
 //	                       process tree, from the kernel's own tracking
 //	                       where it exists (Windows peak working set,
 //	                       Linux VmHWM) and a sampled tree total
 //	                       alongside it.
-//	mem.tui.ready-rss      OS resident memory at the TUI's readiness
-//	                       boundary (first-useful-frame), root and
-//	                       tree, current rather than peak.
-//	mem.tui.go-heap        Go runtime HeapAlloc at the same boundary,
-//	                       derived from the ff-perf marker fields and
-//	                       never conflated with OS memory.
+//	mem.tui.ready-rss      OS resident memory at the subject's readiness
+//	                       boundary, root and tree, current rather than
+//	                       peak.
+//	mem.tui.go-heap        Go runtime HeapAlloc at the same boundary.
+//	                       IMPLEMENTATION-SPECIFIC: it reads fields only
+//	                       a Go subject's instrumentation reports, so it
+//	                       is unsupported elsewhere rather than zero.
 //
 // Peak RSS semantics (both metrics):
 //
@@ -80,16 +85,23 @@ func MemoryBenchmarks() []bench.Benchmark {
 
 type memHeadlessBench struct{}
 
-func (b *memHeadlessBench) Spec() bench.Spec {
+func (b *memHeadlessBench) Spec() bench.Spec { return b.SpecFor(bench.Subject{}) }
+
+// SpecFor binds the benchmark to the subject's headless workload. The
+// measurement is generic (kernel peak plus a sampled process tree); the
+// workload and its boundary exit are the subject's.
+func (b *memHeadlessBench) SpecFor(subj bench.Subject) bench.Spec {
+	c := subj.Contract
 	return bench.Spec{
 		ID:                MemHeadlessPeakRSSID,
 		DefinitionVersion: 1,
 		Title:             "Headless run peak resident memory",
-		Purpose: "Peak resident memory of the `ff run --agent <unknown>` workload, " +
-			"the same operation launch.headless-init.steady measures for wall time. " +
-			"Separate iterations so memory collection never shares a run with a " +
-			"latency sample. Kernel-tracked root peak plus a sampled process-tree " +
-			"total; the two are distinct metrics and never combined.",
+		Purpose: "Peak resident memory of the subject's headless workload, " +
+			"the same operation the launch headless benchmarks measure for " +
+			"wall time. Separate iterations so memory collection never shares " +
+			"a run with a latency sample. Kernel-tracked root peak plus a " +
+			"sampled process-tree total; the two are distinct metrics and " +
+			"never combined.",
 		Kind: bench.KindE2E,
 		Tier: 1,
 		Metrics: []bench.MetricSpec{
@@ -119,13 +131,14 @@ func (b *memHeadlessBench) Spec() bench.Spec {
 		},
 		Requires: []string{"memory"},
 		Params: map[string]string{
-			"workload": "ff run --agent <unknown> (headless, no pty)",
+			"workload": c.Method(c.Headless.Args) + " (headless, no pty)",
 			"profile":  "steady", "repo": "none", "mcp_servers": "0",
 			"sample_interval_ms": "10",
 			"peak_source":        "kernel-tracked (exact); tree total is sampled",
 		},
-		Predicate: "exit_code==1 (the unknown-agent exit) and a kernel-tracked or " +
-			"sampled peak is available; unavailable memory is reported as such, never as zero",
+		Predicate: "the contract's boundary exit and a kernel-tracked or " +
+			"sampled peak available; unavailable memory is reported as such, " +
+			"never as zero",
 		Plans: map[string]bench.Plan{
 			// Memory is low-variance: fewer iterations than the latency
 			// plans need.
@@ -138,6 +151,9 @@ func (b *memHeadlessBench) Spec() bench.Spec {
 }
 
 func (b *memHeadlessBench) Setup(ctx context.Context, env *bench.RunEnv, subj bench.Subject) (bench.Fixture, error) {
+	if !subj.Contract.Headless.Defined() {
+		return bench.Fixture{}, subj.Unsupported("a headless workload")
+	}
 	parent, err := launchParent(env.Root, MemHeadlessPeakRSSID, subj)
 	if err != nil {
 		return bench.Fixture{}, err
@@ -147,10 +163,12 @@ func (b *memHeadlessBench) Setup(ctx context.Context, env *bench.RunEnv, subj be
 		return bench.Fixture{}, err
 	}
 	timeout := planTimeout(b.Spec(), env.Profile)
-	// Primed identically to launch.headless-init so the peak reflects a
-	// steady-state run, not first-run config creation.
-	if err := primeHeadlessHome(ctx, subj.Path, home, work, timeout); err != nil {
-		return bench.Fixture{}, err
+	// Primed identically to the launch headless benchmark so the peak
+	// reflects a steady-state run, not first-run state creation.
+	if subj.Contract.Headless.Primed {
+		if err := primeHeadlessHome(ctx, subj, home, work, timeout); err != nil {
+			return bench.Fixture{}, err
+		}
 	}
 	return bench.Fixture{HomeDir: home, WorkDir: work, Timeout: timeout}, nil
 }
@@ -185,8 +203,8 @@ func (b *memHeadlessBench) Iterate(ctx context.Context, fx bench.Fixture, subj b
 
 	sampler := collect.NewSampler()
 	res, err := spawn.Run(ctx, spawn.Options{
-		Path: subj.Path, Args: headlessArgs(),
-		Env: launchEnv(fx.HomeDir, false), Dir: work, Timeout: fx.Timeout,
+		Path: subj.Path, Args: subj.Contract.Headless.Args,
+		Env: launchEnv(subj, fx.HomeDir, false), Dir: work, Timeout: fx.Timeout,
 		SampleInterval: collect.DefaultInterval,
 		Sample:         func(pid int) { sampler.Sample(pid) },
 	})
@@ -196,9 +214,10 @@ func (b *memHeadlessBench) Iterate(ctx context.Context, fx bench.Fixture, subj b
 	if res.TimedOut {
 		return fail("headless run timed out; peak memory not measured")
 	}
-	// The workload's unknown-agent exit 1 is its normal completion.
-	if res.ExitCode != 1 {
-		return fail(fmt.Sprintf("unexpected exit %d, want 1 (unknown-agent exit)", res.ExitCode))
+	// The contract's boundary exit is this workload's normal completion.
+	if res.ExitCode != subj.Contract.Headless.ExitCode {
+		return fail(fmt.Sprintf("unexpected exit %d, want the contract's boundary exit %d",
+			res.ExitCode, subj.Contract.Headless.ExitCode))
 	}
 
 	obs.Attrs["exit_code"] = itoa(uint64(res.ExitCode))
@@ -317,15 +336,21 @@ func (b *memReadyRSSBench) grace() time.Duration {
 	return DefaultTUIQuitGrace
 }
 
-func (b *memReadyRSSBench) Spec() bench.Spec {
+func (b *memReadyRSSBench) Spec() bench.Spec { return b.SpecFor(bench.Subject{}) }
+
+// SpecFor binds the benchmark to the subject's readiness boundary and
+// mark set. The RSS measurement is generic; the boundary is the
+// subject's.
+func (b *memReadyRSSBench) SpecFor(subj bench.Subject) bench.Spec {
+	c := subj.Contract
 	return bench.Spec{
 		ID:                MemTUIReadyRSSID,
 		DefinitionVersion: 1,
 		Title:             "Interactive idle resident memory at readiness",
-		Purpose: "What an interactive Forcefield session costs in resident memory " +
-			"once it is ready and idle. Sampled at first-useful-frame, the same " +
-			"primary readiness boundary tui.startup.timeline uses, on the same " +
-			"fixed 120x40 pty. Current resident memory, not peak: the question is " +
+		Purpose: "What an interactive session costs in resident memory once it " +
+			"is ready and idle. Sampled at the contract's primary readiness " +
+			"boundary (" + c.TUI.ReadinessPhrase() + "), on the same fixed " +
+			"120x40 pty. Current resident memory, not peak: the question is " +
 			"the resting footprint, and a peak would answer a different one.",
 		Kind: bench.KindE2E,
 		Tier: 1,
@@ -353,15 +378,16 @@ func (b *memReadyRSSBench) Spec() bench.Spec {
 		},
 		Requires: []string{"pty", "memory"},
 		Params: map[string]string{
-			"workload": "ff (interactive, pty 120x40, TERM=xterm-256color)",
+			"workload": c.Method(c.TUI.Args) + " (interactive, pty 120x40, TERM=" + pty.Term + ")",
 			"profile":  "steady", "repo": "none", "mcp_servers": "0",
-			"readiness_mark":     tuiPrimaryMark,
+			"readiness_mark":     c.TUI.PrimaryMark,
 			"sample_method":      "single query in the marker callback, no polling",
 			"timing_uncertainty": "root_sample_lag_ns / tree_sample_lag_ns bound the gap from the readiness marker to each query; a lag below clock_resolution_ns reads as 0",
 			"root_vs_tree":       "ready_rss_bytes is the root process alone; the tree figure is reported separately",
 		},
-		Predicate: "first-useful-frame observed, memory query completed, and clean " +
-			"/exit quit with exit_code==0; an unavailable query is reported as such",
+		Predicate: c.TUI.PrimaryMark + " observed, memory query completed, and clean " +
+			c.TUI.QuitInput + " quit with exit_code==0; an unavailable query is " +
+			"reported as such",
 		Plans: map[string]bench.Plan{
 			"quick":    {Warmup: 1, N: 8, TimeoutSec: 120},
 			"standard": {Warmup: 3, N: 20, TimeoutSec: 120},
@@ -372,10 +398,14 @@ func (b *memReadyRSSBench) Spec() bench.Spec {
 }
 
 func (b *memReadyRSSBench) Setup(ctx context.Context, env *bench.RunEnv, subj bench.Subject) (bench.Fixture, error) {
+	if err := requireTUI(subj); err != nil {
+		return bench.Fixture{}, err
+	}
 	return setupTUISession(ctx, env, subj, MemTUIReadyRSSID, b.Spec(), env.Profile)
 }
 
 func (b *memReadyRSSBench) Iterate(ctx context.Context, fx bench.Fixture, subj bench.Subject, it bench.Iter) (bench.Observation, error) {
+	c := subj.Contract
 	obs, sample, tl, exit, quit, bytes, fail := b.runSession(ctx, fx, subj, it, true)
 	if fail != nil {
 		return obs, fail
@@ -384,8 +414,8 @@ func (b *memReadyRSSBench) Iterate(ctx context.Context, fx bench.Fixture, subj b
 	obs.Attrs["exit_code"] = itoa(uint64(exit))
 	obs.Attrs["quit_method"] = quit
 	obs.Attrs["pty_bytes"] = itoa(uint64(bytes.Load()))
-	obs.Attrs["readiness_mark"] = tuiPrimaryMark
-	if missing := tl.Missing(tuiMarks); len(missing) > 0 {
+	obs.Attrs["readiness_mark"] = c.TUI.PrimaryMark
+	if missing := tl.Missing(c.TUI.Marks); len(missing) > 0 {
 		obs.Attrs["missing_marks"] = strings.Join(missing, ",")
 	}
 
@@ -408,7 +438,7 @@ func (b *memReadyRSSBench) Iterate(ctx context.Context, fx bench.Fixture, subj b
 		obs.Attrs["sample_reason"] = sample.reason
 	}
 
-	if _, ready := tl.Ms(tuiPrimaryMark, time.Now()); !ready && !sample.attempt {
+	if _, ready := tl.Ms(c.TUI.PrimaryMark, time.Now()); !ready && !sample.attempt {
 		// The primary mark never arrived, so no sample was possible.
 		return obs, nil
 	}
@@ -444,6 +474,7 @@ func (b *memReadyRSSBench) Iterate(ctx context.Context, fx bench.Fixture, subj b
 // readiness; mem.tui.go-heap leaves it off because it reads the Go heap
 // from the marker fields themselves.
 func (b *memReadyRSSBench) runSession(ctx context.Context, fx bench.Fixture, subj bench.Subject, it bench.Iter, wantMemory bool) (bench.Observation, *readyRSSSample, markers.Timeline, int, string, *atomic.Int64, error) {
+	c := subj.Contract
 	obs := bench.Observation{
 		Values:      map[string]float64{},
 		Attrs:       map[string]string{},
@@ -461,20 +492,21 @@ func (b *memReadyRSSBench) runSession(ctx context.Context, fx bench.Fixture, sub
 	// same environment. The pty setup and cleanup live in package pty;
 	// no second launcher exists.
 	child, err := pty.Start(pty.Options{
-		Path: subj.Path, Env: tuiEnv(fx.HomeDir), Dir: work,
+		Path: subj.Path, Args: c.TUI.Args, Env: tuiEnv(subj, fx.HomeDir), Dir: work,
 		Cols: pty.DefaultCols, Rows: pty.DefaultRows,
 	})
 	if err != nil {
 		return obs, sample, markers.Timeline{}, -1, "", &bytes, err
 	}
 	defer func() { _ = child.Close() }()
+
 	go drainToNull(child.Output(), &bytes)
 
 	var hook func(string, time.Time)
 	if wantMemory {
 		pid := child.Pid()
 		hook = func(ev string, at time.Time) {
-			if ev != tuiPrimaryMark || sample.attempt {
+			if ev != c.TUI.PrimaryMark || sample.attempt {
 				return
 			}
 			sample.attempt = true
@@ -498,15 +530,17 @@ func (b *memReadyRSSBench) runSession(ctx context.Context, fx bench.Fixture, sub
 	}
 
 	lines, eof, timedOut, readErr := collectTimelineHooked(
-		child.Stderr(), b.readiness(), &bytes, hook)
-	tl := markers.Build(lines)
+		child.Stderr(), b.readiness(), &bytes, c, hook)
+	tl := proto(c).Build(lines)
 
-	// Teardown is the timeline benchmark's: separate /exit and Enter
-	// writes, then a bounded wait with a forced kill fallback.
+	// Teardown is the timeline benchmark's: the quit text and its submit
+	// key as separate writes, then a bounded wait with a forced kill
+	// fallback.
 	quit := "clean"
-	_, _ = child.WriteInput([]byte("/exit"))
+	quitText, quitKey := c.TUI.Submit()
+	_, _ = child.WriteInput([]byte(quitText))
 	time.Sleep(DefaultTUIKeySettle)
-	_, _ = child.WriteInput([]byte("\r"))
+	_, _ = child.WriteInput([]byte(quitKey))
 	exit, ok := waitBounded(child, b.grace())
 	if !ok {
 		_ = child.Kill()
@@ -520,7 +554,7 @@ func (b *memReadyRSSBench) runSession(ctx context.Context, fx bench.Fixture, sub
 				Code: schema.ErrTimeout, Detail: "run aborted: " + ctx.Err().Error()}
 	}
 
-	_, ready := tl.Ms(tuiPrimaryMark, sample.at)
+	_, ready := tl.Ms(c.TUI.PrimaryMark, sample.at)
 	switch {
 	case readErr != nil:
 		obs.Attrs["read_error"] = readErr.Error()
@@ -530,27 +564,26 @@ func (b *memReadyRSSBench) runSession(ctx context.Context, fx bench.Fixture, sub
 	case timedOut && !ready:
 		obs.Valid = false
 		obs.InvalidReason = "readiness timeout (" + b.readiness().String() +
-			"); primary marker " + tuiPrimaryMark + " never observed" +
-			eofSuffix(eof, tuiPrimaryMark)
+			"); " + c.TUI.ReadinessPhrase() + " never observed" +
+			eofSuffix(eof, c.TUI.PrimaryMark)
 		return obs, sample, tl, exit, quit, &bytes, nil
 	case !ready:
 		obs.Valid = false
-		obs.InvalidReason = "primary readiness marker " + tuiPrimaryMark +
-			" missing" + eofSuffix(eof, tuiPrimaryMark)
+		obs.InvalidReason = "primary " + c.TUI.ReadinessPhrase() +
+			" missing" + eofSuffix(eof, c.TUI.PrimaryMark)
 		return obs, sample, tl, exit, quit, &bytes, nil
 	case quit != "clean":
 		obs.Valid = false
 		obs.InvalidReason = "forced termination after quit grace"
 		return obs, sample, tl, exit, quit, &bytes, nil
-	case exit != 0:
+	case c.TUI.RequireExitZero && exit != 0:
 		obs.Valid = false
-		obs.InvalidReason = fmt.Sprintf("unexpected exit %d after /exit quit", exit)
+		obs.InvalidReason = fmt.Sprintf("unexpected exit %d after the quit sequence", exit)
 		return obs, sample, tl, exit, quit, &bytes, nil
 	}
 	obs.Valid = true
 	return obs, sample, tl, exit, quit, &bytes, nil
 }
-
 func treeReadReason(s *readyRSSSample) string {
 	if s.reason != "" {
 		return s.reason + ": process tree unreadable at readiness"
@@ -567,8 +600,8 @@ func rootReadReason(s *readyRSSSample) string {
 
 func (b *memReadyRSSBench) Teardown(_ context.Context, _ bench.Fixture) error { return nil }
 
-// memGoHeapBench reports the Go runtime's own view of memory at the
-// readiness boundary.
+// memGoHeapBench reports the subject language runtime's own view of
+// memory at the readiness boundary.
 //
 // Definition, deliberately single: Go runtime HeapAlloc — bytes of
 // allocated heap objects, including unreachable ones not yet freed.
@@ -576,12 +609,17 @@ func (b *memReadyRSSBench) Teardown(_ context.Context, _ bench.Fixture) error { 
 // Those are different quantities with different meanings and appear
 // under their own names only.
 //
-// Source: the alloc= field of the ff-perf marker lines the child already
-// writes at first-frame and runtime-ready (perfmark.EventMem). No extra
-// product instrumentation was added: the value was already on the wire,
-// so the derivation costs the harness nothing and cannot perturb the
-// measurement beyond the ReadMemStats stop-the-world pause that emitting
-// the marker already performed.
+// This benchmark is implementation-specific, not generic: it reads
+// alloc=/sys= fields the subject's own instrumentation attaches to its
+// readiness marker. No other language runtime exposes them, so a
+// contract that does not declare heap_fields makes this benchmark
+// unsupported instead of reporting zeros. The contract flag is what
+// keeps the metric honestly scoped rather than silently Go-shaped.
+//
+// For Forcefield the values were already on the wire (the marker's
+// EventMem form), so the derivation costs the subject nothing and
+// cannot perturb the measurement beyond the ReadMemStats stop-the-world
+// pause that emitting the marker already performed.
 type memGoHeapBench struct {
 	readinessTimeout time.Duration
 	quitGrace        time.Duration
@@ -601,16 +639,21 @@ func (b *memGoHeapBench) grace() time.Duration {
 	return DefaultTUIQuitGrace
 }
 
-func (b *memGoHeapBench) Spec() bench.Spec {
+func (b *memGoHeapBench) Spec() bench.Spec { return b.SpecFor(bench.Subject{}) }
+
+func (b *memGoHeapBench) SpecFor(subj bench.Subject) bench.Spec {
+	c := subj.Contract
 	return bench.Spec{
 		ID:                MemTUIGoHeapID,
 		DefinitionVersion: 1,
 		Title:             "Go runtime heap at TUI readiness (derived)",
 		Purpose: "The Go runtime's own accounting of heap at the interactive " +
-			"readiness boundary, read from the ff-perf marker fields the subject " +
-			"already emits. Explains RSS changes without pretending to be OS " +
-			"memory: HeapAlloc is not RSS, and this metric is never compared " +
-			"against one.",
+			"readiness boundary, read from the alloc=/sys= marker fields the " +
+			"subject already emits. Explains RSS changes without pretending " +
+			"to be OS memory: HeapAlloc is not RSS, and this metric is never " +
+			"compared against one. Implementation-specific: a subject whose " +
+			"runtime is not Go, or whose markers carry no heap fields, has no " +
+			"such metric.",
 		Kind: bench.KindE2E,
 		Tier: 1,
 		Metrics: []bench.MetricSpec{
@@ -639,16 +682,17 @@ func (b *memGoHeapBench) Spec() bench.Spec {
 		},
 		Requires: []string{"pty", "markers"},
 		Params: map[string]string{
-			"workload": "ff (interactive, pty 120x40, TERM=xterm-256color)",
+			"workload": c.Method(c.TUI.Args) + " (interactive, pty 120x40, TERM=" + pty.Term + ")",
 			"profile":  "steady", "repo": "none", "mcp_servers": "0",
-			"readiness_mark": tuiPrimaryMark,
-			"heap_field":     "runtime.MemStats.HeapAlloc at first-useful-frame",
-			"sys_field":      "runtime.MemStats.Sys at first-useful-frame (separate metric, not RSS)",
-			"source":         "ff-perf alloc=/sys= marker fields; no added instrumentation",
+			"readiness_mark": c.TUI.PrimaryMark,
+			"metric_scope":   "implementation-specific (go runtime)",
+			"heap_field":     "runtime.MemStats.HeapAlloc at the readiness marker",
+			"sys_field":      "runtime.MemStats.Sys at the readiness marker (separate metric, not RSS)",
+			"source":         "marker alloc=/sys= fields; no added instrumentation",
 		},
-		Predicate: "first-useful-frame observed with an alloc= field, and clean " +
-			"/exit quit with exit_code==0; a marker without memory fields yields " +
-			"unavailable metrics, never zeros",
+		Predicate: c.TUI.PrimaryMark + " observed with an alloc= field, and clean " +
+			c.TUI.QuitInput + " quit with exit_code==0; a marker without memory " +
+			"fields yields unavailable metrics, never zeros",
 		Plans: map[string]bench.Plan{
 			"quick":    {Warmup: 1, N: 8, TimeoutSec: 120},
 			"standard": {Warmup: 3, N: 20, TimeoutSec: 120},
@@ -659,12 +703,20 @@ func (b *memGoHeapBench) Spec() bench.Spec {
 }
 
 func (b *memGoHeapBench) Setup(ctx context.Context, env *bench.RunEnv, subj bench.Subject) (bench.Fixture, error) {
+	if err := requireTUI(subj); err != nil {
+		return bench.Fixture{}, err
+	}
+	if !subj.Contract.TUI.HeapFields {
+		return bench.Fixture{}, subj.Unsupported(
+			"Go runtime heap fields on the readiness marker (heap_fields)")
+	}
 	return setupTUISession(ctx, env, subj, MemTUIGoHeapID, b.Spec(), env.Profile)
 }
 
 func (b *memGoHeapBench) Iterate(ctx context.Context, fx bench.Fixture, subj bench.Subject, it bench.Iter) (bench.Observation, error) {
+	c := subj.Contract
 	// wantMemory=false: no OS query is needed, so no sampling overhead
-	// is added to a Go-level measurement.
+	// is added to a runtime-level measurement.
 	rb := &memReadyRSSBench{readinessTimeout: b.readiness(), quitGrace: b.grace()}
 	obs, _, tl, exit, quit, bytes, err := rb.runSession(ctx, fx, subj, it, false)
 	if err != nil {
@@ -682,20 +734,20 @@ func (b *memGoHeapBench) Iterate(ctx context.Context, fx bench.Fixture, subj ben
 	obs.Attrs["exit_code"] = itoa(uint64(exit))
 	obs.Attrs["quit_method"] = quit
 	obs.Attrs["pty_bytes"] = itoa(uint64(bytes.Load()))
-	obs.Attrs["readiness_mark"] = tuiPrimaryMark
+	obs.Attrs["readiness_mark"] = c.TUI.PrimaryMark
 	obs.Attrs["heap_field"] = "runtime.MemStats.HeapAlloc"
-	obs.Attrs["derived_from"] = "ff-perf alloc= field on the first-useful-frame marker line"
+	obs.Attrs["derived_from"] = "marker alloc= field on the " + c.TUI.PrimaryMark + " marker line"
 
 	// Derived from the recorded marker values, so the metric is
 	// reproducible from the raw iteration alone.
-	mem, ok := tl.Mem[tuiPrimaryMark]
+	mem, ok := tl.Mem[c.TUI.PrimaryMark]
 	if !ok || (mem.Alloc == 0 && mem.Sys == 0) {
 		// A marker line without memory fields is a gap in the data,
 		// not a heap of zero bytes.
 		obs.Unavailable["go_heap_alloc_bytes"] =
-			"marker " + tuiPrimaryMark + " carried no alloc field"
+			"marker " + c.TUI.PrimaryMark + " carried no alloc field"
 		obs.Unavailable["go_sys_bytes"] =
-			"marker " + tuiPrimaryMark + " carried no sys field"
+			"marker " + c.TUI.PrimaryMark + " carried no sys field"
 		obs.Valid = true
 		return obs, nil
 	}
@@ -720,6 +772,9 @@ func (b *memGoHeapBench) Teardown(_ context.Context, _ bench.Fixture) error { re
 // setupTUISession primes an isolated home the same way the timeline
 // benchmark does, so both suites observe the same steady state.
 func setupTUISession(ctx context.Context, env *bench.RunEnv, subj bench.Subject, id string, spec bench.Spec, profile string) (bench.Fixture, error) {
+	if !subj.Contract.Headless.Defined() {
+		return bench.Fixture{}, subj.Unsupported("a headless workload to prime the home with")
+	}
 	parent, err := launchParent(env.Root, id, subj)
 	if err != nil {
 		return bench.Fixture{}, err
@@ -733,7 +788,7 @@ func setupTUISession(ctx context.Context, env *bench.RunEnv, subj bench.Subject,
 		return bench.Fixture{}, err
 	}
 	timeout := planTimeout(spec, profile)
-	if err := primeHeadlessHome(ctx, subj.Path, home, primeWork, timeout); err != nil {
+	if err := primeHeadlessHome(ctx, subj, home, primeWork, timeout); err != nil {
 		return bench.Fixture{}, err
 	}
 	return bench.Fixture{HomeDir: home, WorkDir: parent, Timeout: timeout}, nil

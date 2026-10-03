@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"forcefield/internal/hpov/bench"
 )
 
 // NewRunRoot creates the run-scoped temp root on the chosen
@@ -57,8 +59,8 @@ func NewWorkDir(root, name string) (string, error) {
 }
 
 // baseAllowlist is the inherited environment allowlist. Everything
-// else is dropped; GIT_*, FF_* (except benchmark-set) and proxy
-// variables are recorded in Removed.
+// else is dropped; proxy variables, and whatever the subject's contract
+// names, are recorded in Removed.
 func baseAllowlist() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"PATH", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP", "OS"}
@@ -69,7 +71,11 @@ func baseAllowlist() []string {
 // ScrubEnv builds the child environment from the allowlist plus set
 // overrides. It returns the block and the removed special variables
 // (recorded in environment.env_overrides).
-func ScrubEnv(set map[string]string) (env []string, removed []string) {
+//
+// scrub names the variables the subject's own contract keeps out of a
+// measured process. HPOV itself has no product to hide: a subject that
+// declares nothing gets only the generic allowlist and proxy scrubbing.
+func ScrubEnv(set map[string]string, scrub bench.Env) (env []string, removed []string) {
 	keep := map[string]bool{}
 	for _, k := range baseAllowlist() {
 		keep[k] = true
@@ -77,13 +83,29 @@ func ScrubEnv(set map[string]string) (env []string, removed []string) {
 	for k := range set {
 		keep[k] = true
 	}
+	scrubbed := func(up string) bool {
+		if isGenericRemoved(up) {
+			return true
+		}
+		for _, p := range scrub.ScrubPrefixes {
+			if strings.HasPrefix(up, strings.ToUpper(p)) {
+				return true
+			}
+		}
+		for _, e := range scrub.ScrubExact {
+			if up == strings.ToUpper(e) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, kv := range os.Environ() {
 		k := kv
 		if i := strings.IndexByte(kv, '='); i >= 0 {
 			k = kv[:i]
 		}
 		up := strings.ToUpper(k)
-		if isSpecialRemoved(k, up) {
+		if scrubbed(up) {
 			if _, overridden := set[k]; !overridden {
 				removed = append(removed, k)
 			}
@@ -101,15 +123,18 @@ func ScrubEnv(set map[string]string) (env []string, removed []string) {
 	return env, removed
 }
 
-func isSpecialRemoved(k, up string) bool {
-	if strings.HasPrefix(up, "GIT_") || strings.HasPrefix(up, "FF_") {
+// isGenericRemoved lists inherited variables that must never reach a
+// measured process regardless of subject: proxies would silently reroute
+// a subject's network calls, and GIT_* would let ambient repository
+// state change what the subject does.
+func isGenericRemoved(up string) bool {
+	if strings.HasPrefix(up, "GIT_") {
 		return true
 	}
 	switch up {
 	case "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY":
 		return true
 	}
-	_ = k
 	return false
 }
 

@@ -33,7 +33,8 @@
           "required": ["resamples", "seed", "method"],
           "properties": {
             "resamples": { "type": "integer" },
-            "seed": { "type": "integer" },
+"seed": { "type": "integer" },
+        "subject_profile": { "type": "string" },
             "method": { "type": "string" }
           }
         },

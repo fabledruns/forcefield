@@ -1,5 +1,9 @@
-// Package markers parses the ff-perf marker protocol: lines of the
-// form `ff-perf <event>[ alloc=<n> sys=<n>]` on stderr.
+// Package markers parses an instrumentation marker protocol: lines of
+// the form `<prefix><event>[ alloc=<n> sys=<n>]` on a child's stderr.
+//
+// The prefix is supplied by the subject's contract rather than fixed
+// here, so one parser serves every subject. Forcefield's own prefix is
+// declared in the Forcefield subject profile, not in this package.
 //
 // Markers carry no timestamps; the external driver timestamps each
 // line on receipt. The full mark/segment timeline (telescoping
@@ -9,22 +13,24 @@ package markers
 
 import "strings"
 
-// Prefix is the marker line discriminator on stderr.
-const Prefix = "ff-perf "
+// Protocol is one marker line format, discriminated by prefix.
+type Protocol struct {
+	Prefix string
+}
 
 // Event extracts the event name from one marker line, or ok=false for
 // a non-marker line or a malformed event token.
 //
 // Markers arrive on the child's own stderr pipe, so a line that starts
-// with the prefix is a marker: inline text merely containing "ff-perf"
+// with the prefix is a marker: inline text merely containing the prefix
 // is not, and neither is a payload-less or key=value one.
-func Event(line string) (string, bool) {
+func (p Protocol) Event(line string) (string, bool) {
 	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, Prefix) {
+	if p.Prefix == "" || !strings.HasPrefix(line, p.Prefix) {
 		return "", false
 	}
 	// Event is the first field; alloc=/sys=/t= follow.
-	rest := strings.TrimSpace(strings.TrimPrefix(line, Prefix))
+	rest := strings.TrimSpace(strings.TrimPrefix(line, p.Prefix))
 	rest, _, _ = strings.Cut(rest, " ")
 	if !isEventToken(rest) {
 		return "", false
@@ -32,12 +38,12 @@ func Event(line string) (string, bool) {
 	return rest, true
 }
 
-// Events returns ff-perf event names in line order from captured
+// Events returns marker event names in line order from captured
 // stderr text.
-func Events(stderr string) []string {
+func (p Protocol) Events(stderr string) []string {
 	var out []string
 	for _, line := range strings.Split(stderr, "\n") {
-		ev, ok := Event(line)
+		ev, ok := p.Event(line)
 		if !ok {
 			continue
 		}
@@ -47,8 +53,8 @@ func Events(stderr string) []string {
 }
 
 // Has reports whether event was emitted at least once.
-func Has(stderr, event string) bool {
-	for _, e := range Events(stderr) {
+func (p Protocol) Has(stderr, event string) bool {
+	for _, e := range p.Events(stderr) {
 		if e == event {
 			return true
 		}
