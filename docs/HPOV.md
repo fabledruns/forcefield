@@ -951,6 +951,9 @@ for absence; do not wait for those two verdicts to appear.
 bar is `max(rel_thr × base_p50, abs_floor)`, and the bootstrap CI of the p95
 difference must exclude zero. A tail claim needs **n ≥ 20** per side; below that
 the metric stays `unchanged` rather than implying a tail it cannot support.
+The interval is the CI of `p95(candidate) - p95(baseline)` — the same quantity
+the threshold is applied to ([§14.7](#147-tail-calibration-a-focused-experiment)
+records a defect here that was fixed, and the residual sensitivity that remains).
 
 The weakening gates in [§6.8](#68-quality-and-noise-handling) apply to tail
 verdicts too, so a `tail_regressed` cannot escape a poor-quality run or a waived
@@ -1483,6 +1486,7 @@ this commit:
 | --- | --- | --- |
 | The poor-quality, quick-profile and `--allow-cross-host` gates were applied only to `regressed`/`improved`, before tail verdicts existed in that code path | A `tail_regressed` could be reported from a `poor` run, and `--allow-cross-host` — documented as degrading *every* verdict — did not degrade tail verdicts, so `--fail-on-regression` could exit 3 on a cross-host comparison | The gates moved into one shared `degradeVerdict` applied to median and tail paths alike |
 | The noise-doubling rule appeared not to cover p95 | no behaviour difference: a noisy metric is already `inconclusive` before the tail path is reached | none needed; the interaction is now stated in the code and covered by `TestNoisyMetricCannotEscapeThroughTheTailPath` |
+| The paired bootstrap of a *percentile* difference resampled the per-round differences and took their percentile, instead of differencing the two percentiles ([§14.7](#147-tail-calibration-a-focused-experiment)) | The tail interval estimated a different quantity from the one the threshold was applied to. On interleaved data at n = 30 the two can have opposite signs, so the interval excluded zero in **every** eligible A/A decision and tail claims were made on movements the interval never covered | `DifferencePercentileCI` now resamples rounds jointly and differences the percentiles inside each resample, so the interval brackets the tested quantity. `DifferenceCI50` keeps its paired estimator, which is correct for a location shift. Pinned by `TestDifferencePercentileCIPairedEstimatesThePercentileDifference` and `TestDifferenceCI50PairedStillUsesPairDifferences` |
 
 ---
 
@@ -1634,6 +1638,125 @@ exists to avoid.
 - **Thresholds stay as they are.** Nothing in this milestone recalibrates a
   threshold, and the campaign document says so in its `conclusion` field so a
   copied-out report keeps the caveat.
+
+### 14.7 Tail calibration: a focused experiment
+
+§14.5 found that every A/A claim came from the tail path. That was followed up
+with a focused experiment on the two benchmarks that produced it, plus one
+control from the same threshold family:
+
+```bash
+./bin/hpov calibrate \
+  --ff aa=./bin/ff \
+  --select "launch.headless-init.first-run,launch.headless-init.steady,launch.version" \
+  --profile standard \
+  --seed 424320 --repeats 100 --out results/tail-campaign
+```
+
+`launch.version` is included only as a control: same `launch.*` threshold
+(10% / 5 ms), same n, much cheaper, and it exercises the median path rather
+than the tail path.
+
+#### What was collected
+
+| Run | Trials | Seeds | Eligible `wall_ms` decisions | p95 evidence fired | Tail verdicts |
+| --- | ---: | --- | ---: | ---: | ---: |
+| 1 (pre-fix) | 78 | 424242–424319 | 130 | **130 (100%)** | 18 |
+| 2 (pre-fix) | 100 | 424320–424419 | 138 | **138 (100%)** | 5 |
+| 3 (post-fix) | 60 | 424320–424379 | 78 | **7 (9%)** | 4 |
+
+Runs 1 and 2 pre-fix combined: **178 trials, 268 eligible decisions, 23 tail
+verdicts** (15 `tail_improved`, 8 `tail_regressed`), 0 ordinary verdicts.
+
+Run 3 repeats seeds 424320–424379 — the first 60 trials of run 2 — with the
+same binary, so it is a controlled before/after on the comparison code alone:
+**68 eligible → 78 eligible, p95 evidence 68/68 → 7/78, tail verdicts 3 → 4.**
+
+#### The experiment exposed an implementation bug
+
+Every pre-fix eligible decision carried "p95 evidence", which is not how a
+bootstrap interval behaves on data with no real difference. Inspecting one
+claim in the stored documents showed why:
+
+```
+p95 difference  (cur - base)          = -5.08 ms     <- what the verdict tested
+p95 of per-round differences (cur_i - base_i) = +2.60 ms
+stored p95 CI                            = [+1.60, +4.83]   <- brackets the other one
+verdict: tail_improved, claiming a 5.08 ms tail improvement
+```
+
+`DifferencePercentileCI` inherited `DifferenceCI50`'s paired estimator, which
+resamples the *per-round differences* and takes their percentile. For a median
+that is correct — the median of `cur_i - base_i` and the difference of the
+medians are the same quantity — but it is a **different statistic** for a
+tail: "the 95th percentile of the differences" is not "the difference of the
+95th percentiles", and at n = 30 (where nearest-rank p95 is the *2nd largest*
+of 30 samples) the two can have opposite signs. The verdict therefore compared
+|p95 difference| against a threshold while testing an interval that never
+covered that quantity.
+
+Fixed in `internal/hpov/stats`: the paired percentile branch now resamples
+rounds jointly (same iteration indices both sides, so drift still cancels) and
+differences the two percentiles *inside* each resample, so the interval
+brackets the quantity the caller tests. The median path keeps its own paired
+estimator deliberately and is bit-identical. Two deterministic tests pin both
+contracts; the new one fails against the old code with the mismatch above.
+Recorded in [§13.1](#131-correctness-fixes-made-after-the-v1-features-landed).
+
+After the fix, every tail claim's interval covers the movement it claims —
+7 of 7 checked — and p95 evidence stopped being automatic.
+
+#### What remains, and what it does not establish
+
+The residual tail rate did not vanish, and this is the real finding:
+
+| Observation (run 3, 78 eligible decisions) | Value |
+| --- | --- |
+| Tail verdicts | 4 (2 regressed, 2 improved) |
+| Ordinary `improved`/`regressed` verdicts | **0** |
+| p50 threshold met | **0 of 78** |
+| Raw Mann-Whitney p below α | **0 of 78** |
+| Decisions with p95 evidence excluding zero | 7 of 78 |
+| \|p95 delta\| median / p90 / max | 2.28 / 8.93 / 13.84 ms |
+| Decisions with \|p95 delta\| ≥ the 5 ms bar | 20 of 78 (26%) |
+| Absolute floor bound (not the percentage) | in ~99% of eligible decisions |
+
+Two mechanisms, cleanly separated:
+
+1. **The bug** explained why *every* decision looked significant at p95. Fixed.
+2. **A genuine sensitivity remains.** With a correct interval, the p95 at
+   n = 30 is a single volatile order statistic, and a 5 ms bar on a ~45 ms
+   baseline is cleared by about a quarter of identical-subject comparisons.
+   Four of them also had an interval excluding zero, so four claims survived.
+   All four had raw p-values between 0.17 and 0.82: the median path correctly
+   said nothing happened, and only the tail moved — which is what a tail verdict
+   is for, but at this n the tail is noisy enough to move on its own.
+
+In every observed case the **absolute floor bound, not the percentage**:
+`10% × ~45 ms ≈ 4.5 ms` sits just under the 5 ms floor, so the floor decides.
+
+**This is not a threshold problem and has not been treated as one.** The
+candidate responses are all design questions, not constants: require more
+samples before a tail claim (n ≥ 100 rather than 20), use a tail statistic
+that is less volatile at n = 30, or require the median evidence to agree.
+Choosing among them needs a campaign with enough eligible decisions per
+benchmark to tell them apart; 78 eligible decisions on one host cannot. The
+thresholds, the p95 logic, the bootstrap and the quality gates are all
+unchanged, and the tail rule should stay as it is until that evidence exists.
+
+#### Host quality
+
+Across all 238 trials of this experiment: **0 good, 128 degraded, 110 poor.**
+Every poor trial came from `many_noisy_benchmarks`, which on this host is
+driven entirely by `cpu_ms` — Windows process CPU time quantisation keeps that
+distribution bimodal, so it is flagged noisy in essentially every trial and
+pushes the run past the 30% mark. Consequence: `cpu_ms` recorded **0 eligible
+decisions across all 238 trials**, and the poor-quality gate removed 240 of 534
+`wall_ms` decisions from the denominators in runs 1–2.
+
+So the eligible-decision count on this host is gated by a metric that cannot
+currently be measured well, not by the benchmarks under study. That is worth
+fixing as a measurement question before it is treated as a calibration limit.
 
 ---
 

@@ -2,6 +2,7 @@ package stats
 
 import (
 	"math"
+	"sort"
 	"testing"
 )
 
@@ -190,4 +191,122 @@ func sortFloats(s []float64) {
 			s[j], s[j-1] = s[j-1], s[j]
 		}
 	}
+}
+
+// A paired percentile interval must estimate the quantity a tail verdict
+// tests — p95(cur) - p95(base) — and not "the p95 of the per-round
+// differences", which is a different statistic.
+//
+// The two disagree in sign on data of exactly the shape an interleaved A/A
+// produces: a candidate whose tail sits lower while its per-round
+// differences are mostly positive. A 20-trial A/A campaign on identical
+// builds produced 23 tail claims this way, every one of them on an interval
+// that did not cover the p95 difference it was claimed for.
+func TestDifferencePercentileCIPairedEstimatesThePercentileDifference(t *testing.T) {
+	// Candidate: same body, a lower tail. The per-round differences are
+	// positive in the body, so their p95 is positive while
+	// p95(cur)-p95(base) is negative.
+	base := []float64{
+		40, 41, 42, 43, 44, 45, 46, 46, 47, 48,
+		49, 50, 51, 52, 53, 54, 55, 56, 57, 58,
+		59, 60, 61, 62, 63, 64, 65, 90, 95, 100,
+	}
+	cur := []float64{
+		40.5, 41.5, 42.5, 43.5, 44.5, 45.5, 46.5, 46.5, 47.5, 48.5,
+		49.5, 50.5, 51.5, 52.5, 53.5, 54.5, 55.5, 56.5, 57.5, 58.5,
+		59.5, 60.5, 61.5, 62.5, 63.5, 64.5, 65.5, 50, 52, 54,
+	}
+	bs, cs := sortFloats2(base), sortFloats2(cur)
+	p95diff := NearestRank(cs, 95) - NearestRank(bs, 95)
+	if p95diff >= 0 {
+		t.Fatalf("fixture precondition: p95 difference = %v, want negative", p95diff)
+	}
+	// The per-round differences have the opposite sign at their tail.
+	d := make([]float64, len(base))
+	for i := range d {
+		d[i] = cur[i] - base[i]
+	}
+	if NearestRank(sortFloats2(d), 95) <= 0 {
+		t.Fatalf("fixture precondition: p95 of differences = %v, want positive",
+			NearestRank(sortFloats2(d), 95))
+	}
+
+	lo, hi := DifferencePercentileCI(base, cur, 95, true, 424242)
+	if !(lo <= p95diff && p95diff <= hi) {
+		t.Errorf("paired p95 CI [%v,%v] must bracket the p95 difference %v", lo, hi, p95diff)
+	}
+	if !(lo <= 0 && 0 <= hi) {
+		t.Errorf("paired p95 CI [%v,%v] must include 0 when the tail difference is negative", lo, hi)
+	}
+	// The unpaired estimator agrees about the sign: both bracket the same
+	// quantity, they only differ in width.
+	ulo, uhi := DifferencePercentileCI(base, cur, 95, false, 424242)
+	if !(ulo <= 0 && 0 <= uhi) {
+		t.Errorf("unpaired p95 CI [%v,%v] must also include 0", ulo, uhi)
+	}
+	// Pairing must still cancel a shared shift, so it cannot be wider than
+	// the unpaired interval on data with no round-level noise.
+	sameBase := []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
+	sameCur := append([]float64(nil), sameBase...)
+	for i := range sameCur {
+		sameCur[i] += 5
+	}
+	plo, phi := DifferencePercentileCI(sameBase, sameCur, 95, true, 99)
+	if !(plo > 0 && phi > 0) {
+		t.Errorf("a pure paired shift must give an interval above zero: [%v,%v]", plo, phi)
+	}
+	if !(plo <= 5 && 5 <= phi) {
+		t.Errorf("a pure paired shift of 5 must bracket 5: [%v,%v]", plo, phi)
+	}
+}
+
+// The median path keeps its own paired estimator: the median of the pair
+// differences is the right location estimate and is unchanged.
+func TestDifferenceCI50PairedStillUsesPairDifferences(t *testing.T) {
+	base := []float64{10, 12, 11, 13, 9, 10, 12, 11, 10, 9}
+	cur := []float64{11, 13, 12, 14, 10, 11, 13, 12, 11, 10}
+	lo, hi := DifferenceCI50(base, cur, true, 424242)
+	if lo <= 0 || hi <= 0 {
+		t.Fatalf("paired median CI [%v,%v] should exclude 0 for a +1 shift", lo, hi)
+	}
+	if lo > 1 || hi < 1 {
+		t.Errorf("paired median CI [%v,%v] should bracket the +1 shift", lo, hi)
+	}
+}
+
+// Unequal sides must still pair index-wise over the shorter one. A joint
+// resample that left the longer buffer's tail at zero would rank those zeros
+// as data, dragging the interval toward zero.
+func TestDifferencePercentileCIPairedUnequalLengths(t *testing.T) {
+	base := make([]float64, 20)
+	longer := make([]float64, 40)
+	for i := range base {
+		base[i] = float64(100 + i)
+	}
+	for i := range longer {
+		longer[i] = float64(200 + i)
+	}
+	// Paired over the shorter side: p50 of base 100..119 is 109, p50 of the
+	// first 20 candidates 200..219 is 209, so every paired difference is +100.
+	// Twenty trailing zeros would make the candidate centre collapse instead.
+	lo, hi := DifferencePercentileCI(base, longer, 50, true, 7)
+	if !(lo <= 100 && 100 <= hi) {
+		t.Errorf("paired median CI [%v,%v] must bracket the +100 paired shift", lo, hi)
+	}
+	lo2, hi2 := DifferencePercentileCI(longer, base, 50, true, 7)
+	if !(hi2 <= -100 && -100 <= lo2) {
+		t.Errorf("paired median CI [%v,%v] must bracket the -100 shift when reversed", lo2, hi2)
+	}
+	// The tail behaves the same way: p95 of base is 118, p95 of the paired
+	// candidate range is 218.
+	lo3, hi3 := DifferencePercentileCI(base, longer, 95, true, 7)
+	if !(lo3 <= 100 && 100 <= hi3) {
+		t.Errorf("paired p95 CI [%v,%v] must bracket the +100 paired shift", lo3, hi3)
+	}
+}
+
+func sortFloats2(s []float64) []float64 {
+	out := append([]float64(nil), s...)
+	sort.Float64s(out)
+	return out
 }

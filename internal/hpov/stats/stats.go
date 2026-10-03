@@ -224,19 +224,35 @@ func bootstrapCI(values []float64, seed int64, resamples, block int, blocked boo
 // DifferenceCI50 returns the 95% bootstrap CI of the difference of
 // medians (cur - base). Paired uses pair differences (interleaved
 // A/B); unpaired resamples both sides independently.
+//
+// Paired resampling of the differences is the right estimator for a
+// location shift: the median of cur_i - base_i is the paired location
+// estimate, and it stays tight when the machine drifts within a run.
 func DifferenceCI50(base, cur []float64, paired bool, seed int64) (lo, hi float64) {
-	return differencePercentileCI(base, cur, 50, paired, seed)
+	return differenceCI(base, cur, paired, seed)
 }
 
-// DifferencePercentileCI is DifferenceCI50 for an arbitrary percentile:
-// the 95% bootstrap CI of cur(pct) - base(pct). It exists because a tail
-// verdict needs the same evidence rule as the median — a threshold alone
-// on p95 fires on noise at every n.
+// DifferencePercentileCI returns the 95% bootstrap CI of cur(pct) -
+// base(pct). It exists because a tail verdict needs the same evidence
+// rule as the median: a threshold alone on p95 fires on noise at every n.
+//
+// It deliberately does NOT share DifferenceCI50's paired estimator. For a
+// location shift, the median of the pair differences and the difference of
+// the medians are the same quantity, so either works. For a tail they are
+// not: "the 95th percentile of the per-round differences" and "the
+// difference of the 95th percentiles" are different statistics, and at
+// n=30 they can even have opposite signs. A verdict that compares
+// |p95(cur) - p95(base)| against a threshold while testing an interval
+// built from the other quantity can claim a movement the interval never
+// covered. Paired therefore resamples rounds jointly — the same iteration
+// indices on both sides, so drift still cancels — and differences the two
+// percentiles inside each resample, so the interval brackets the quantity
+// the caller tests.
 func DifferencePercentileCI(base, cur []float64, pct float64, paired bool, seed int64) (lo, hi float64) {
 	return differencePercentileCI(base, cur, pct, paired, seed)
 }
 
-func differencePercentileCI(base, cur []float64, pct float64, paired bool, seed int64) (lo, hi float64) {
+func differenceCI(base, cur []float64, paired bool, seed int64) (lo, hi float64) {
 	const resamples = 5000
 	rng := rand.New(rand.NewPCG(uint64(seed), uint64(seed>>32|1)))
 	meds := make([]float64, resamples)
@@ -259,7 +275,41 @@ func differencePercentileCI(base, cur []float64, pct float64, paired bool, seed 
 			}
 			tmp := append([]float64(nil), buf...)
 			sort.Float64s(tmp)
-			meds[r] = NearestRank(tmp, pct)
+			meds[r] = Median(tmp)
+		}
+		sort.Float64s(meds)
+		return NearestRank(meds, 2.5), NearestRank(meds, 97.5)
+	}
+	return differencePercentileCI(base, cur, 50, false, seed)
+}
+
+func differencePercentileCI(base, cur []float64, pct float64, paired bool, seed int64) (lo, hi float64) {
+	const resamples = 5000
+	rng := rand.New(rand.NewPCG(uint64(seed), uint64(seed>>32|1)))
+	meds := make([]float64, resamples)
+	if paired {
+		nb, nc := len(base), len(cur)
+		if nb == 0 || nc == 0 {
+			return math.NaN(), math.NaN()
+		}
+		// Joint resample: one set of indices per round, applied to both
+		// sides, so a slow round is slow on both and cancels. Rounds are
+		// paired index-wise, capped at the shorter side, exactly as the
+		// paired median estimator does.
+		m := nb
+		if nc < m {
+			m = nc
+		}
+		idx := make([]int, m)
+		tb := make([]float64, m)
+		tc := make([]float64, m)
+		for r := 0; r < resamples; r++ {
+			for i := 0; i < m; i++ {
+				idx[i] = rng.IntN(m)
+				tb[i] = base[idx[i]]
+				tc[i] = cur[idx[i]]
+			}
+			meds[r] = NearestRank(sortCopy(tc), pct) - NearestRank(sortCopy(tb), pct)
 		}
 		sort.Float64s(meds)
 		return NearestRank(meds, 2.5), NearestRank(meds, 97.5)
@@ -285,6 +335,14 @@ func differencePercentileCI(base, cur []float64, pct float64, paired bool, seed 
 	}
 	sort.Float64s(meds)
 	return NearestRank(meds, 2.5), NearestRank(meds, 97.5)
+}
+
+// sortCopy returns a sorted copy, so a resample can be ranked without
+// disturbing the buffer it was drawn into.
+func sortCopy(v []float64) []float64 {
+	out := append([]float64(nil), v...)
+	sort.Float64s(out)
+	return out
 }
 
 // MannWhitney runs a two-sided Mann-Whitney U test with tie
