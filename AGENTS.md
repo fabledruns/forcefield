@@ -37,7 +37,7 @@ Important references:
 - docs/CLI.md
 - docs/Config.md
 - docs/Agent.md
-- docs/HPOV.md (performance benchmarks; only when touching internal/hpov, bench/hpov, or internal/perfmark)
+- docs/Benchmarks.md (performance benchmarking; only when touching internal/perfmark or the benchmark workflow)
 
 The documentation describes the intended architecture.
 

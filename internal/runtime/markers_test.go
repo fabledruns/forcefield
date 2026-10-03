@@ -9,13 +9,43 @@ import (
 	"testing"
 
 	"forcefield/internal/config"
-	"forcefield/internal/hpov/markers"
 )
 
-// ffMarkers parses Forcefield's own marker protocol. The HPOV parser
-// takes the prefix as data, so a subject states which protocol it
-// speaks instead of the parser assuming one.
-var ffMarkers = markers.Protocol{Prefix: "ff-perf "}
+// ffMarkerPrefix is Forcefield's own marker line discriminator, as
+// emitted by internal/perfmark. This test parses its own product's
+// protocol directly: HPOV is a separate project now, and a product test
+// must not depend on the benchmark harness.
+const ffMarkerPrefix = "ff-perf "
+
+// ffMarkerEvents returns the marker event names in emission order from
+// captured stderr. Only whole lines that begin with the prefix count;
+// console output that merely contains it is not a marker.
+func ffMarkerEvents(stderr string) []string {
+	var out []string
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, ffMarkerPrefix) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(line, ffMarkerPrefix))
+		rest, _, _ = strings.Cut(rest, " ")
+		if rest == "" {
+			continue
+		}
+		out = append(out, rest)
+	}
+	return out
+}
+
+// ffMarkerSeen reports whether event was emitted at least once.
+func ffMarkerSeen(stderr, event string) bool {
+	for _, e := range ffMarkerEvents(stderr) {
+		if e == event {
+			return true
+		}
+	}
+	return false
+}
 
 // TestMain re-execs the test binary as a marker-emitting child when
 // HPOV_RUNTIME_MARKERS_CHILD=1. The child builds a real Runtime with
@@ -116,7 +146,7 @@ func TestNewMarkerOrder(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("child exit = %d\nstderr:\n%s", code, stderr)
 	}
-	events := ffMarkers.Events(stderr)
+	events := ffMarkerEvents(stderr)
 	// Headless order: main-entry comes from main.main (absent here;
 	// the child starts inside the test binary). Config is loaded in
 	// New() before newRuntime starts, so config-loaded precedes
@@ -144,11 +174,11 @@ func TestNewFromConfigSkipsConfigLoaded(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("child exit = %d\nstderr:\n%s", code, stderr)
 	}
-	events := ffMarkers.Events(stderr)
+	events := ffMarkerEvents(stderr)
 	if len(events) == 0 || events[0] != "runtime-init-start" {
 		t.Fatalf("events = %v, want runtime-init-start first", events)
 	}
-	if ffMarkers.Has(stderr, "config-loaded") {
+	if ffMarkerSeen(stderr, "config-loaded") {
 		t.Fatalf("NewFromConfig must not emit config-loaded (events = %v)", events)
 	}
 }

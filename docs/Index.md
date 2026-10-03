@@ -11,7 +11,7 @@ You can find the index of the contents in this file.
 | [CLI](CLI.md)                        | Command-line entry points: `ff`, `ff chat`, `ff run`, and resume. |
 | [Audit](Audit.md)                    | Forensic hardening audit record: scope, confirmed findings and fixes, and intentionally unchanged areas. |
 | [Recovery](Recovery.md)              | Run recovery, supervision, and process-tree lifecycle. |
-| [HPOV](HPOV.md)                    | Performance benchmark methodology: what `hpov` measures, every metric, how comparison decides a verdict, and what HPOV does not claim. |
+| [Benchmarks](Benchmarks.md)        | How to measure Forcefield with the standalone HPOV suite, and where its methodology lives. |
 
 ## Packages
 

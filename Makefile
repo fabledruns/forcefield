@@ -1,8 +1,13 @@
 BINARY_NAME=ff
 CMD_PATH=.
 
-HPOV_BINARY=hpov
-HPOV_CMD_PATH=./bench/hpov
+# HPOV is a separate project: https://github.com/OWNER/hpov (or your local
+# checkout). It is not built from this repository. Override HPOV to point at
+# the binary, e.g. `make bench-quick HPOV=../hpov/bin/hpov`.
+HPOV?=hpov
+BENCH_PROFILE?=quick
+BENCH_SELECT?=launch.version,launch.help,launch.artifact-size
+BENCH_OUT?=bench/results/run.json
 
 VERSION?=dev
 BUILD_DIR=./bin
@@ -16,7 +21,7 @@ else
 	BINARY_EXT=
 endif
 
-.PHONY: all build hpov run test clean fmt vet cue-check lint install tidy coverage-gate help
+.PHONY: all build run test clean fmt vet cue-check lint install tidy coverage-gate bench-quick help
 
 all: build
 
@@ -24,11 +29,15 @@ build:
 	@echo "Building $(BINARY_NAME)$(BINARY_EXT)..."
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)$(BINARY_EXT) $(CMD_PATH)
 
-# HPOV is the performance benchmark runner (bench/hpov). Methodology:
-# docs/HPOV.md. It measures the built ff binary, so build that first.
-hpov:
-	@echo "Building $(HPOV_BINARY)$(BINARY_EXT)..."
-	$(GO) build -o $(BUILD_DIR)/$(HPOV_BINARY)$(BINARY_EXT) $(HPOV_CMD_PATH)
+# Run the standalone HPOV benchmark suite against the ff binary built above.
+# `ff` is measured through HPOV's built-in Forcefield profile, so no profile
+# file is needed. Requires HPOV on PATH or HPOV=/path/to/hpov. The result
+# directory is created by hpov itself.
+#
+# Note: written for both sh and cmd.exe, so no shell-specific helpers.
+bench-quick: build
+	@echo Benchmarking $(BUILD_DIR)/$(BINARY_NAME)$(BINARY_EXT) with $(HPOV)...
+	$(HPOV) run --subject ff=$(BUILD_DIR)/$(BINARY_NAME)$(BINARY_EXT) --profile $(BENCH_PROFILE) --select "$(BENCH_SELECT)" --out $(BENCH_OUT)
 
 run:
 	$(GO) run $(CMD_PATH)
@@ -102,7 +111,7 @@ endif
 help:
 	@echo "Forcefield Make Commands:"
 	@echo "  make build      Build binary"
-	@echo "  make hpov       Build the HPOV benchmark runner (docs/HPOV.md)"
+	@echo "  make bench-quick  Benchmark the built binary with standalone HPOV (docs/Benchmarks.md)"
 	@echo "  make run        Run locally"
 	@echo "  make test       Run tests"
 	@echo "  make coverage   Generate coverage"

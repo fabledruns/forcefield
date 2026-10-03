@@ -2,20 +2,23 @@
 
 Benchmarking and performance measurements for Forcefield.
 
-## HPOV: the Forcefield benchmark suite
+## HPOV: the harness benchmark suite
 
-`bench/hpov` is Forcefield's own performance benchmark suite: it measures the
-real `ff` binary (launch, interactive startup, memory), records every raw
+HPOV is a **standalone project** with its own repository and Go module. It
+measures an executable — launch, interactive startup, memory — records every raw
 sample, and decides with stated rules whether a candidate moved relative to a
-baseline.
+baseline. It does not import Forcefield, and it is not built from this tree.
 
-- Methodology: [`docs/HPOV.md`](../docs/HPOV.md)
-- Runner quickstart: [`bench/hpov/README.md`](hpov/README.md)
+Forcefield is one of its subjects, described by a declarative profile. Nothing
+here needs to change to measure another harness.
+
+- How to run it against a Forcefield build: [`docs/Benchmarks.md`](../docs/Benchmarks.md)
+- Methodology, metrics and verdict rules: HPOV's own `docs/HPOV.md`
 
 ```bash
-make build hpov
-./bin/hpov list --here --long
-./bin/hpov run --ff head=./bin/ff --profile standard --out results/run.json
+make bench-quick                                    # build ff, then measure it
+../hpov/bin/hpov list --here --long
+../hpov/bin/hpov run --subject ff=./bin/ff --profile standard --out results/run.json
 ```
 
 The rest of this file documents a separate, earlier cross-harness comparison
