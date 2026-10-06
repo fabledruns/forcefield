@@ -61,7 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          LDFLAGS="-s -w -X forcefield/cmd.Version=${VERSION} -X main.Version=${VERSION}"
+          LDFLAGS="-s -w -X forcefield/cmd.Version=${VERSION} -X main.Version=${VERSION} -X forcefield/internal/tui.Version=${VERSION}"
           echo "Building ${VERSION}..."
 
           CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o dist/ff-linux-amd64 .
