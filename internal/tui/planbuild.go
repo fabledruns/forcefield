@@ -71,6 +71,7 @@ func (m *model) beginTurn(task string, kind turnKind) error {
 	if m.runtime == nil || m.session == nil {
 		return fmt.Errorf("runtime not available")
 	}
+	m.clearNotice()
 	m.entries = append(m.entries, chatEntry{Role: roleUser, Content: task})
 	m.session.AddMessage("user", task)
 	// A previous turn may have been cancelled after its tool_calls batch
@@ -82,6 +83,7 @@ func (m *model) beginTurn(task string, kind turnKind) error {
 			Role:    roleError,
 			Content: fmt.Sprintf("failed to save session: %v", err),
 		})
+		m.setNotice(statusError, fmt.Sprintf("failed to save session: %v", err))
 	}
 
 	mode := runtime.ModeChat
@@ -94,6 +96,7 @@ func (m *model) beginTurn(task string, kind turnKind) error {
 		cancel()
 		m.waiting = false
 		m.entries = append(m.entries, chatEntry{Role: roleError, Content: fmt.Sprintf("stream failed: %v", err)})
+		m.setNotice(statusError, fmt.Sprintf("stream failed: %v", err))
 		m.refreshTranscript()
 		return nil
 	}
@@ -165,9 +168,11 @@ func (m *model) acceptPlanBody(body string) {
 			Role:    roleError,
 			Content: fmt.Sprintf("failed to save plan: %v", err),
 		})
+		m.setNotice(statusError, fmt.Sprintf("failed to save plan: %v", err))
 		return
 	}
 	m.Println("Plan saved — review it, then /build to execute.")
+	m.setNotice(statusSuccess, "Plan saved — review it, then /build to execute.")
 }
 
 // setBuildStatus moves the accepted plan to status and optionally notes
@@ -183,10 +188,19 @@ func (m *model) setBuildStatus(status, line string) {
 			Role:    roleError,
 			Content: fmt.Sprintf("failed to save plan: %v", err),
 		})
+		m.setNotice(statusError, fmt.Sprintf("failed to save plan: %v", err))
 		return
 	}
 	if line != "" {
 		m.Println("%s", line)
+	}
+	// Green OK strip only for completed builds; partial states keep the
+	// existing warning/error so the failure reason stays visible.
+	if status == session.PlanDone {
+		if line == "" {
+			line = "Build complete."
+		}
+		m.setNotice(statusSuccess, line)
 	}
 }
 

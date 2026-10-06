@@ -36,3 +36,4 @@ SKILL.md
 # Benchmarks: independent nested Git repository (not a submodule).
 # Its history lives in benchmarks/.git; never track its contents here.
 benchmarks/
+HPOV-Benchmark-Design-Plan.md

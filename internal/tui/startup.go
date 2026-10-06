@@ -142,6 +142,7 @@ func (m model) installRuntime(msg runtimeReadyMsg) model {
 			m.startupErr = fmt.Errorf("runtime unavailable")
 		}
 		m.status = "startup failed: " + m.startupErr.Error()
+		m.setNotice(statusError, m.status)
 		m.entries = append(m.entries, chatEntry{Role: roleError, Content: m.status})
 		m.refreshTranscript()
 		return m

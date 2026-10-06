@@ -75,6 +75,12 @@ Discovery is lazy: nothing is fetched at startup or for providers you never open
 
 ## Input Handling
 
+Typing `/` opens the command palette above the input: typing filters
+commands, <kbd>↑</kbd>/<kbd>↓</kbd> move the highlight (wrapping), and
+<kbd>Enter</kbd> or <kbd>Tab</kbd> confirms it into the input. A second
+<kbd>Enter</kbd> runs it. <kbd>Esc</kbd> clears the input and closes the
+palette.
+
 When the user submits a line:
 
 1. The TUI first tries slash-command dispatch.
@@ -100,7 +106,7 @@ that land on nothing fall through untouched.
 | Click a row in a picker modal      | Choose it (same as keyboard Enter).            |
 | Wheel over a picker modal          | Move its selection cursor.                     |
 | Click the input box                | Focus the editor.                              |
-| Click `/command` suggestion        | Complete the input with it.                    |
+| Click a palette row                | Complete the input with that command.          |
 | Click an answer label while a permission prompt is open | Same as pressing that key (y/n/a/d). |
 | <kbd>F2</kbd>                      | Toggle mouse capture off/on.                    |
 

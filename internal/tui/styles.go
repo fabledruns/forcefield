@@ -154,10 +154,17 @@ var (
 )
 
 var (
-	suggestionListStyle = lipgloss.NewStyle().
+	// paletteActiveStyle highlights the selected command palette row in
+	// Forcefield pink. Names stay quiet otherwise; descriptions are
+	// always muted. No borders, no fills.
+	paletteActiveStyle = lipgloss.NewStyle().
+				Bold(true).
 				Foreground(colorAccent)
 
-	suggestionPreviewStyle = lipgloss.NewStyle().
+	paletteNameStyle = lipgloss.NewStyle().
+				Foreground(colorText)
+
+	paletteDescStyle = lipgloss.NewStyle().
 				Foreground(colorMuted)
 )
 

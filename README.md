@@ -1,5 +1,14 @@
 # Forcefield (`ff`)
 
+```
+███████╗ ██████╗ ██████╗  ██████╗███████╗███████╗██╗███████╗██╗     ██████╗ 
+██╔════╝██╔═══██╗██╔══██╗██╔════╝██╔════╝██╔════╝██║██╔════╝██║     ██╔══██╗
+█████╗  ██║   ██║██████╔╝██║     █████╗  █████╗  ██║█████╗  ██║     ██║  ██║
+██╔══╝  ██║   ██║██╔══██╗██║     ██╔══╝  ██╔══╝  ██║██╔══╝  ██║     ██║  ██║
+██║     ╚██████╔╝██║  ██║╚██████╗███████╗██║     ██║███████╗███████╗██████╔╝
+╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝     ╚═╝╚══════╝╚══════╝╚═════╝ 
+```
+
 Forcefield is a local-first command line tool for running AI agents.
 
 It provides the runtime around a model: tools, skills, sessions, memory, permissions, shell execution, and provider communication. Forcefield runs as a single binary.

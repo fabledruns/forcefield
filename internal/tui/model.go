@@ -174,22 +174,25 @@ type model struct {
 	// typed prefix, sorted alphabetically; recomputed on every keystroke
 	// by updateSuggestions and cleared once the input isn't an
 	// in-progress command name (see completion.go). Empty/nil hides the
-	// suggestion list and preview entirely.
+	// command palette entirely.
 	suggestions []command.Command
 
-	// tabMatches and tabIndex track an in-progress Tab-cycle: tabMatches
-	// is the sorted set of command names a cycle is working through, and
-	// tabIndex is which one the input currently holds. Any key other
-	// than Tab clears tabMatches, so the next Tab press starts a fresh
-	// cycle from whatever's typed then.
-	tabMatches []string
-	tabIndex   int
+	// suggestionCursor is the palette's highlighted row. Typing resets it
+	// to the top; Up/Down move it with wraparound; Enter or Tab confirms
+	// it into the input.
+	suggestionCursor int
 
 	width, height int
 	waiting       bool // true while a runTask command is in flight
 	status        string
-	quitting      bool
-	ready         bool // true once the first WindowSizeMsg has arrived
+	// notice is the Crush-style bottom status strip notification. Nil
+	// means no notification, in which case the footer shows the normal
+	// help/loading line. Non-nil overlays that line with a full-width
+	// solid color strip (see statusbar.go), exactly like Crush's
+	// Status.Draw which draws the info message over the help view.
+	notice   *statusNotice
+	quitting bool
+	ready    bool // true once the first WindowSizeMsg has arrived
 
 	// startupPhase tracks background runtime initialization (see
 	// startup.go): the first frame renders while starting, and input
@@ -606,10 +609,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// answer is indistinguishable from the model having said nothing.
 		m.stopStream(true)
 
+		errText := ""
+		if msg.err != nil {
+			errText = msg.err.Error()
+		}
 		m.entries = append(m.entries, chatEntry{
 			Role:    roleError,
-			Content: msg.err.Error(),
+			Content: errText,
 		})
+		m.setNotice(statusError, errText)
 		if kind == turnBuild {
 			// The error above already explains the failure; the
 			// status transition keeps the partial work explicit.
@@ -628,6 +636,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		recovery.NoteTerminal(m.session, runtime.EventCancelled, msg.err)
 		m.stopStream(true)
 		m.entries = append(m.entries, chatEntry{Role: roleSystem, Content: "Run cancelled."})
+		m.setNotice(statusWarn, "Run cancelled.")
 		if kind == turnBuild {
 			m.setBuildStatus(session.PlanPartial, "Partial build — run /build to continue.")
 		}
@@ -655,6 +664,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if kind == turnBuild {
 			m.setBuildStatus(session.PlanPartial, "")
 		}
+		// Set after plan helpers so the block reason wins over any
+		// success strip they may have set.
+		m.setNotice(statusWarn, reason)
 		m.refreshTranscript()
 		return m, nil
 
@@ -800,6 +812,7 @@ func (m *model) noteSaveError() {
 		Role:    roleError,
 		Content: fmt.Sprintf("session save failed — recent history is only in memory and will be lost on quit: %s", errText),
 	})
+	m.setNotice(statusError, fmt.Sprintf("session save failed: %s", errText))
 }
 
 // runActive reports whether the TUI still owns a context, stream, tool, or
@@ -823,6 +836,7 @@ func (m *model) cancelActiveRun() {
 	m.picker = nil
 	m.selectPicker = nil
 	m.entries = append(m.entries, chatEntry{Role: roleSystem, Content: "Run cancelled."})
+	m.setNotice(statusWarn, "Run cancelled.")
 	m.refreshTranscript()
 }
 
@@ -1036,7 +1050,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// user's, never a pasted newline.
 	if msg.Type == tea.KeyRunes && msg.Paste {
 		m.input.InsertString(normalizeNewlines(string(msg.Runes)))
-		m.tabMatches = nil
 		m.updateSuggestions()
 		m.layout()
 		return m, nil
@@ -1065,7 +1078,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.input.Value() != "" {
 			m.input.Reset()
 			m.suggestions = nil
-			m.tabMatches = nil
+			m.suggestionCursor = 0
 			m.layout()
 			return m, nil
 		}
@@ -1098,9 +1111,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Windows console driver), not a deliberate submit.
 		if newlineEnter(msg, inPasteBurst) {
 			m.input.InsertString("\n")
-			m.tabMatches = nil
 			m.updateSuggestions()
 			m.layout()
+			return m, nil
+		}
+		// The palette owns plain Enter while open: it confirms the
+		// highlighted command into the input (a second Enter runs it).
+		if m.paletteOpen() {
+			m.selectPaletteActive()
 			return m, nil
 		}
 		if m.waiting && !isNewCommand(m.input.Value()) {
@@ -1134,6 +1152,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cancel()
 			m.waiting = false
 			m.entries = append(m.entries, chatEntry{Role: roleError, Content: fmt.Sprintf("stream failed: %v", err)})
+			m.setNotice(statusError, fmt.Sprintf("stream failed: %v", err))
 			m.refreshTranscript()
 			return m, nil
 		}
@@ -1146,11 +1165,23 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.streamPumpCmd()
 	case tea.KeyTab:
 		return m.handleTabComplete()
+
+	case tea.KeyUp:
+		// While the palette is open, arrows navigate it instead of the
+		// multiline input; otherwise they keep their textarea behavior.
+		if m.paletteOpen() {
+			m.movePalette(-1)
+			return m, nil
+		}
+	case tea.KeyDown:
+		if m.paletteOpen() {
+			m.movePalette(1)
+			return m, nil
+		}
 	}
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	m.tabMatches = nil // any non-Tab edit invalidates an in-progress cycle
 	m.updateSuggestions()
 	// A paste (or any edit) may have changed the input's line count or
 	// the suggestion list, either of which changes how tall the footer
@@ -1176,12 +1207,15 @@ func (m *model) acceptInput() (startedStream bool, quit bool) {
 	}
 	m.input.Reset()
 	m.suggestions = nil
-	m.tabMatches = nil
+	m.suggestionCursor = 0
 	m.layout() // the input box just shrank back to one line
+	// A new submission acknowledges the previous strip notification.
+	m.clearNotice()
 
 	if isCommand, err := command.Dispatch(m, m.registry, task); isCommand {
 		if err != nil {
 			m.entries = append(m.entries, chatEntry{Role: roleError, Content: err.Error()})
+			m.setNotice(statusError, err.Error())
 		}
 		m.refreshTranscript()
 		return false, m.quitting
@@ -1199,6 +1233,7 @@ func (m *model) acceptInput() (startedStream bool, quit bool) {
 			Role:    roleError,
 			Content: fmt.Sprintf("failed to save session: %v", err),
 		})
+		m.setNotice(statusError, fmt.Sprintf("failed to save session: %v", err))
 	}
 
 	m.waiting = true
@@ -1324,6 +1359,7 @@ func (m model) switchToSession(id string) (tea.Model, tea.Cmd) {
 			Role:    roleError,
 			Content: fmt.Sprintf("failed to load session: %v", err),
 		})
+		m.setNotice(statusError, fmt.Sprintf("failed to load session: %v", err))
 		m.refreshTranscript()
 		return m, nil
 	}
@@ -1365,6 +1401,7 @@ func (m model) switchToSession(id string) (tea.Model, tea.Cmd) {
 
 	m.session = sess
 	m.entries = sessionEntries(sess)
+	m.clearNotice()
 	m.refreshTranscript()
 
 	return m, nil
@@ -1389,19 +1426,16 @@ func (m *model) syncInputHeight() {
 
 // footerHeight computes how many terminal rows the footer needs right
 // now: the input box (plus its border), the help/status line below it,
-// and, when present, the two-line live suggestion list above it. It
-// changes as the input grows/shrinks and as suggestions come and go, so
+// and, when open, one row per visible command palette entry above it. It
+// changes as the input grows/shrinks and as the palette filters, so
 // callers should not cache this value.
 func (m *model) footerHeight() int {
 	const (
 		inputBorder = 2 // top + bottom border of inputBorderStyle
 		helpLine    = 1
-		suggestions = 2 // suggestion list line + description line
 	)
 	h := inputBorder + m.input.Height() + helpLine
-	if len(m.suggestions) > 0 {
-		h += suggestions
-	}
+	h += m.suggestionsHeight()
 	return h
 }
 
@@ -1467,7 +1501,7 @@ func (m *model) layout() {
 	if m.following && len(m.entries) > 0 {
 		m.viewport.GotoBottom()
 	} else if len(m.entries) == 0 {
-		// Banner stays centered horizontally; height growth does not
+		// Banner stays left-aligned horizontally; height growth does not
 		// require a re-render, but keep viewport at top if empty.
 		m.viewport.GotoTop()
 	}
@@ -1802,6 +1836,13 @@ func (m model) renderFooter() string {
 		} else {
 			status = m.renderLoading()
 		}
+	}
+
+	// Crush parity: a notification draws over the help/status line as a
+	// full-width solid strip. Same row, same height — it replaces the
+	// line above instead of adding chrome, so footerHeight is unchanged.
+	if m.notice != nil {
+		status = renderStatusBar(m.width, m.notice.kind, m.notice.message)
 	}
 
 	if suggestions := m.renderSuggestions(); suggestions != "" {

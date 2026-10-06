@@ -82,6 +82,7 @@ func (m *model) Clear() {
 	m.activeTools = make(map[string]int)
 	m.assistantBuffer = ""
 	m.status = ""
+	m.clearNotice()
 	m.permissionPrompt = nil
 }
 
@@ -114,11 +115,12 @@ func (m *model) NewSession() error {
 	m.selectPicker = nil
 	m.waiting = false
 	m.status = ""
+	m.clearNotice()
 	m.loadingFrame = 0
 	m.following = true
 	m.input.Reset()
 	m.suggestions = nil
-	m.tabMatches = nil
+	m.suggestionCursor = 0
 	m.refreshTranscript()
 	return nil
 }
@@ -514,6 +516,7 @@ func (m *model) ToggleThinking() (bool, error) {
 func (m model) chooseProvider(id string) (tea.Model, tea.Cmd) {
 	if err := m.SetProvider(id); err != nil {
 		m.entries = append(m.entries, chatEntry{Role: roleError, Content: err.Error()})
+		m.setNotice(statusError, err.Error())
 		m.refreshTranscript()
 		return m, nil
 	}
@@ -544,6 +547,7 @@ func (m model) chooseProvider(id string) (tea.Model, tea.Cmd) {
 func (m model) chooseModel(id string) (tea.Model, tea.Cmd) {
 	if err := m.SetModel(id); err != nil {
 		m.entries = append(m.entries, chatEntry{Role: roleError, Content: err.Error()})
+		m.setNotice(statusError, err.Error())
 		m.refreshTranscript()
 		return m, nil
 	}

@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // Centralized mouse layer: rendering registers hit regions; routeMouse
@@ -286,46 +285,25 @@ func (m *model) routeMainUIMouse(msg tea.MouseMsg) bool {
 	return false
 }
 
-// pickSuggestion completes the input with a clicked suggestion, exactly as
-// choosing it via Tab would.
+// pickSuggestion completes the input with a clicked palette row, exactly
+// as confirming it via Enter would.
 func (m *model) pickSuggestion(idx int) {
-	shown := m.suggestions
-	if idx < 0 || idx >= len(shown) {
-		return
-	}
-	m.input.SetValue("/" + shown[idx].Name())
-	m.input.CursorEnd()
-	m.tabMatches = nil
-	m.updateSuggestions()
-	m.layout()
+	m.selectPalette(idx)
 }
 
-// suggestionAt resolves a footer point to a live command-suggestion index.
-// Returns (-1, -1) when the point is not on a suggestion.
+// suggestionAt resolves a footer point to a palette row index. The palette
+// stacks one row per command above the input box, so any x within a
+// visible row hits it. Returns (-1, -1) when the point is not on a row.
 func (m model) suggestionAt(x, y int) (int, int) {
-	if len(m.suggestions) == 0 || m.permissionPrompt != nil || m.picker != nil || m.selectPicker != nil {
+	if !m.paletteOpen() || m.permissionPrompt != nil || m.picker != nil || m.selectPicker != nil {
 		return -1, -1
 	}
 	top := m.height - m.footerHeight()
-	band := Rect{X: 0, Y: top, W: m.width, H: 1}
+	band := Rect{X: 0, Y: top, W: m.width, H: m.paletteShown()}
 	if !band.Contains(x, y) {
 		return -1, -1
 	}
-
-	shown := len(m.suggestions)
-	if shown > maxSuggestions {
-		shown = maxSuggestions
-	}
-	cursor := 0
-	for i := 0; i < shown; i++ {
-		name := "/" + m.suggestions[i].Name()
-		w := lipgloss.Width(name)
-		if x >= cursor && x < cursor+w {
-			return y, i
-		}
-		cursor += w + lipgloss.Width("   ") // separator used by renderSuggestions
-	}
-	return -1, -1
+	return y, y - top
 }
 
 // inputArea returns the screen rect of the prompt's input box, including
@@ -339,13 +317,10 @@ func (m model) inputArea() Rect {
 	return Rect{X: 0, Y: top, W: m.width, H: h}
 }
 
-// suggestionsHeight reports how many rows the live suggestion list adds
-// above the input box (zero when hidden), matching renderSuggestions.
+// suggestionsHeight reports how many rows the command palette adds above
+// the input box (zero when closed), matching renderSuggestions.
 func (m model) suggestionsHeight() int {
-	if len(m.suggestions) == 0 {
-		return 0
-	}
-	return 2
+	return m.paletteShown()
 }
 
 // runRegionAction performs a transcript region's action.

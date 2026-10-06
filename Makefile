@@ -11,7 +11,7 @@ BENCH_OUT?=bench/results/run.json
 
 VERSION?=dev
 BUILD_DIR=./bin
-LDFLAGS=-s -w -X forcefield/cmd.Version=$(VERSION) -X main.Version=$(VERSION)
+LDFLAGS=-s -w -X forcefield/cmd.Version=$(VERSION) -X main.Version=$(VERSION) -X forcefield/internal/tui.Version=$(VERSION)
 
 GO=go
 

@@ -323,27 +323,23 @@ func TestSuggestionHitRegions(t *testing.T) {
 	m := newTestModel()
 	m.input.SetValue("/") // bare slash: every command is suggested
 	m.updateSuggestions()
-	if len(m.suggestions) < 3 {
-		t.Fatalf("setup: got %d suggestions for \"/\"", len(m.suggestions))
+	if m.paletteShown() < 3 {
+		t.Fatalf("setup: got %d palette rows for \"/\"", m.paletteShown())
 	}
 
-	// First label starts at x=2 on the suggestions row.
+	// Palette rows stack one per command above the input box: any x on
+	// row N hits index N.
 	top := m.height - m.footerHeight()
-	_, idx := m.suggestionAt(2, top)
-	if idx != 0 {
-		t.Fatalf("suggestionAt(2) = %d, want 0", idx)
+	for want := 0; want < m.paletteShown(); want++ {
+		_, idx := m.suggestionAt(2, top+want)
+		if idx != want {
+			t.Fatalf("suggestionAt(row %d) = %d, want %d", want, idx, want)
+		}
 	}
 
-	// Click the second label: its x sits one gap past the first label.
-	firstW := len("/" + m.suggestions[0].Name())
-	_, idx = m.suggestionAt(2+firstW+3+1, top)
-	if idx != 1 {
-		t.Errorf("suggestionAt(second) = %d, want 1", idx)
-	}
-
-	// Below the list (the preview line) is not clickable.
-	if _, idx = m.suggestionAt(2, top+1); idx != -1 {
-		t.Error("preview row must not be a hit target")
+	// Below the palette (the input box) is not a hit target.
+	if _, idx := m.suggestionAt(2, top+m.paletteShown()); idx != -1 {
+		t.Error("input-box row must not be a palette hit target")
 	}
 }
 
