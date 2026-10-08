@@ -33,11 +33,13 @@ func (r Rect) Contains(x, y int) bool {
 type mouseAction int
 
 const (
-	actionNone           mouseAction = iota
-	actionToggleTool                 // Arg: entry index of a tool block
-	actionToggleThinking             // Arg: entry index of a thinking block
-	actionSessionSelect              // Arg: session picker row index
-	actionPickerSelect               // Arg: selectPicker row index
+	actionNone             mouseAction = iota
+	actionToggleTool                   // Arg: entry index of a tool block
+	actionToggleThinking               // Arg: entry index of a thinking block
+	actionToggleSystem                 // Arg: entry index of a collapsible system block
+	actionToggleSysSection             // Arg: "entry:section" of a grouped system block
+	actionSessionSelect                // Arg: session picker row index
+	actionPickerSelect                 // Arg: selectPicker row index
 	actionFocusInput
 	actionSuggestionPick // Arg: suggestion index
 	actionPermAnswer     // Arg: answer key ("y","n","a","d")
@@ -99,7 +101,9 @@ func (m model) routeMouse(msg tea.MouseMsg) (model, bool) {
 		// Transcript emphasis is baked into the rendered content; footer
 		// and picker emphasis render live from state.
 		if strings.HasPrefix(before, "tool:") || strings.HasPrefix(m.hoverID, "tool:") ||
-			strings.HasPrefix(before, "think:") || strings.HasPrefix(m.hoverID, "think:") {
+			strings.HasPrefix(before, "think:") || strings.HasPrefix(m.hoverID, "think:") ||
+			strings.HasPrefix(before, "sys:") || strings.HasPrefix(m.hoverID, "sys:") ||
+			strings.HasPrefix(before, "syssec:") || strings.HasPrefix(m.hoverID, "syssec:") {
 			m.refreshTranscript()
 		}
 	}
@@ -323,8 +327,26 @@ func (m model) suggestionsHeight() int {
 	return m.paletteShown()
 }
 
-// runRegionAction performs a transcript region's action.
+// runRegionAction performs a transcript region's action. Section regions
+// carry an "entry:section" payload and route before the plain-index
+// guard below, which only understands bare entry indices.
 func (m *model) runRegionAction(region HitRegion) {
+	if region.Action == actionToggleSysSection {
+		entry, sec, ok := parseSectionArg(region.Arg)
+		if !ok {
+			return
+		}
+		if entry < 0 || entry >= len(m.entries) {
+			return
+		}
+		blocks := parseSysGroup(m.entries[entry].Content)
+		if blocks == nil || sec < 0 || sec >= sysSectionTotal(blocks) {
+			return
+		}
+		m.setSysSection(entry, sec, !sysSectionOpen(m.entries[entry], sec))
+		m.refreshTranscript()
+		return
+	}
 	idx := mustParseIndex(region.Arg)
 	if idx < 0 || idx >= len(m.entries) {
 		return
@@ -338,6 +360,11 @@ func (m *model) runRegionAction(region HitRegion) {
 	case actionToggleThinking:
 		if m.entries[idx].Thinking != nil {
 			m.entries[idx].Thinking.expanded = !m.entries[idx].Thinking.expanded
+			m.refreshTranscript()
+		}
+	case actionToggleSystem:
+		if m.entries[idx].Role == roleSystem && systemCollapsible(m.entries[idx].Content) {
+			m.entries[idx].SysExpanded = !m.entries[idx].SysExpanded
 			m.refreshTranscript()
 		}
 	}
@@ -400,6 +427,20 @@ func clampIndex(i, length int) int {
 		return length - 1
 	}
 	return i
+}
+
+// parseSectionArg splits an "entry:section" region payload.
+func parseSectionArg(s string) (entry, sec int, ok bool) {
+	parts := strings.Split(s, ":")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	entry, err1 := parseIndex(parts[0])
+	sec, err2 := parseIndex(parts[1])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return entry, sec, true
 }
 
 // parseIndex/mustParseIndex: small helpers for region payloads.
