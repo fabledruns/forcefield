@@ -37,3 +37,4 @@ SKILL.md
 # Its history lives in benchmarks/.git; never track its contents here.
 benchmarks/
 HPOV-Benchmark-Design-Plan.md
+evals/

@@ -49,6 +49,54 @@ var (
 				Bold(true).
 				Foreground(colorMuted)
 
+	// System-output hierarchy (see system.go): keys stay quiet, values
+	// read bright; /command tokens borrow the palette pink; diff rows
+	// take the shared success/error hues.
+	sysKeyStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorMuted)
+
+	sysNameStyle = lipgloss.NewStyle().
+			Foreground(colorAccent)
+
+	sysAddedStyle = lipgloss.NewStyle().
+			Foreground(colorSuccess)
+
+	sysRemovedStyle = lipgloss.NewStyle().
+			Foreground(colorError)
+
+	sysHunkStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorAccent)
+
+	// Inline semantic elements (see system.go): emphasis for headings and
+	// code, underline for navigable references (paths and URLs share the
+	// affordance), bold digits for scannable numbers, semantic hues for
+	// status, and dim rules for separators.
+	sysEmphStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorText)
+
+	sysRefStyle = lipgloss.NewStyle().
+			Underline(true).
+			Foreground(colorText)
+
+	sysNumStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorText)
+
+	sysOkStyle = lipgloss.NewStyle().
+			Foreground(colorSuccess)
+
+	sysWarnStyle = lipgloss.NewStyle().
+			Foreground(colorWarning)
+
+	sysFailStyle = lipgloss.NewStyle().
+			Foreground(colorError)
+
+	sysSepStyle = lipgloss.NewStyle().
+			Foreground(colorDim)
+
 	messageBodyStyle = lipgloss.NewStyle().
 				Foreground(colorText)
 

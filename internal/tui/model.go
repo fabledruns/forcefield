@@ -91,6 +91,14 @@ type cachedBlock struct {
 	thinkingText      string
 	thinkingExpanded  bool
 	thinkingStreaming bool
+	// sysExpanded tracks a collapsible system block's toggle.
+	sysExpanded bool
+	// sysHover is the hovered section of a grouped entry (-1 when none).
+	// sysSections snapshots per-section toggles and sysOffsets their
+	// header rows, so reuse stays exact across toggles and hovers.
+	sysHover    int
+	sysSections []bool
+	sysOffsets  []int
 	// tool, when present
 	toolPresent   bool
 	toolExpanded  bool
@@ -978,12 +986,36 @@ func fillToolRecord(record *toolRecord, result *runtime.ToolResult, eventType ru
 	}
 }
 
-// toggleToolExpansion flips the expanded view of the most recent tool-call
-// entry (ctrl+e). Tool calls stay compact by default.
-func (m *model) toggleToolExpansion() {
+// toggleExpandable flips the expanded view of the most recent expandable
+// entry (ctrl+e): a tool call, a collapsible system block, or — for
+// grouped entries — every section at once (expand-all when any section
+// is closed, collapse-all otherwise). Tool calls stay compact by
+// default; system blocks follow system.go sizing.
+func (m *model) toggleExpandable() {
 	for i := len(m.entries) - 1; i >= 0; i-- {
 		if m.entries[i].Tool != nil {
 			m.entries[i].Tool.expanded = !m.entries[i].Tool.expanded
+			return
+		}
+		if m.entries[i].Role != roleSystem {
+			continue
+		}
+		if blocks := parseSysGroup(m.entries[i].Content); blocks != nil {
+			total := sysSectionTotal(blocks)
+			allOpen := true
+			for s := 0; s < total; s++ {
+				if !sysSectionOpen(m.entries[i], s) {
+					allOpen = false
+					break
+				}
+			}
+			for s := 0; s < total; s++ {
+				m.setSysSection(i, s, !allOpen)
+			}
+			return
+		}
+		if systemCollapsible(m.entries[i].Content) {
+			m.entries[i].SysExpanded = !m.entries[i].SysExpanded
 			return
 		}
 	}
@@ -1087,7 +1119,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.shutdownCmd()
 
 	case tea.KeyCtrlE:
-		m.toggleToolExpansion()
+		m.toggleExpandable()
 		m.refreshTranscript()
 		return m, nil
 
@@ -1555,17 +1587,32 @@ func (m *model) refreshTranscript() {
 	for i, e := range m.entries {
 		hovered := false
 		var action mouseAction
-		switch {
-		case e.Tool != nil:
-			hovered = hoverID == regionID("tool", i)
-			action = actionToggleTool
-		case e.Thinking != nil:
-			hovered = hoverID == regionID("think", i)
-			action = actionToggleThinking
-		default:
-			action = actionNone
+		var grouped []sysBlock
+		sysHover := -1
+		if e.Role == roleSystem {
+			grouped = parseSysGroup(e.Content)
+			if grouped != nil {
+				sysHover = sysHoverSection(hoverID, i)
+				hovered = sysHover >= 0
+			}
+		}
+		if grouped == nil {
+			switch {
+			case e.Tool != nil:
+				hovered = hoverID == regionID("tool", i)
+				action = actionToggleTool
+			case e.Thinking != nil:
+				hovered = hoverID == regionID("think", i)
+				action = actionToggleThinking
+			case e.Role == roleSystem && systemCollapsible(e.Content):
+				hovered = hoverID == regionID("sys", i)
+				action = actionToggleSystem
+			default:
+				action = actionNone
+			}
 		}
 
+		var secOffsets []int
 		canReuse := false
 		if !widthChanged && i < len(oldBlocks) {
 			cb := oldBlocks[i]
@@ -1585,8 +1632,11 @@ func (m *model) refreshTranscript() {
 						canReuse = true
 					}
 				} else {
-					// Check cached entry wasn't a tool/thinking block.
-					if cb.thinkingText == "" && !cb.toolPresent {
+					// Check cached entry wasn't a tool/thinking block, and
+					// that no system toggle flipped since. Section offsets
+					// ride along: same width plus same open states means
+					// the same rows.
+					if cb.thinkingText == "" && !cb.toolPresent && cb.sysExpanded == e.SysExpanded && cb.sysHover == sysHover && sysSectionsEqual(cb.sysSections, e.SysSections) {
 						canReuse = true
 					}
 				}
@@ -1595,10 +1645,16 @@ func (m *model) refreshTranscript() {
 		if canReuse {
 			renderedBlocks[i] = oldBlocks[i].rendered
 			newBlocks[i] = oldBlocks[i]
+			secOffsets = oldBlocks[i].sysOffsets
 			// lines already cached in newBlocks[i].lines
 		} else {
 			anyDirty = true
-			block := e.renderGrouped(width, hovered, starts[i] || e.Role != roleAssistant)
+			var block string
+			if grouped != nil {
+				block, secOffsets = e.renderSysGroup(width, grouped, sysHover)
+			} else {
+				block = e.renderGrouped(width, hovered, starts[i] || e.Role != roleAssistant)
+			}
 			lines := strings.Count(block, "\n") + 1
 			cb := cachedBlock{
 				rendered:   block,
@@ -1629,10 +1685,24 @@ func (m *model) refreshTranscript() {
 				cb.toolDuration = e.Tool.duration
 				cb.toolArgsKey = toolArgsKey(e.Tool.args)
 			}
+			cb.sysExpanded = e.SysExpanded
+			cb.sysHover = sysHover
+			cb.sysSections = append([]bool(nil), e.SysSections...)
+			cb.sysOffsets = secOffsets
 			newBlocks[i] = cb
 			renderedBlocks[i] = block
 		}
 		lines := newBlocks[i].lines
+		for s, off := range secOffsets {
+			newSpans = append(newSpans, contentSpan{
+				id:        fmt.Sprintf("syssec:%d:%d", i, s),
+				entry:     i,
+				startLine: line + off,
+				lines:     1,
+				action:    actionToggleSysSection,
+				sec:       s,
+			})
+		}
 		if action != actionNone {
 			newSpans = append(newSpans, contentSpan{
 				id:        regionID(spanKind(action), i),
@@ -1694,11 +1764,15 @@ func (m model) transcriptRegionAt(x, y int) (HitRegion, bool) {
 	}
 	contentY := y - top + m.viewport.YOffset
 	if span := spanAt(m.spans, contentY); span != nil {
+		arg := strconv.Itoa(span.entry)
+		if span.action == actionToggleSysSection {
+			arg = fmt.Sprintf("%d:%d", span.entry, span.sec)
+		}
 		return HitRegion{
 			ID:     span.id,
 			Rect:   m.contentBand(span.startLine, span.lines),
 			Action: span.action,
-			Arg:    strconv.Itoa(span.entry),
+			Arg:    arg,
 		}, true
 	}
 	return HitRegion{}, false
@@ -1758,7 +1832,7 @@ func (m model) headerState() (Icon, lipgloss.Style, string) {
 }
 
 func (m model) renderHeader() string {
-	title := headerStyle.Render(" Forcefield ")
+	title := headerStyle.Render(" superprime™ ")
 
 	icon, style, label := m.headerState()
 	state := style.Render(fmt.Sprintf("%s %s", icon, label))

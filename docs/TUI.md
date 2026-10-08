@@ -36,6 +36,7 @@ The CLI starts the TUI from:
 | Session picker    | Modal list of saved sessions from `/sessions`.            |
 | Provider picker   | Modal list of providers from `/provider`, with capabilities and availability per row. |
 | Model picker      | Modal list of models for the active provider.             |
+| System output     | Command results with headings, key/value, command, path, status, and diff hierarchy plus inline code/number/reference styling; long blocks collapse. |
 | Banner / styles   | Visual presentation helpers.                              |
 
 ### Provider and Model Pickers

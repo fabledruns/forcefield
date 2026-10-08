@@ -1,12 +1,9 @@
 # Forcefield (`ff`)
 
 ```
-███████╗ ██████╗ ██████╗  ██████╗███████╗███████╗██╗███████╗██╗     ██████╗ 
-██╔════╝██╔═══██╗██╔══██╗██╔════╝██╔════╝██╔════╝██║██╔════╝██║     ██╔══██╗
-█████╗  ██║   ██║██████╔╝██║     █████╗  █████╗  ██║█████╗  ██║     ██║  ██║
-██╔══╝  ██║   ██║██╔══██╗██║     ██╔══╝  ██╔══╝  ██║██╔══╝  ██║     ██║  ██║
-██║     ╚██████╔╝██║  ██║╚██████╗███████╗██║     ██║███████╗███████╗██████╔╝
-╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝     ╚═╝╚══════╝╚══════╝╚═════╝ 
+█▀▀▀▀ ▄▀▀▀▀▄ █▀▀▀▀▄ ▄▀▀▀▀ █▀▀▀▀ █▀▀▀▀ █ █▀▀▀▀ █     █▀▀▀▀▄
+█▀▀▀▀ █    █ █▀▀▀▀▄ █     █▀▀▀▀ █▀▀▀▀ █ █▀▀▀▀ █     █    █
+▀      ▀▀▀▀  ▀    ▀  ▀▀▀▀ ▀▀▀▀▀ ▀     ▀ ▀▀▀▀▀ ▀▀▀▀▀ ▀▀▀▀▀ 
 ```
 
 Forcefield is a local-first command line tool for running AI agents.
@@ -22,7 +19,7 @@ It does not require:
 * Remote data processing
 * Telemetry
 
-Forcefield is under active development. Features and interfaces can change.
+Forcefield is under active development, and interfaces may change.
 
 ## Features
 
@@ -549,3 +546,7 @@ gofmt -w .
 ## License
 
 Apache License 2.0.
+
+A project of superprime™.
+
+Some parts of the TUI are inspired by the Crush project by Charm™.

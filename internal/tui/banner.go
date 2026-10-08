@@ -16,9 +16,9 @@ import (
 // carries horizontals and feet. Narrow rows are padded so every line is
 // exactly asciiBannerWidth columns wide by construction.
 const asciiBanner = `
-█▀▀▀▀ ▄▀▀▀▀▄ █▀▀▀▄ ▄▀▀▀▀ █▀▀▀▀ █▀▀▀▀ █ █▀▀▀▀ █     █▀▀▀▀▄
-█▀▀▀▀ █    █ █▀▀▀▄ █     █▀▀▀▀ █▀▀▀▀ █ █▀▀▀▀ █     █    █
-▀      ▀▀▀▀  ▀   ▀  ▀▀▀▀ ▀▀▀▀▀ ▀     ▀ ▀▀▀▀▀ ▀▀▀▀▀ ▀▀▀▀▀ `
+█▀▀▀▀ ▄▀▀▀▀▄ █▀▀▀▀▄ ▄▀▀▀▀ █▀▀▀▀ █▀▀▀▀ █ █▀▀▀▀ █     █▀▀▀▀▄
+█▀▀▀▀ █    █ █▀▀▀▀▄ █     █▀▀▀▀ █▀▀▀▀ █ █▀▀▀▀ █     █    █
+▀      ▀▀▀▀  ▀    ▀  ▀▀▀▀ ▀▀▀▀▀ ▀     ▀ ▀▀▀▀▀ ▀▀▀▀▀ ▀▀▀▀▀ `
 
 // asciiBannerWidth is the fixed width of every line in asciiBanner.
 // renderBanner falls back to a compact single-line title below this

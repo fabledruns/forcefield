@@ -354,7 +354,7 @@ func TestToggleToolExpansion(t *testing.T) {
 		t.Errorf("tool details visible while compact: %q", rendered)
 	}
 
-	m.toggleToolExpansion()
+	m.toggleExpandable()
 	rendered = m.entries[0].render(m.viewport.Width, false)
 	for _, want := range []string{"command:", "go test ./...", "exit code: 0", "stdout:", "duration:"} {
 		if !strings.Contains(rendered, want) {
@@ -362,7 +362,7 @@ func TestToggleToolExpansion(t *testing.T) {
 		}
 	}
 
-	m.toggleToolExpansion()
+	m.toggleExpandable()
 	rendered = m.entries[0].render(m.viewport.Width, false)
 	if strings.Contains(rendered, "exit code") {
 		t.Errorf("tool details still visible after collapsing: %q", rendered)

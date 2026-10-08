@@ -40,6 +40,16 @@ type chatEntry struct {
 	// reasoning-capable model streamed before its answer, so it can be
 	// expanded (ctrl+r) instead of living in the assistant message.
 	Thinking *thinkingRecord
+
+	// SysExpanded flips a collapsible system block open or shut (see
+	// system.go). Short blocks ignore it and always render fully; long
+	// blocks start collapsed and only this flag opens them.
+	SysExpanded bool
+
+	// SysSections tracks per-section detail views inside grouped entries
+	// (e.g. one bool per agent), parallel to parse order. Missing means
+	// closed; sections start collapsed.
+	SysSections []bool
 }
 
 // contentSpan records which transcript content rows belong to one
@@ -52,6 +62,7 @@ type contentSpan struct {
 	startLine int    // first content row covered by the entry
 	lines     int    // how many rows it occupies
 	action    mouseAction
+	sec       int // section ordinal for actionToggleSysSection spans
 }
 
 // regionID names a transcript hit region.
@@ -119,7 +130,7 @@ func (e chatEntry) renderGrouped(width int, hovered, showHeader bool) string {
 	case roleError:
 		label = errorLabelStyle.Render("Error")
 	case roleSystem:
-		label = systemLabelStyle.Render("System")
+		return e.renderSystem(width, hovered)
 	}
 
 	body := messageBodyStyle.Width(width).Render(e.Content)
@@ -170,21 +181,51 @@ func renderTranscriptWithLayout(entries []chatEntry, width int, hoverID string) 
 	for i, e := range entries {
 		hovered := false
 		var action mouseAction
-		switch {
-		case e.Tool != nil:
-			hovered = hoverID == regionID("tool", i)
-			action = actionToggleTool
-		case e.Thinking != nil:
-			hovered = hoverID == regionID("think", i)
-			action = actionToggleThinking
-		default:
-			action = actionNone
+		var grouped []sysBlock
+		sysHover := -1
+		if e.Role == roleSystem {
+			grouped = parseSysGroup(e.Content)
+			if grouped != nil {
+				sysHover = sysHoverSection(hoverID, i)
+				hovered = sysHover >= 0
+			}
+		}
+		if grouped == nil {
+			switch {
+			case e.Tool != nil:
+				hovered = hoverID == regionID("tool", i)
+				action = actionToggleTool
+			case e.Thinking != nil:
+				hovered = hoverID == regionID("think", i)
+				action = actionToggleThinking
+			case e.Role == roleSystem && systemCollapsible(e.Content):
+				hovered = hoverID == regionID("sys", i)
+				action = actionToggleSystem
+			default:
+				action = actionNone
+			}
 		}
 
-		block := e.renderGrouped(width, hovered, starts[i] || e.Role != roleAssistant)
+		var block string
+		var secOffsets []int
+		if grouped != nil {
+			block, secOffsets = e.renderSysGroup(width, grouped, sysHover)
+		} else {
+			block = e.renderGrouped(width, hovered, starts[i] || e.Role != roleAssistant)
+		}
 		lines := strings.Count(block, "\n") + 1
 		rendered = append(rendered, block)
 
+		for s, off := range secOffsets {
+			spans = append(spans, contentSpan{
+				id:        fmt.Sprintf("syssec:%d:%d", i, s),
+				entry:     i,
+				startLine: line + off,
+				lines:     1,
+				action:    actionToggleSysSection,
+				sec:       s,
+			})
+		}
 		if action != actionNone {
 			spans = append(spans, contentSpan{
 				id:        regionID(spanKind(action), i),
@@ -223,9 +264,14 @@ func joinGrouped(rendered []string, starts []bool) string {
 }
 
 // spanKind maps an interactive action to its region-id prefix.
+// Section rows build their own "syssec:<entry>:<section>" IDs.
 func spanKind(a mouseAction) string {
-	if a == actionToggleThinking {
+	switch a {
+	case actionToggleThinking:
 		return "think"
+	case actionToggleSystem:
+		return "sys"
+	default:
+		return "tool"
 	}
-	return "tool"
 }
