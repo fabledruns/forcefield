@@ -73,6 +73,72 @@ jobs:
       - name: Build Forcefield
         run: go build -v ./...
 
+  sandbox-probe:
+    name: Sandbox probe • ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      # Read-only capability probe (P0-E): prints kernel/LSM/userns facts
+      # via the boundarytest probe so CI logs show why boundary tests run
+      # or skip. No isolation is asserted: no OS-enforced shell boundary
+      # exists yet outside Windows/WSL, so FF_REQUIRE_BOUNDARY stays empty.
+      # When P0-D lands a Linux backend, probe-positive runners will set
+      # FF_REQUIRE_BOUNDARY=landlock and boundary tests must run, not skip.
+      - name: Capability probe (read-only, never claims isolation)
+        shell: bash
+        env:
+          FF_REQUIRE_BOUNDARY: ""
+        run: |
+          go test ./internal/sandbox/boundarytest/ -v -count=1
+
+      - name: Spawn-site audit + executor wiring invariants
+        shell: bash
+        run: |
+          go test ./internal/hardening/ -run 'TestSpawnSitesAreAllowlisted|TestBuiltinFallbackIsExplicit' -v -count=1
+
+      # Required-mode wiring check: with FF_REQUIRE_BOUNDARY set, the
+      # landlock canary must fail (not skip). If it unexpectedly passes,
+      # the fail-closed branch regressed. The output must contain the
+      # fail-closed marker so a build breakage (or any other wrong
+      # failure) cannot satisfy this step either.
+      - name: Required-mode wiring check (expects canary failure)
+        shell: bash
+        run: |
+          set +e
+          out=$(FF_REQUIRE_BOUNDARY=landlock go test ./internal/sandbox/boundarytest/ -run 'TestProbeCanarySkipsWithMarker' -count=1 2>&1)
+          code=$?
+          printf '%s\n' "$out"
+          if [ $code -eq 0 ]; then
+            echo "::error::required boundary unexpectedly passed; fail-closed wiring is broken"
+            exit 1
+          fi
+          case "$out" in
+            *"boundary required but unavailable"*) ;;
+            *)
+              echo "::error::canary failed without the fail-closed marker (build breakage or wrong failure?)"
+              exit 1
+              ;;
+          esac
+
   coverage:
     name: Coverage gate (cmd)
     runs-on: ubuntu-latest
