@@ -87,6 +87,13 @@ type Policy struct {
 	// Network is the requested network policy (mode wsl honors it;
 	// native always has host networking).
 	Network Network
+	// CredentialEnv names the host environment variables Forcefield
+	// itself reads as provider credentials. Native executors strip
+	// these names from the inherited child environment (see
+	// stripCredentialEnv); explicit per-request ExtraEnv still wins.
+	// Empty preserves exact historical forwarding. Populated from
+	// config.CredentialEnvNames on the runtime path.
+	CredentialEnv []string
 }
 
 // Confines reports whether filesystem paths are caged to Workspace:
@@ -243,6 +250,10 @@ type Enforcement struct {
 	NetworkEnforced bool
 	// EnvForwarded: the full host environment reaches the command.
 	EnvForwarded bool
+	// EnvCredsStripped: the credential names in Policy.CredentialEnv
+	// were removed from the forwarded environment. Zero value false
+	// preserves historical wording for executors that strip nothing.
+	EnvCredsStripped bool
 
 	Notes []string
 
@@ -271,6 +282,7 @@ const (
 	LimNetworkInterop        = "network.wsl-interop"
 	LimNetworkNamespace      = "network.namespace"
 	LimEnvFullHost           = "env.full-host"
+	LimEnvCredsStripped      = "env.creds-stripped"
 	LimEnvRestrictedLauncher = "env.restricted-launcher"
 	LimProcessUnixPgroup     = "process.unix-pgroup"
 	LimProcessWindowsJob     = "process.windows-job"
@@ -365,6 +377,8 @@ func (e Enforcement) SummaryLines() []string {
 	env := "full host environment"
 	if !envForwarded {
 		env = "restricted (host variables are not forwarded)"
+	} else if e.EnvCredsStripped {
+		env = "full host environment minus Forcefield credential variables"
 	}
 	lines = append(lines, pad("Environment", env))
 	lines = append(lines, pad("Isolation", e.isolation()))

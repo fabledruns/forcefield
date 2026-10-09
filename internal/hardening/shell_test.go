@@ -2,10 +2,12 @@ package hardening
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"forcefield/internal/sandbox"
 	"forcefield/internal/tools/shell"
 )
 
@@ -90,14 +92,73 @@ func TestShellCancelStopsProcess(t *testing.T) {
 	}
 }
 
-func TestShellEnvDoesNotLeakSecretsUnscrubbed(t *testing.T) {
-	// Env values flow into process env; this test documents that shell
-	// results must be scrubbed before persistence (see scrub tests).
-	// Structural check: tool accepts env map without crashing on odd keys.
-	tool := shell.NewShell()
-	_, _ = tool.Execute(context.Background(), map[string]any{
-		"command":         "echo hi",
-		"timeout_seconds": float64(5),
-		"env":             map[string]any{"FF_TEST_X": "1"},
+func TestShellChildDoesNotSeeProviderKey(t *testing.T) {
+	// Fake markers, never real credentials. The child prints only
+	// LEAKED/CLEAN/BENIGN-OK so values stay out of logs entirely.
+	//
+	// Leak-detection power is platform-dependent: on Unix the child
+	// inherits the host environment, so disabling the strip list flips
+	// this test to LEAKED (verified by mutation). On Windows the relay
+	// reaches Bash through wsl.exe, which forwards no host variables
+	// without WSLENV, so the distribution child is CLEAN with or
+	// without stripping; the launcher-side filter there is pinned by
+	// TestNativePrepareStripsCredentials instead.
+	const canaryName = "FF_SHELL_CRED_CANARY"
+	const benignName = "FF_SHELL_BENIGN_HOST"
+	t.Setenv(canaryName, "shell-child-must-not-see")
+	t.Setenv(benignName, "visible")
+
+	ex, err := sandbox.NewExecutor(sandbox.Policy{Mode: sandbox.ModeNative, CredentialEnv: []string{canaryName}})
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+	tool := shell.NewShellWithExecutor(ex)
+	ctx := context.Background()
+	if probe, err := tool.Execute(ctx, map[string]any{"command": "echo hi"}); err != nil || probe.IsError {
+		t.Skipf("shell backend unavailable: err=%v content=%q", err, probe.Content)
+	}
+
+	res, err := tool.Execute(ctx, map[string]any{
+		"command": `[ -n "$FF_SHELL_CRED_CANARY" ] && echo LEAKED || echo CLEAN`,
 	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(res.Content, "LEAKED") {
+		t.Fatal("policy-listed credential variable visible to shell child")
+	}
+	if !strings.Contains(res.Content, "CLEAN") {
+		t.Fatalf("unexpected child output: %q", res.Content)
+	}
+
+	// A host-set unlisted variable flows on Unix. On Windows the
+	// native relay reaches Bash through wsl.exe, which forwards no
+	// host variables without WSLENV (deliberately empty here), so the
+	// distribution child cannot see it by platform design.
+	res, err = tool.Execute(ctx, map[string]any{
+		"command": `[ "$FF_SHELL_BENIGN_HOST" = visible ] && echo BENIGN-OK || echo BENIGN-MISSING`,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(res.Content, "BENIGN-MISSING") {
+			t.Fatalf("Windows relay child unexpectedly saw a host variable: %q", res.Content)
+		}
+	} else if !strings.Contains(res.Content, "BENIGN-OK") {
+		t.Fatalf("unlisted variable missing from child environment: %q", res.Content)
+	}
+
+	// Explicit per-command env reaches the child on every platform:
+	// stripping applies to inheritance, never to deliberate values.
+	res, err = tool.Execute(ctx, map[string]any{
+		"command": `[ "$FF_SHELL_BENIGN_ARG" = "on-purpose" ] && echo ARG-OK || echo ARG-MISSING`,
+		"env":     map[string]any{"FF_SHELL_BENIGN_ARG": "on-purpose"},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(res.Content, "ARG-OK") {
+		t.Fatalf("explicit per-command env missing from child environment: %q", res.Content)
+	}
 }

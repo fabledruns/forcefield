@@ -542,6 +542,9 @@ func newSandboxExecutor(cfg *config.Config) (sandbox.Executor, error) {
 		Strict:    cfg.Workspace.Mode == config.WorkspaceStrict,
 		Distro:    cfg.Sandbox.WSL.Distribution,
 		Network:   network,
+		// Same credential stripping the runtime applies, so
+		// Describe reports what commands would actually inherit.
+		CredentialEnv: config.CredentialEnvNames(cfg),
 	})
 }
 

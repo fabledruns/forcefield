@@ -234,6 +234,10 @@ func newPolicyWithRoot(cfg *config.Config, cwd, sharedRoot string, rootErr error
 		Strict:    cfg.Workspace.Mode == config.WorkspaceStrict,
 		Distro:    cfg.Sandbox.WSL.Distribution,
 		Network:   network,
+		// Native shell/job children must not inherit the credential
+		// variables Forcefield itself reads; explicit per-command env
+		// still applies. See sandbox.stripCredentialEnv.
+		CredentialEnv: config.CredentialEnvNames(cfg),
 	}, nil
 }
 
@@ -274,6 +278,8 @@ func newPolicy(cfg *config.Config) (sandbox.Policy, error) {
 		Strict:    cfg.Workspace.Mode == config.WorkspaceStrict,
 		Distro:    cfg.Sandbox.WSL.Distribution,
 		Network:   network,
+		// Same credential stripping as newPolicyWithRoot above.
+		CredentialEnv: config.CredentialEnvNames(cfg),
 	}, nil
 }
 

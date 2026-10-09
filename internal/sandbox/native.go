@@ -70,6 +70,7 @@ func (n *nativeExecutor) Describe(context.Context) Enforcement {
 			CwdPinned:          true,
 			FilesystemConfined: false,
 			EnvForwarded:       true,
+			EnvCredsStripped:   len(n.policy.CredentialEnv) > 0,
 			NetworkEnforced:    false,
 			Notes: []string{
 				"strict workspace boundary: filesystem tools and the shell working directory are confined to the workspace; shell command text is not confined",
@@ -81,7 +82,7 @@ func (n *nativeExecutor) Describe(context.Context) Enforcement {
 				{ID: LimNetworkNamespace, Detail: "host networking; no isolation is attempted in native mode"},
 				{ID: LimEnvFullHost, Detail: "full host environment is forwarded by design"},
 				{ID: LimPlatformHostOnly, Detail: "native runs on the host on all platforms; no Linux/macOS isolation backend exists in v1.5.0"},
-			}, processLimitations()...),
+			}, append(credentialStrippedLimitation(n.policy), processLimitations()...)...),
 		}
 	}
 	return Enforcement{
@@ -91,6 +92,7 @@ func (n *nativeExecutor) Describe(context.Context) Enforcement {
 		CwdPinned:          false,
 		FilesystemConfined: false,
 		EnvForwarded:       true,
+		EnvCredsStripped:   len(n.policy.CredentialEnv) > 0,
 		NetworkEnforced:    false,
 		Notes: []string{
 			"native execution has no isolation: commands run with your user's permissions",
@@ -102,13 +104,30 @@ func (n *nativeExecutor) Describe(context.Context) Enforcement {
 			{ID: LimNetworkNamespace, Detail: "host networking; no isolation is attempted in native mode"},
 			{ID: LimEnvFullHost, Detail: "full host environment is forwarded by design"},
 			{ID: LimPlatformHostOnly, Detail: "native runs on the host on all platforms; no Linux/macOS isolation backend exists in v1.5.0"},
-		}, processLimitations()...),
+		}, append(credentialStrippedLimitation(n.policy), processLimitations()...)...),
 	}
 }
 
-// envFor assembles the child environment for the host-side process.
-func hostEnv(extra []string) []string {
-	env := os.Environ()
+// credentialStrippedLimitation reports the credential-stripping hygiene
+// (info, never warn) when the policy names credential variables, and
+// nothing otherwise, so unconfigured executors describe exactly what
+// they were before.
+func credentialStrippedLimitation(p Policy) []Limitation {
+	if len(p.CredentialEnv) == 0 {
+		return nil
+	}
+	return []Limitation{{
+		ID:     LimEnvCredsStripped,
+		Detail: "host variables Forcefield itself reads as provider credentials are removed from shell children; explicit per-command env still applies (hygiene, not an OS boundary)",
+	}}
+}
+
+// envFor assembles the child environment for the host-side process:
+// the full host environment minus the credential names Forcefield
+// itself reads (see stripCredentialEnv), plus the request's explicit
+// extras appended last so deliberate per-command values win.
+func hostEnv(extra, strip []string) []string {
+	env := stripCredentialEnv(os.Environ(), strip)
 	return append(env, extra...)
 }
 
@@ -122,10 +141,10 @@ func (n *nativeExecutor) Probe(ctx context.Context) error {
 var _ Executor = (*nativeExecutor)(nil)
 
 // buildCommandHost is assigned per platform file.
-var buildCommandHost func(ctx context.Context, command, dir string, extraEnv []string) (*exec.Cmd, func(), error)
+var buildCommandHost func(ctx context.Context, command, dir string, extraEnv, strip []string) (*exec.Cmd, func(), error)
 
 func (n *nativeExecutor) build(ctx context.Context, command, dir string, extraEnv []string) (*Prepared, error) {
-	cmd, cleanup, err := buildCommandHost(ctx, command, dir, extraEnv)
+	cmd, cleanup, err := buildCommandHost(ctx, command, dir, extraEnv, n.policy.CredentialEnv)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBackendUnavailable, err)
 	}

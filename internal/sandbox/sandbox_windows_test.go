@@ -26,7 +26,7 @@ func stubWSLExe(t *testing.T, fn func() (string, error)) {
 func TestNativeRelayInvocationShape(t *testing.T) {
 	stubWSLExe(t, func() (string, error) { return `C:\Windows\System32\wsl.exe`, nil })
 
-	cmd, cleanup, err := buildNativeRelay(context.Background(), "echo hi", `C:\proj`, []string{"A=1", "B=two words"})
+	cmd, cleanup, err := buildNativeRelay(context.Background(), "echo hi", `C:\proj`, []string{"A=1", "B=two words"}, nil)
 	if err != nil {
 		t.Fatalf("buildNativeRelay() error = %v", err)
 	}
@@ -60,7 +60,7 @@ func TestNativeRelayDistroOverride(t *testing.T) {
 	stubWSLExe(t, func() (string, error) { return `C:\Windows\System32\wsl.exe`, nil })
 	t.Setenv("FORCEFIELD_WSL_DISTRO", "Ubuntu")
 
-	cmd, _, err := buildNativeRelay(context.Background(), "true", "", nil)
+	cmd, _, err := buildNativeRelay(context.Background(), "true", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildNativeRelay() error = %v", err)
 	}
@@ -78,7 +78,7 @@ func TestNativeRelayDistroOverride(t *testing.T) {
 func TestNativeRelayMissingWSLIsClearError(t *testing.T) {
 	stubWSLExe(t, func() (string, error) { return "", errors.New("not found") })
 
-	_, _, err := buildNativeRelay(context.Background(), "echo hi", "", nil)
+	_, _, err := buildNativeRelay(context.Background(), "echo hi", "", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "wsl.exe") {
 		t.Fatalf("error = %v, want a clear wsl.exe message", err)
 	}

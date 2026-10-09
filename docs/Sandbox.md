@@ -23,7 +23,8 @@ Tools never construct processes themselves. The shell tool hands its request to 
 Historical Forcefield behavior with **no isolation**:
 
 - On Unix, commands run under the system Bash with the full host environment.
-- On Windows, commands are relayed through `wsl.exe` purely so GNU Bash exists; this relay is an availability mechanism, **not** a security boundary. The host environment flows to `wsl.exe`, and the distribution can access everything your Windows user can.
+- Host variables Forcefield itself reads as provider credentials (the configured `api_key_env` names plus the legacy `NVIDIA_API_KEY`) are removed from shell/job children; explicit per-command `env` still applies. This is hygiene against accidental leakage, **not** a boundary: a determined same-user child can still read the parent's environment through the OS.
+- On Windows, commands are relayed through `wsl.exe` purely so GNU Bash exists; this relay is an availability mechanism, **not** a security boundary. The host environment (minus Forcefield's own credential variables, as above) flows to `wsl.exe`, and the distribution can access everything your Windows user can.
 - Commands run with your user's permissions on your whole machine.
 
 Native mode is never described as sandboxed anywhere in the UI.

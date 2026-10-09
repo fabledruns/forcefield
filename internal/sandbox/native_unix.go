@@ -23,16 +23,17 @@ func init() {
 // cmd.exe/PowerShell path and no string rebuilding. The returned cleanup
 // is always nil on Unix.
 //
-// This is the full host environment: native mode forwards everything by
-// design, and Enforcement.EnvForwarded says so.
-func buildNativeUnix(ctx context.Context, command, dir string, extraEnv []string) (*exec.Cmd, func(), error) {
+// This is the host environment minus Forcefield's own credential
+// variables (see stripCredentialEnv): native mode otherwise forwards
+// everything by design, and Enforcement.EnvForwarded says so.
+func buildNativeUnix(ctx context.Context, command, dir string, extraEnv, strip []string) (*exec.Cmd, func(), error) {
 	bash, err := bashLookPath("bash")
 	if err != nil {
 		return nil, nil, fmt.Errorf("bash was not found on PATH; Forcefield requires Bash for shell commands")
 	}
 	cmd := exec.CommandContext(ctx, bash, "-lc", command)
 	cmd.Dir = dir
-	cmd.Env = hostEnv(extraEnv)
+	cmd.Env = hostEnv(extraEnv, strip)
 	return cmd, nil, nil
 }
 

@@ -378,3 +378,35 @@ func TestJob_RetentionEvictsOldestTerminal(t *testing.T) {
 		}
 	}
 }
+
+// TestJob_ChildDoesNotSeeCredentialEnv proves background jobs share the
+// foreground stripping: the registry builds through the injected
+// executor, so a policy-listed credential name set in the test process
+// never reaches the job child. The child prints only LEAKED/CLEAN so
+// values stay out of logs.
+func TestJob_ChildDoesNotSeeCredentialEnv(t *testing.T) {
+	requireShellBackend(t)
+	const canaryName = "FF_JOB_CRED_CANARY"
+	t.Setenv(canaryName, "job-child-must-not-see")
+
+	ex, err := sandbox.NewExecutor(sandbox.Policy{Mode: sandbox.ModeNative, CredentialEnv: []string{canaryName}})
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+	r := NewJobRegistry(ex)
+	snap, err := r.Start(context.Background(), `[ -n "$FF_JOB_CRED_CANARY" ] && echo LEAKED || echo CLEAN`, "", nil, 60*time.Second)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _, _ = r.Cancel(snap.ID) })
+	got := pollUntilDone(t, r, snap.ID, 30*time.Second)
+	if got.State != JobDone || got.ExitCode != 0 {
+		t.Fatalf("final = %+v, want done exit 0", got)
+	}
+	if strings.Contains(got.Output, "LEAKED") {
+		t.Fatal("policy-listed credential variable visible to job child")
+	}
+	if !strings.Contains(got.Output, "CLEAN") {
+		t.Fatalf("unexpected job output: %q", got.Output)
+	}
+}

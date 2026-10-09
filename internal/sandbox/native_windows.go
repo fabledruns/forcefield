@@ -4,7 +4,6 @@ package sandbox
 
 import (
 	"context"
-	"os"
 	"os/exec"
 )
 
@@ -22,7 +21,7 @@ func init() {
 // The command is assembled as an argv (--exec) so agent-authored text can
 // never be re-parsed by a host shell; that property predates sandboxing
 // and is preserved unchanged.
-func buildNativeRelay(ctx context.Context, command, dir string, extraEnv []string) (*exec.Cmd, func(), error) {
+func buildNativeRelay(ctx context.Context, command, dir string, extraEnv, strip []string) (*exec.Cmd, func(), error) {
 	exe, err := wslExePath()
 	if err != nil {
 		return nil, nil, wslMissingError()
@@ -53,12 +52,13 @@ func buildNativeRelay(ctx context.Context, command, dir string, extraEnv []strin
 	}
 
 	cmd := exec.CommandContext(ctx, exe, args...)
-	// Historical behavior: wsl.exe gets its normal Windows environment;
-	// the Linux-side environment comes from the distribution plus the
-	// explicit extras above, since WSL does not forward arbitrary Windows
-	// variables into the distribution. cmd.Dir stays empty: --cd handles
-	// chdir inside WSL.
-	cmd.Env = os.Environ()
+	// Historical behavior: wsl.exe gets its normal Windows environment
+	// minus Forcefield's own credential variables (see
+	// stripCredentialEnv); the Linux-side environment comes from the
+	// distribution plus the explicit extras above, since WSL does not
+	// forward arbitrary Windows variables into the distribution. cmd.Dir
+	// stays empty: --cd handles chdir inside WSL.
+	cmd.Env = hostEnv(nil, strip)
 	return cmd, cleanup, nil
 }
 
