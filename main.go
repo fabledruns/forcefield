@@ -16,8 +16,11 @@ limitations under the License.
 package main
 
 import (
+	"os"
+
 	"forcefield/cmd"
 	"forcefield/internal/perfmark"
+	"forcefield/internal/sandbox"
 )
 
 // Version is set at build time via ldflags for backwards compatibility
@@ -30,6 +33,12 @@ func main() {
 	// are done; cobra dispatch follows. Env-gated (perfmark): no
 	// output unless FF_PERF_MARKERS is set.
 	perfmark.Event("main-entry")
+	// Isolated-execution helper (see sandbox.HelperMain): one argv
+	// comparison before cobra dispatch; the helper never constructs
+	// the runtime. Running it only removes privileges from itself.
+	if len(os.Args) > 1 && os.Args[1] == sandbox.HelperArg {
+		os.Exit(sandbox.HelperMain())
+	}
 	if Version != "dev" && cmd.Version == "dev" {
 		cmd.Version = Version
 	}

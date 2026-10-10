@@ -26,6 +26,11 @@ const (
 	// explicit restricted policy (see wsl_windows.go). It requires
 	// Windows; it never silently falls back to native.
 	ModeWSL Mode = "wsl"
+	// ModeIsolated executes commands on Linux under a Landlock
+	// filesystem ruleset plus no_new_privs (see isolated_linux.go).
+	// It requires Linux with a Landlock-capable kernel; it never
+	// silently falls back to native.
+	ModeIsolated Mode = "isolated"
 )
 
 // ParseMode converts a configuration string into a Mode. Empty means
@@ -37,8 +42,10 @@ func ParseMode(s string) (Mode, error) {
 		return ModeNative, nil
 	case string(ModeWSL):
 		return ModeWSL, nil
+	case string(ModeIsolated):
+		return ModeIsolated, nil
 	default:
-		return "", fmt.Errorf("unknown sandbox mode %q (supported: \"native\", \"wsl\")", s)
+		return "", fmt.Errorf("unknown sandbox mode %q (supported: \"native\", \"wsl\", \"isolated\")", s)
 	}
 }
 
@@ -94,15 +101,24 @@ type Policy struct {
 	// Empty preserves exact historical forwarding. Populated from
 	// config.CredentialEnvNames on the runtime path.
 	CredentialEnv []string
+	// FSRead names extra read-only paths the isolated backend grants
+	// beyond its built-in system set. Empty means the built-in set
+	// only. Ignored by other backends.
+	FSRead []string
+	// FSWrite names extra writable paths the isolated backend grants
+	// beyond the workspace and its private temp directory. Empty
+	// means no extras. Ignored by other backends.
+	FSWrite []string
 }
 
 // Confines reports whether filesystem paths are caged to Workspace:
-// always in wsl mode, and in native mode only when Strict is set.
-// Tools and executors branch on this — never on Mode directly — so
-// strict-native enforces the identical invariant as the wsl path.
+// always in wsl and isolated modes, and in native mode only when
+// Strict is set. Tools and executors branch on this — never on Mode
+// directly — so strict-native enforces the identical invariant as the
+// wsl path, and isolated always pins its shell working directory.
 func (p Policy) Confines() bool {
 	mode, _ := ParseMode(string(p.Mode))
-	return mode == ModeWSL || p.Strict
+	return mode == ModeWSL || mode == ModeIsolated || p.Strict
 }
 
 // DefaultPolicy returns the historical execution policy: native mode,
@@ -242,8 +258,9 @@ type Enforcement struct {
 	// CwdPinned: the working directory is validated to lie inside the
 	// workspace before every run.
 	CwdPinned bool
-	// FilesystemConfined is always false for shell backends (WSL reaches
-	// /mnt mounts); filesystem tools are confined at the tool layer.
+	// FilesystemConfined is false for shell backends except isolated
+	// mode when Landlock support probes OK (WSL reaches /mnt mounts);
+	// filesystem tools are confined at the tool layer.
 	FilesystemConfined bool
 	// NetworkEnforced: the requested Network policy is actually
 	// implemented by this backend.
@@ -277,7 +294,9 @@ type Limitation struct {
 const (
 	LimFilesystemShellOpen   = "filesystem.shell-open"
 	LimFilesystemToolsCaged  = "filesystem.tools-caged"
+	LimFilesystemLandlock    = "filesystem.landlock"
 	LimShellTextOpen         = "shell.text-open"
+	LimShellTextConfined     = "shell.text-confined"
 	LimShellStagedVisible    = "shell.staged-visible"
 	LimNetworkInterop        = "network.wsl-interop"
 	LimNetworkNamespace      = "network.namespace"
@@ -399,6 +418,13 @@ func (e Enforcement) isolation() string {
 		}
 		return s
 	}
+	if e.Mode == ModeIsolated {
+		s := "Landlock filesystem confinement"
+		if !e.FilesystemConfined {
+			s += " (unavailable on this kernel)"
+		}
+		return s
+	}
 	return "none"
 }
 
@@ -407,6 +433,8 @@ func (m Mode) DisplayName() string {
 	switch m {
 	case ModeWSL:
 		return "WSL"
+	case ModeIsolated:
+		return "isolated"
 	default:
 		return "native"
 	}
@@ -439,6 +467,8 @@ func NewExecutor(p Policy) (Executor, error) {
 	switch mode {
 	case ModeWSL:
 		return newWSLExecutor(p)
+	case ModeIsolated:
+		return newIsolatedExecutor(p)
 	default:
 		return newNativeExecutor(p)
 	}

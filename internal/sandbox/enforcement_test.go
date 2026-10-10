@@ -22,7 +22,9 @@ func TestLimitationIDsStable(t *testing.T) {
 	want := map[string]string{
 		"LimFilesystemShellOpen":   "filesystem.shell-open",
 		"LimFilesystemToolsCaged":  "filesystem.tools-caged",
+		"LimFilesystemLandlock":    "filesystem.landlock",
 		"LimShellTextOpen":         "shell.text-open",
+		"LimShellTextConfined":     "shell.text-confined",
 		"LimShellStagedVisible":    "shell.staged-visible",
 		"LimNetworkInterop":        "network.wsl-interop",
 		"LimNetworkNamespace":      "network.namespace",
@@ -39,7 +41,9 @@ func TestLimitationIDsStable(t *testing.T) {
 	got := map[string]string{
 		"LimFilesystemShellOpen":   LimFilesystemShellOpen,
 		"LimFilesystemToolsCaged":  LimFilesystemToolsCaged,
+		"LimFilesystemLandlock":    LimFilesystemLandlock,
 		"LimShellTextOpen":         LimShellTextOpen,
+		"LimShellTextConfined":     LimShellTextConfined,
 		"LimShellStagedVisible":    LimShellStagedVisible,
 		"LimNetworkInterop":        LimNetworkInterop,
 		"LimNetworkNamespace":      LimNetworkNamespace,

@@ -1,0 +1,7 @@
+# VALID: opt-in Linux Landlock confinement. cue vet must accept this file.
+model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ornith:9b
+sandbox:
+  mode: isolated

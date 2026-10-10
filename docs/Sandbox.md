@@ -33,6 +33,10 @@ Native mode is never described as sandboxed anywhere in the UI.
 
 Commands execute inside a WSL distribution under an explicitly restricted invocation. Requires Windows. If WSL is unavailable or misconfigured, Forcefield **fails with a clear error and never falls back to native execution**.
 
+### `isolated` (opt-in, Linux only)
+
+Commands execute under a kernel-enforced Landlock filesystem ruleset plus `no_new_privs`, applied by a re-executed helper (`ff __sandbox-exec`) that then becomes the shell. Requires Linux with a Landlock-capable kernel (5.13+ with Landlock enabled; ABI 2+ recommended so cross-directory renames keep working). If Landlock is unavailable, Forcefield **fails with a clear error and never falls back to native execution**. On Windows or macOS the mode exists in configuration but refuses to construct.
+
 ---
 
 ## Capability matrix (v1.5.0)
@@ -48,6 +52,7 @@ below qualify each `partial` and `no`.
 | Windows `wsl`, `network: disabled` | pinned | open (lexical mitigation) | caged | loopback-only for Linux sockets; `.exe` interop keeps host net | restricted launcher | Windows side reaped; Linux side may outlive |
 | Windows `wsl`, `network: host` | pinned | open (lexical mitigation) | caged | shared WSL/host | restricted launcher | Windows side reaped; Linux side may outlive |
 | Linux/macOS (`native` ± strict) | pinned iff strict | open | caged | host | full host | process group, no Start→Track gap |
+| Linux `isolated` | pinned | confined (workspace/tmp writes, system read-only) | caged | host | full host minus credential vars | process group, no Start→Track gap |
 | MCP servers (any mode) | n/a (launch dir only) | opaque args | **not confined** | host | minimal allowlist | bounded shutdown, Phase 4 lifecycle |
 
 `caged` = confined to the workspace root via the shared
@@ -61,10 +66,13 @@ no-follow opens. `open` = never confined; gated by permissions
 
 ```yaml
 sandbox:
-  mode: native          # native | wsl
+  mode: native          # native | wsl | isolated (isolated = Linux only)
   wsl:
     distribution: ""    # "" = system default distribution
     network: disabled   # disabled | host
+  isolated:
+    read: []            # extra read-only paths beyond the built-in system set
+    write: []           # extra writable paths beyond workspace + private tmp
 ```
 
 | Field                       | Meaning                                                                                                        |
@@ -72,6 +80,8 @@ sandbox:
 | `mode`                      | Execution backend. Empty/`native` preserves current behavior.                                                   |
 | `sandbox.wsl.distribution`  | Named distribution to use. Validated against `[A-Za-z0-9._-]` and may not start with `-`, so a value can never become a command-line flag of its own. |
 | `sandbox.wsl.network`       | `disabled` (default): deny network access via an in-distribution network namespace when possible (Linux sockets only; Windows `.exe` interop keeps host networking). `host`: inherit WSL/host networking, never isolated. |
+| `sandbox.isolated.read`     | Extra read-only paths granted in `isolated` mode (canonicalized, must exist; absolute paths recommended — relative entries resolve against the process working directory). Ignored by other backends. |
+| `sandbox.isolated.write`    | Extra writable paths granted in `isolated` mode (same resolution rules as `read`). Ignored by other backends. |
 
 Unknown values are rejected when config loads, naming the exact field and value.
 
@@ -145,6 +155,37 @@ Stated plainly, because these are the limits:
 4. **No resource limits.** CPU, memory, and process-count limits are not enforced.
 5. **Not a security boundary against the user.** This boundary constrains what agent-driven commands can reach by default posture; it is not a defense against a local user, and it is not a malware containment system.
 
+## What `isolated` mode enforces
+
+These properties hold on Linux under a Landlock-capable kernel:
+
+1. **Kernel-enforced filesystem confinement.** The shell (and everything it spawns, including grandchildren) can write only inside the workspace and a per-execution private temp directory (`TMPDIR` points at it — always, even over an explicit `TMPDIR` — and it is removed afterwards; a SIGKILL of Forcefield itself can leak it, like any temp file). Reads add the system paths Bash and common tools need (`/usr`, `/bin`, `/lib`, `/lib64`, `/sbin`, `/etc`, `/dev`, skipping entries that do not exist) plus a narrow read+write grant on `/dev/null`. Denied opens fail with `EACCES` regardless of how the path is spelled — no lexical check is involved.
+2. **Pinned working directory, always.** Unlike `native`, `isolated` pins the shell working directory to the workspace even in permissive mode.
+3. **No new privileges.** `PR_SET_NO_NEW_PRIVS` is set before the shell starts, so setuid binaries and file capabilities cannot escalate the confined command.
+4. **Fail-closed setup.** A kernel without Landlock, a failed ruleset, or any helper error makes commands **refuse to run** with an explanation — it never silently runs them unconfined. `ff doctor` reports the detected Landlock ABI and whether confinement is in effect.
+5. **Credential hygiene.** The provider credential variables Forcefield itself reads are removed from the child environment (explicit per-command `env` still applies, except `TMPDIR`, which always points at the private temp directory). As in every mode, this is hygiene, not a boundary: a determined same-user child can read the parent's environment through the OS.
+
+## What `isolated` mode does NOT do
+
+Stated plainly, because these are the limits:
+
+1. **No network, PID, or resource isolation.** Commands keep host networking, run as your user outside any PID namespace (a `setsid` child still escapes process-group cleanup), and have no CPU/memory limits. These are separate milestones.
+2. **No macOS or Windows coverage.** The mode refuses to construct there; use `wsl` on Windows.
+3. **Workspace `.git/hooks` (and similar) are not protected by Landlock.** Landlock cannot deny a subdirectory of an allowed hierarchy, so a shell command can write `workspace/.git/hooks/*`, `.vscode/tasks.json`, or other later-executing files. Treat hook-adjacent writes as untrusted: review diffs before committing or running task definitions the agent touched.
+4. **Approved network use is unconfined.** A command allowed to reach the network can exfiltrate through it; Landlock governs filesystem access only.
+5. **Newer-kernel access rights stay permitted.** The ruleset requests only the filesystem rights understood through Landlock ABI 3 (plus nothing newer); per Landlock semantics, rights introduced by later ABIs (device ioctls, scopes, network controls) are allowed, not denied.
+6. **Not a security boundary against the user.** Same posture statement as `wsl` mode: it constrains agent-driven commands by default, it is not malware containment, and kernel bugs are out of scope.
+
+## Migrating tools to `isolated` mode
+
+Tools that assume a full home directory need explicit accommodation, because `$HOME` (and `/proc`) are denied:
+
+- **Git identity:** pass `-c user.name=... -c user.email=...` (or `GIT_AUTHOR_*`/`GIT_COMMITTER_*`) instead of relying on `~/.gitconfig`. Repository operations themselves need no home access.
+- **Caches (npm/pip/cargo):** point them at the workspace or add `sandbox.isolated.write` entries for cache directories you accept sharing.
+- **Localhost services:** there is no network namespace, so loopback works exactly as on the host — nothing to change.
+- **`/proc`-dependent tools** (`ps`, `top`, some runtimes): they see `EACCES`. Prefer tool-native status (job polling, exit codes) or run those commands in `native` mode.
+- **Providers and doctor:** `ff doctor` tells you whether your kernel enforces the boundary; if it reports unavailable, commands refuse to run until you switch back to `native`.
+
 ## Known limitations (v1.5.0)
 
 The complete residual list. Each item is enforced in code or tests
@@ -170,9 +211,11 @@ only as far as stated here — nothing beyond this list is claimed.
 - **MCP is UNSANDBOXED** in every mode (warn, never refuse — see
   [MCP](MCP.md)). Server stderr echoing a passthrough variable is
   not redacted; never pass secrets through.
-- **No CPU/memory/PID limits**, and **no Linux/macOS isolation
-  backend**: non-Windows runs on the host with the shared path cage
-  plus honest reporting.
+- **No CPU/memory/PID limits**, and **no macOS isolation backend**:
+  macOS runs on the host with the shared path cage plus honest
+  reporting. Linux gains opt-in filesystem confinement via
+  [`isolated` mode](#isolated-opt-in-linux-only), which still has no
+  network, PID, or resource isolation.
 
 ## What v1.5.0 hardened (and what it did not change)
 
@@ -212,7 +255,7 @@ For native:
 Execution:    native
 Filesystem:   host user permissions
 Network:      host network
-Environment:  full host environment
+Environment:  full host environment minus Forcefield credential variables
 Isolation:    none
 Note:         native execution has no isolation: commands run with your user's permissions
 ```
@@ -270,7 +313,8 @@ If you ever see stronger wording than this table allows, that is a bug.
    Sensitive-file calls still prompt even under `Always allow`.
   Cross-agent switches retain session decisions for shared tools —
   re-prompt on agent switch for high-risk tools.
-- **Shell command text is never confined, in any mode.** Strict/WSL pin
+- **Shell command text is never confined in `native` or `wsl` mode.**
+  `isolated` mode confines it with Landlock (see above). Strict/WSL pin
   the working directory; filesystem *tools* are caged in every mode.
   `cat /etc/passwd`
   or `/mnt/c/...` in command text is gated only by permissions (`ask`)
@@ -278,8 +322,8 @@ If you ever see stronger wording than this table allows, that is a bug.
   `/mnt/`/drive/`..`/interop patterns applied to both `shell` and
   `shell_job`). Those patterns are bypassable via shell indirection
   (`$var`, quoting, `proc/self/root`) by design — documented mitigation,
-  not a boundary. `Enforcement.FilesystemConfined` is always false for
-  shell backends.
+  not a boundary. `Enforcement.FilesystemConfined` is false for shell
+  backends except `isolated` mode when Landlock support probes OK.
 - **Tool output and memory are untrusted data.** Results are fenced
   (`<tool_result>`, `</tool_result>` in content escaped) and scrubbed;
   memory facts are scrubbed but injected as plain prompt text (no fence
@@ -296,7 +340,7 @@ If you ever see stronger wording than this table allows, that is a bug.
 
 - Policy lives with the executor; tools send requests; the UI renders `Enforcement.SummaryLines()`.
 - Adding a backend means implementing `sandbox.Executor` and extending `NewExecutor`; nothing else changes.
-- The package depends only on the Go standard library.
+- The package depends only on the Go standard library plus `golang.org/x/sys` (already a module dependency) for the Linux Landlock syscalls; no cgo, no new modules.
 
 ## Boundary algorithm notes
 

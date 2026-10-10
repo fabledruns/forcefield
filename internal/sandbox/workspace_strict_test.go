@@ -38,6 +38,12 @@ func TestConfines(t *testing.T) {
 	if !(Policy{Mode: ModeWSL, Strict: true}).Confines() {
 		t.Error("wsl+strict must confine")
 	}
+	if !(Policy{Mode: ModeIsolated}).Confines() {
+		t.Error("isolated must always confine (shell cwd pinned even when permissive)")
+	}
+	if !(Policy{Mode: ModeIsolated, Strict: true}).Confines() {
+		t.Error("isolated+strict must confine")
+	}
 }
 
 // TestStrictBoundaryAdversarial is the core P0.8 matrix: every escape

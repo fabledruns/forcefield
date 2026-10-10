@@ -545,6 +545,9 @@ func newSandboxExecutor(cfg *config.Config) (sandbox.Executor, error) {
 		// Same credential stripping the runtime applies, so
 		// Describe reports what commands would actually inherit.
 		CredentialEnv: config.CredentialEnvNames(cfg),
+		// Same isolated-mode extras the runtime applies.
+		FSRead:  cfg.Sandbox.Isolated.Read,
+		FSWrite: cfg.Sandbox.Isolated.Write,
 	})
 }
 

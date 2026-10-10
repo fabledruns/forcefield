@@ -238,6 +238,9 @@ func newPolicyWithRoot(cfg *config.Config, cwd, sharedRoot string, rootErr error
 		// variables Forcefield itself reads; explicit per-command env
 		// still applies. See sandbox.stripCredentialEnv.
 		CredentialEnv: config.CredentialEnvNames(cfg),
+		// Opt-in isolated-mode extras; ignored by other backends.
+		FSRead:  cfg.Sandbox.Isolated.Read,
+		FSWrite: cfg.Sandbox.Isolated.Write,
 	}, nil
 }
 
@@ -280,6 +283,9 @@ func newPolicy(cfg *config.Config) (sandbox.Policy, error) {
 		Network:   network,
 		// Same credential stripping as newPolicyWithRoot above.
 		CredentialEnv: config.CredentialEnvNames(cfg),
+		// Same isolated-mode extras as newPolicyWithRoot above.
+		FSRead:  cfg.Sandbox.Isolated.Read,
+		FSWrite: cfg.Sandbox.Isolated.Write,
 	}, nil
 }
 

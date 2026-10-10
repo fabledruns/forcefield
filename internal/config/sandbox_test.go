@@ -85,3 +85,16 @@ func TestEmptySandboxSectionIsValidAndMeansNative(t *testing.T) {
 		t.Errorf("mode = %q, want empty (native by convention)", cfg2.Sandbox.Mode)
 	}
 }
+
+func TestLoadAcceptsIsolatedMode(t *testing.T) {
+	isolateHome(t)
+	writeConfig(t, "model:\n  provider: ollama\n  endpoint: http://x\n  name: m\nsandbox:\n  mode: isolated\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() with sandbox.mode isolated error = %v", err)
+	}
+	if cfg.Sandbox.Mode != "isolated" {
+		t.Errorf("mode = %q, want isolated", cfg.Sandbox.Mode)
+	}
+}

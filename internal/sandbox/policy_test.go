@@ -10,9 +10,10 @@ import (
 
 func TestParseMode(t *testing.T) {
 	for in, want := range map[string]Mode{
-		"":       ModeNative,
-		"native": ModeNative,
-		"wsl":    ModeWSL,
+		"":         ModeNative,
+		"native":   ModeNative,
+		"wsl":      ModeWSL,
+		"isolated": ModeIsolated,
 	} {
 		got, err := ParseMode(in)
 		if err != nil || got != want {

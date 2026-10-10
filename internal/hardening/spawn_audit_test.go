@@ -30,6 +30,7 @@ import (
 var allowedSpawnSites = map[string]bool{
 	"internal/sandbox/native_unix.go":         true,
 	"internal/sandbox/native_windows.go":      true,
+	"internal/sandbox/isolated_linux.go":      true,
 	"internal/sandbox/wsl_windows.go":         true,
 	"internal/sandbox/wsl_shared_windows.go":  true,
 	"internal/sandbox/wsl_interop_windows.go": true,

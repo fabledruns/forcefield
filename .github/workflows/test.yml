@@ -97,44 +97,65 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
-      # Read-only capability probe (P0-E): prints kernel/LSM/userns facts
-      # via the boundarytest probe so CI logs show why boundary tests run
-      # or skip. No isolation is asserted: no OS-enforced shell boundary
-      # exists yet outside Windows/WSL, so FF_REQUIRE_BOUNDARY stays empty.
-      # When P0-D lands a Linux backend, probe-positive runners will set
-      # FF_REQUIRE_BOUNDARY=landlock and boundary tests must run, not skip.
+      # Read-only capability probe (P0-E): prints kernel/LSM/userns/ABI
+      # facts via the boundarytest probe so CI logs show why boundary
+      # tests run or skip. The probe never claims isolation; it only
+      # reports the machine's Landlock status as landlock=<status> for
+      # the steps below to branch on.
       - name: Capability probe (read-only, never claims isolation)
+        id: probe
         shell: bash
         env:
           FF_REQUIRE_BOUNDARY: ""
         run: |
-          go test ./internal/sandbox/boundarytest/ -v -count=1
+          set -o pipefail
+          go test ./internal/sandbox/boundarytest/ -v -count=1 2>&1 | tee probe.log
+          # No ^ anchor: go test indents logged lines. The trailing $
+          # still pins the full token (landlock_abi=/landlock_detail=
+          # cannot match, and longer words cannot prefix-match).
+          status=$(grep -o -m 1 'landlock=[a-z]*$' probe.log | cut -d= -f2)
+          if [ -z "$status" ]; then
+            echo "::error::probe output has no parseable landlock status line"
+            exit 1
+          fi
+          echo "landlock=${status}" >> "$GITHUB_OUTPUT"
 
       - name: Spawn-site audit + executor wiring invariants
         shell: bash
         run: |
           go test ./internal/hardening/ -run 'TestSpawnSitesAreAllowlisted|TestBuiltinFallbackIsExplicit' -v -count=1
 
-      # Required-mode wiring check: with FF_REQUIRE_BOUNDARY set, the
-      # landlock canary must fail (not skip). If it unexpectedly passes,
-      # the fail-closed branch regressed. The output must contain the
-      # fail-closed marker so a build breakage (or any other wrong
-      # failure) cannot satisfy this step either.
-      - name: Required-mode wiring check (expects canary failure)
+      # Landlock available: the boundary test must demonstrate
+      # enforcement and exit 0. A skip fails via required mode (no
+      # silent skip); a failure means the backend claims enforcement
+      # but is broken. Either way the job goes red for the right
+      # reason.
+      - name: Boundary enforced (Landlock available)
+        if: steps.probe.outputs.landlock == 'supported'
+        shell: bash
+        run: |
+          FF_REQUIRE_BOUNDARY=landlock go test ./internal/sandbox/ -run 'TestLandlockBoundaryEnforced' -v -count=1
+
+      # Landlock unavailable: the same required invocation must fail,
+      # proving required mode never silently skips. The fail-closed
+      # unit tests (backend refuses without Landlock) run in the main
+      # matrix; this step only pins the required-mode branch.
+      - name: Fail-closed without Landlock (expects required failure)
+        if: steps.probe.outputs.landlock != 'supported'
         shell: bash
         run: |
           set +e
-          out=$(FF_REQUIRE_BOUNDARY=landlock go test ./internal/sandbox/boundarytest/ -run 'TestProbeCanarySkipsWithMarker' -count=1 2>&1)
+          out=$(FF_REQUIRE_BOUNDARY=landlock go test ./internal/sandbox/ -run 'TestLandlockBoundaryEnforced' -count=1 2>&1)
           code=$?
           printf '%s\n' "$out"
           if [ $code -eq 0 ]; then
-            echo "::error::required boundary unexpectedly passed; fail-closed wiring is broken"
+            echo "::error::required boundary unexpectedly passed on a Landlock-less runner"
             exit 1
           fi
           case "$out" in
             *"boundary required but unavailable"*) ;;
             *)
-              echo "::error::canary failed without the fail-closed marker (build breakage or wrong failure?)"
+              echo "::error::failure without the required-mode marker (build breakage or wrong failure?)"
               exit 1
               ;;
           esac

@@ -95,8 +95,20 @@ type Permissions struct {
 
 // Sandbox configures the shell execution boundary. See docs/Sandbox.md.
 type Sandbox struct {
-	Mode string     `yaml:"mode"`
-	WSL  SandboxWSL `yaml:"wsl"`
+	Mode     string          `yaml:"mode"`
+	WSL      SandboxWSL      `yaml:"wsl"`
+	Isolated SandboxIsolated `yaml:"isolated"`
+}
+
+// SandboxIsolated holds the Linux-only isolated-mode settings: extra
+// paths granted beyond the built-in policy (read-write workspace and
+// private tmp, read-only system paths). Empty means the built-in
+// policy only. Used only when sandbox.mode is "isolated".
+type SandboxIsolated struct {
+	// Read grants extra read-only paths.
+	Read []string `yaml:"read"`
+	// Write grants extra writable paths.
+	Write []string `yaml:"write"`
 }
 
 // SandboxWSL holds the WSL-specific sandbox settings.

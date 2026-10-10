@@ -78,11 +78,11 @@ func (n *nativeExecutor) Describe(context.Context) Enforcement {
 			Limitations: append([]Limitation{
 				{ID: LimFilesystemToolsCaged, Detail: "filesystem tools are confined to the project workspace via tool-layer policy"},
 				{ID: LimFilesystemShellOpen, Warn: true, Detail: "shell command text is NOT confined; only the working directory is pinned"},
-				{ID: LimShellTextOpen, Warn: true, Detail: "shell command text is never confined, in any mode; outside paths are gated only by permissions (ask)"},
+				{ID: LimShellTextOpen, Warn: true, Detail: "shell command text is not confined in native mode; outside paths are gated only by permissions (ask)"},
 				{ID: LimNetworkNamespace, Detail: "host networking; no isolation is attempted in native mode"},
 				{ID: LimEnvFullHost, Detail: "full host environment is forwarded by design"},
-				{ID: LimPlatformHostOnly, Detail: "native runs on the host on all platforms; no Linux/macOS isolation backend exists in v1.5.0"},
-			}, append(credentialStrippedLimitation(n.policy), processLimitations()...)...),
+				{ID: LimPlatformHostOnly, Detail: "native runs on the host on all platforms; macOS has no isolation backend (Linux offers opt-in isolated mode)"},
+			}, append(credentialStrippedLimitation(n.policy, false), processLimitations()...)...),
 		}
 	}
 	return Enforcement{
@@ -100,25 +100,31 @@ func (n *nativeExecutor) Describe(context.Context) Enforcement {
 		Limitations: append([]Limitation{
 			{ID: LimFilesystemToolsCaged, Detail: "filesystem tools are confined to the project workspace via tool-layer policy"},
 			{ID: LimFilesystemShellOpen, Warn: true, Detail: "shell runs unconfined: working directory is NOT pinned and command text is NOT confined"},
-			{ID: LimShellTextOpen, Warn: true, Detail: "shell command text is never confined, in any mode; outside paths are gated only by permissions (ask)"},
+			{ID: LimShellTextOpen, Warn: true, Detail: "shell command text is not confined in native mode; outside paths are gated only by permissions (ask)"},
 			{ID: LimNetworkNamespace, Detail: "host networking; no isolation is attempted in native mode"},
 			{ID: LimEnvFullHost, Detail: "full host environment is forwarded by design"},
-			{ID: LimPlatformHostOnly, Detail: "native runs on the host on all platforms; no Linux/macOS isolation backend exists in v1.5.0"},
-		}, append(credentialStrippedLimitation(n.policy), processLimitations()...)...),
+			{ID: LimPlatformHostOnly, Detail: "native runs on the host on all platforms; macOS has no isolation backend (Linux offers opt-in isolated mode)"},
+		}, append(credentialStrippedLimitation(n.policy, false), processLimitations()...)...),
 	}
 }
 
 // credentialStrippedLimitation reports the credential-stripping hygiene
 // (info, never warn) when the policy names credential variables, and
 // nothing otherwise, so unconfigured executors describe exactly what
-// they were before.
-func credentialStrippedLimitation(p Policy) []Limitation {
+// they were before. isolatedTmpdir selects the isolated-mode wording,
+// which additionally discloses the private-tmp TMPDIR override; other
+// backends must not mention it.
+func credentialStrippedLimitation(p Policy, isolatedTmpdir bool) []Limitation {
 	if len(p.CredentialEnv) == 0 {
 		return nil
 	}
+	detail := "host variables Forcefield itself reads as provider credentials are removed from shell children; explicit per-command env still applies (hygiene, not an OS boundary)"
+	if isolatedTmpdir {
+		detail = "host variables Forcefield itself reads as provider credentials are removed from shell children; explicit per-command env still applies, except TMPDIR under isolated mode, which always points at the private temp directory (hygiene, not an OS boundary)"
+	}
 	return []Limitation{{
 		ID:     LimEnvCredsStripped,
-		Detail: "host variables Forcefield itself reads as provider credentials are removed from shell children; explicit per-command env still applies (hygiene, not an OS boundary)",
+		Detail: detail,
 	}}
 }
 

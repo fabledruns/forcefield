@@ -22,8 +22,9 @@ package config
 
 // SandboxMode selects the shell execution boundary.
 // "" means native (historical behavior, no isolation).
+// "isolated" is Linux-only Landlock filesystem confinement (opt-in).
 // See internal/sandbox and docs/Sandbox.md for exact guarantees.
-#SandboxMode: "native" | "wsl" | ""
+#SandboxMode: "native" | "wsl" | "isolated" | ""
 
 // NetworkPolicy is the WSL sandbox network request.
 // "" means disabled (fail closed when isolation cannot be established).
@@ -145,6 +146,13 @@ package config
 		wsl?: {
 			distribution?: string // "" or omitted = system default distribution
 			network?:      #NetworkPolicy
+		}
+		// Linux-only isolated-mode extras: paths granted beyond the
+		// built-in policy (read-write workspace and private tmp,
+		// read-only system paths). Used only when mode is "isolated".
+		isolated?: {
+			read?:  [...string] // extra read-only paths
+			write?: [...string] // extra writable paths
 		}
 	}
 
