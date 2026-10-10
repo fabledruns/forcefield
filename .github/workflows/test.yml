@@ -136,16 +136,16 @@ jobs:
         run: |
           FF_REQUIRE_BOUNDARY=landlock go test ./internal/sandbox/ -run 'TestLandlockBoundaryEnforced' -v -count=1
 
-      # Landlock unavailable: the same required invocation must fail,
-      # proving required mode never silently skips. The fail-closed
-      # unit tests (backend refuses without Landlock) run in the main
-      # matrix; this step only pins the required-mode branch.
+      # Landlock unavailable: the gate test must fail via required
+      # mode, proving required mode never silently skips. The gate is
+      # present on every platform (unlike the Linux-only enforcement
+      # test, whose absence exits 0 and would masquerade as a pass).
       - name: Fail-closed without Landlock (expects required failure)
         if: steps.probe.outputs.landlock != 'supported'
         shell: bash
         run: |
           set +e
-          out=$(FF_REQUIRE_BOUNDARY=landlock go test ./internal/sandbox/ -run 'TestLandlockBoundaryEnforced' -count=1 2>&1)
+          out=$(FF_REQUIRE_BOUNDARY=landlock go test ./internal/sandbox/ -run 'TestLandlockRequiredModeGate' -count=1 2>&1)
           code=$?
           printf '%s\n' "$out"
           if [ $code -eq 0 ]; then
