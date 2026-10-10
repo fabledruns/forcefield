@@ -1,12 +1,12 @@
 // Capability probing for sandbox boundary tests.
 //
 // Probe collects raw, read-only machine facts (OS, kernel release, LSM
-// list, user-namespace sysctls) so CI logs show why a boundary test ran
-// or skipped. It never claims Forcefield enforces anything: every
-// backend field reports the truth that no OS-enforced shell boundary
-// exists yet outside Windows/WSL. When P0-D lands a Linux backend, its
-// Probe will consult these facts and this file will grow a seam for the
-// new mechanism; until then the honest answer is "unavailable".
+// list, user-namespace sysctls, Landlock ABI status) so CI logs show
+// why a boundary test ran or skipped. It never claims Forcefield
+// enforces anything: every backend field reports the truth that no
+// OS-enforced shell boundary exists yet outside Windows/WSL, and the
+// Landlock fields report only what the version query observed, never
+// that restrictions are applied.
 package boundarytest
 
 import (
@@ -38,8 +38,24 @@ type Capabilities struct {
 	// WSL reports whether the machine looks like WSL (kernel release
 	// contains "microsoft" or WSL_DISTRO_NAME/WSLENV is set).
 	WSL bool
-	// BoundaryEnforced is always false until an OS-enforced shell
-	// backend lands. It exists so future probes extend this struct
+	// Landlock is the stable machine-readable Landlock capability
+	// status: "supported", "unsupported", "disabled", or "error".
+	// It reports only what the version query observed. An ABI being
+	// available does NOT mean a filesystem boundary is enforced:
+	// BoundaryEnforced below stays false until a backend exists that
+	// creates rulesets and proves denials.
+	Landlock string
+	// LandlockABI is the detected Landlock ABI version (>= 1), or -1
+	// when unavailable. CI greps this alongside Landlock.
+	LandlockABI int
+	// LandlockDetail carries human context for the status (kernel
+	// errno text for failures, empty when supported). Informational
+	// only: CI must match on Landlock, never on this free-form text.
+	LandlockDetail string
+	// BoundaryEnforced is false: no OS-enforced shell boundary is
+	// established by probing (Windows/WSL has its backends; Linux has
+	// opt-in isolated mode, which enforces only when configured and
+	// probed OK). It exists so future probes extend this struct
 	// instead of inventing a second source of truth.
 	BoundaryEnforced bool
 	// BoundaryDetail explains the above in one line for CI logs.
@@ -47,10 +63,12 @@ type Capabilities struct {
 }
 
 // Probe reads the machine facts described above. It performs no
-// privileged operations, spawns no processes, and never fails: every
-// unreadable source becomes "unknown" with the boundary honestly
-// reported as unenforced.
+// privileged operations, spawns no processes, applies no restrictions,
+// and never fails: every unreadable source becomes "unknown" (or the
+// Landlock unavailable statuses) with the boundary honestly reported
+// as unenforced.
 func Probe() Capabilities {
+	landlockABI, landlockStatus, landlockDetail := queryLandlock()
 	c := Capabilities{
 		OS:               runtime.GOOS,
 		Arch:             runtime.GOARCH,
@@ -58,8 +76,11 @@ func Probe() Capabilities {
 		LSMs:             readTrim("/sys/kernel/security/lsm"),
 		UserNSClone:      readTrim("/proc/sys/kernel/unprivileged_userns_clone"),
 		MaxUserNS:        readTrim("/proc/sys/user/max_user_namespaces"),
+		Landlock:         landlockStatus,
+		LandlockABI:      landlockABI,
+		LandlockDetail:   landlockDetail,
 		BoundaryEnforced: false,
-		BoundaryDetail:   "no OS-enforced shell boundary exists on this platform outside Windows/WSL; native runs on the host",
+		BoundaryDetail:   "probe establishes no boundary; Windows/WSL backends and opt-in Linux isolated mode enforce only when configured",
 	}
 	if c.Kernel == "" {
 		c.Kernel = "unknown"
@@ -86,6 +107,11 @@ func (c Capabilities) Report() string {
 	fmt.Fprintf(&b, "lsm=%s\n", c.LSMs)
 	fmt.Fprintf(&b, "unprivileged_userns_clone=%s max_user_namespaces=%s\n", c.UserNSClone, c.MaxUserNS)
 	fmt.Fprintf(&b, "wsl=%v\n", c.WSL)
+	fmt.Fprintf(&b, "landlock=%s\n", c.Landlock)
+	fmt.Fprintf(&b, "landlock_abi=%d\n", c.LandlockABI)
+	if strings.TrimSpace(c.LandlockDetail) != "" {
+		fmt.Fprintf(&b, "landlock_detail=%s\n", c.LandlockDetail)
+	}
 	fmt.Fprintf(&b, "boundary_enforced=%v (%s)\n", c.BoundaryEnforced, c.BoundaryDetail)
 	fmt.Fprintf(&b, "ff_require_boundary=%q\n", os.Getenv("FF_REQUIRE_BOUNDARY"))
 	return b.String()

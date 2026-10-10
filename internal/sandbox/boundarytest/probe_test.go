@@ -19,7 +19,7 @@ func TestProbeReportsHonestly(t *testing.T) {
 		t.Error("Probe() has no BoundaryDetail explaining the unenforced state")
 	}
 	report := c.Report()
-	for _, want := range []string{"os=", "arch=", "kernel=", "boundary_enforced=false", "ff_require_boundary="} {
+	for _, want := range []string{"os=", "arch=", "kernel=", "boundary_enforced=false", "ff_require_boundary=", "landlock=", "landlock_abi="} {
 		if !strings.Contains(report, want) {
 			t.Errorf("Report() missing %q:\n%s", want, report)
 		}
@@ -27,16 +27,8 @@ func TestProbeReportsHonestly(t *testing.T) {
 	t.Logf("capability probe:\n%s", report)
 }
 
-// TestProbeCanarySkipsWithMarker is the intentionally-skipped canary:
-// on every platform without an OS-enforced shell boundary it skips with
-// the diagnosable marker. When P0-D lands, this canary gains a sibling
-// behind RequireBoundary(t, "landlock") that runs instead of skipping
-// on probe-positive machines. CI asserts the skip message format from
-// the -v log.
-func TestProbeCanarySkipsWithMarker(t *testing.T) {
-	c := Probe()
-	if c.BoundaryEnforced {
-		t.Fatal("probe claims an enforced boundary with no backend; refusing to pass")
-	}
-	RequireBoundary(t, "landlock", "no Linux isolation backend exists yet (P0-D deferred); probe reports unenforced")
-}
+// The placeholder skip canary lived here until the isolated backend
+// landed; genuine boundary enforcement is now demonstrated by
+// TestLandlockBoundaryEnforced in package sandbox (gated by
+// RequireBoundary), and the required-mode CI job branches on the
+// probe's landlock status instead of expecting a canary failure.
