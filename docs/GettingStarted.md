@@ -6,7 +6,7 @@ This page explains how to install Forcefield, configure it, and run your first a
 
 Before you start, make sure that you have:
 
-- Go 1.22 or later, if you build from source
+- Go 1.26.4 or later, if you build from source
 - [Ollama](https://ollama.com) installed and running using `ollama serve`
 - At least one local model installed
 

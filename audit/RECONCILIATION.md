@@ -59,7 +59,7 @@
 | FF-PERM-001 prompt truncation | MEDIUM | **ACCEPTED RISK** (by design) | 300c + explicit note + scrub-before-truncate (`permission.go:220-229`). Malicious-tail concern retained but explicit. |
 | FF-SESS-001 coalescing | MEDIUM | **PARTIALLY FIXED** | 10s window + ID dedup + turn check (`session.go:481-507`, `coalesce_test.go`); residual: time-based, not Turn.ID-based. |
 | FF-OBS-001 no run log | MEDIUM | **PARTIALLY FIXED** | Opt-in local JSONL trace (redacted, 4 MiB cap, crash-kept); reasoning/deltas not saved; off by default. |
-| FF-CFG-001 Go drift | LOW | **STILL OPEN** | `go.mod: go 1.26.4` vs `README.md:43 Go 1.22+`. Doc-only drift. |
+| FF-CFG-001 Go drift | LOW | **FIXED** | `go.mod: go 1.26.4` vs `README.md:43 Go 1.22+`. Doc-only drift. |
 | FF-DOC-001/002 drift | LOW | **PARTIALLY FIXED** | Config persist claim corrected (`Config.md:265` accurate); CLI list accurate; PRD aspirational only (acceptable). Remaining: Events table 6 vs 12 actual; TUI reasoning tags; Index gaps. |
 | FF-HYG-001 dirty tree | MEDIUM | **STILL OPEN** (structural) | HEAD `e65d990` is clean of the old dirt, but the FF-SEC-003 fix is currently uncommitted — same irreproducibility shape. Resolves on commit. |
 

@@ -51,7 +51,7 @@ Optional local-model example:
 ollama pull ornith:9b
 ```
 
-Go 1.22+ is only required when building from source.
+Go 1.26.4+ is only required when building from source.
 
 ## Installation
 
