@@ -3,7 +3,7 @@
 ## Repository Product Requirements Document
 
 **Project:** Forcefield
-**Organization:** Marlex Software
+**Organization:** superprime
 **Repository:** Forcefield
 **Product Type:** Local-first AI agent harness
 **Status:** Active development
