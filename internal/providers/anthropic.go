@@ -306,9 +306,15 @@ func (a *AnthropicProvider) newRequest(ctx context.Context, method, url, accept 
 		req.Header.Set("Accept", accept)
 	}
 	if a.spec.APIKey != "" {
+		if !IsValidAPIKey(a.spec.APIKey) {
+			return nil, invalidAPIKeyError(a.spec.ID, "")
+		}
 		req.Header.Set("x-api-key", a.spec.APIKey)
 	}
 	for name, value := range a.spec.Headers {
+		if !IsValidHeaderValue(value) {
+			continue
+		}
 		req.Header.Set(name, value)
 	}
 	return req, nil

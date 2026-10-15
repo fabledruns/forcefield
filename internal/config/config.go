@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"forcefield/internal/mcp"
+	"forcefield/internal/providers"
 	"forcefield/internal/redact"
 	"forcefield/internal/sandbox"
 )
@@ -51,6 +52,33 @@ type ProviderConfig struct {
 	// Models optionally lists model IDs offered by this provider, for
 	// services that cannot enumerate their models.
 	Models []string `yaml:"models,omitempty"`
+	// APIPath optionally overrides the chat-completions path for
+	// OpenAI-compatible servers with genuine path differences
+	// (default "/chat/completions"). Discovery (GET /models) is unchanged.
+	APIPath string `yaml:"api_path,omitempty"`
+	// AuthMode selects how the resolved API key is sent: "" (auto:
+	// bearer when a key resolves, none otherwise), "bearer", "none",
+	// or "header" (custom header via AuthHeader). Empty preserves the
+	// historic behavior.
+	AuthMode string `yaml:"auth_mode,omitempty"`
+	// AuthHeader names the custom header for AuthMode "header"
+	// (e.g. "X-API-Key").
+	AuthHeader string `yaml:"auth_header,omitempty"`
+	// AuthScheme optionally overrides the credential prefix ("Bearer" by
+	// default for bearer mode, raw key by default for header mode).
+	AuthScheme string `yaml:"auth_scheme,omitempty"`
+	// TimeoutSeconds optionally overrides the response-header timeout in
+	// seconds. Zero keeps the built-in default (120s).
+	TimeoutSeconds int `yaml:"timeout_seconds,omitempty"`
+	// AllowMetadataEndpoint explicitly opts in to using a cloud
+	// instance-metadata URL as this provider's endpoint. Default false.
+	// Only enable if you intentionally run a model server on such an
+	// address; localhost and LAN addresses are unaffected.
+	AllowMetadataEndpoint bool `yaml:"allow_metadata_endpoint,omitempty"`
+	// Capabilities optionally forces capability flags for custom
+	// endpoints that do not implement every OpenAI feature. Nil keeps
+	// the adapter defaults.
+	Capabilities *providers.CapabilitiesOverride `yaml:"capabilities,omitempty"`
 }
 
 // Agent describes the default agent's identity, base system prompt, and

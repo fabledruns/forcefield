@@ -273,9 +273,15 @@ func (g *GeminiProvider) newRequest(ctx context.Context, method, target, accept 
 	// The key rides a header rather than the query string so it can never
 	// leak into logs that record URLs.
 	if g.spec.APIKey != "" {
+		if !IsValidAPIKey(g.spec.APIKey) {
+			return nil, invalidAPIKeyError(g.spec.ID, "")
+		}
 		req.Header.Set("x-goog-api-key", g.spec.APIKey)
 	}
 	for name, value := range g.spec.Headers {
+		if !IsValidHeaderValue(value) {
+			continue
+		}
 		req.Header.Set(name, value)
 	}
 	return req, nil

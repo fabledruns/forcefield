@@ -41,6 +41,21 @@ type ResolvedProvider struct {
 	// Models lists configured model IDs for providers that cannot
 	// enumerate their own.
 	Models []string
+	// ChatPath is the configured chat-completions path override ("" keeps
+	// the default "/chat/completions").
+	ChatPath string
+	// AuthMode selects how the API key is sent (see providers.Spec).
+	AuthMode string
+	// AuthHeader names the custom header for AuthMode "header".
+	AuthHeader string
+	// AuthScheme optionally overrides the credential prefix.
+	AuthScheme string
+	// TimeoutSeconds overrides the response-header timeout (0 = default).
+	TimeoutSeconds int
+	// AllowMetadataEndpoint explicitly opts in to a metadata-service URL.
+	AllowMetadataEndpoint bool
+	// CapabilitiesOverride optionally forces capability flags.
+	CapabilitiesOverride *providers.CapabilitiesOverride
 }
 
 // Spec converts the resolved provider into the form adapters consume.
@@ -55,13 +70,20 @@ func (r ResolvedProvider) Spec(activeModel string) providers.Spec {
 		model = r.Model
 	}
 	return providers.Spec{
-		ID:      r.ID,
-		Type:    r.Type,
-		Label:   r.Label,
-		BaseURL: strings.TrimRight(r.BaseURL, "/"),
-		APIKey:  r.APIKey,
-		Model:   model,
-		Headers: headers,
+		ID:                    r.ID,
+		Type:                  r.Type,
+		Label:                 r.Label,
+		BaseURL:               strings.TrimRight(r.BaseURL, "/"),
+		APIKey:                r.APIKey,
+		Model:                 model,
+		Headers:               headers,
+		ChatPath:              r.ChatPath,
+		AuthMode:              r.AuthMode,
+		AuthHeader:            r.AuthHeader,
+		AuthScheme:            r.AuthScheme,
+		TimeoutSeconds:        r.TimeoutSeconds,
+		CapabilitiesOverride:  r.CapabilitiesOverride,
+		AllowMetadataEndpoint: r.AllowMetadataEndpoint,
 	}
 }
 
@@ -147,7 +169,14 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 		if err != nil {
 			return ResolvedProvider{}, err
 		}
+		if value != "" && !providers.IsValidAPIKey(value) {
+			return ResolvedProvider{}, fmt.Errorf("provider %q: value in %s contains invalid control characters (check for stray line breaks) and will not be used", id, envVar)
+		}
 		apiKey, apiKeySource = value, source
+	}
+
+	if providers.IsMetadataHost(providers.EndpointHost(baseURL)) && !entry.AllowMetadataEndpoint {
+		return ResolvedProvider{}, fmt.Errorf("provider %q base_url points at a cloud metadata endpoint (%s) - refusing to send requests there (set allow_metadata_endpoint: true only if you intentionally run a model server there)", id, providers.EndpointHost(baseURL))
 	}
 
 	headers := make(map[string]string, len(entry.Headers))
@@ -163,17 +192,24 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 	}
 
 	return ResolvedProvider{
-		ID:           id,
-		Type:         protocol,
-		Label:        label,
-		BaseURL:      baseURL,
-		APIKey:       apiKey,
-		APIKeySource: apiKeySource,
-		AuthRequired: authRequired,
-		AuthEnvVar:   envVar,
-		Model:        entry.Model,
-		Headers:      headers,
-		Models:       models,
+		ID:                    id,
+		Type:                  protocol,
+		Label:                 label,
+		BaseURL:               baseURL,
+		APIKey:                apiKey,
+		APIKeySource:          apiKeySource,
+		AuthRequired:          authRequired,
+		AuthEnvVar:            envVar,
+		Model:                 entry.Model,
+		Headers:               headers,
+		Models:                models,
+		ChatPath:              entry.APIPath,
+		AuthMode:              entry.AuthMode,
+		AuthHeader:            entry.AuthHeader,
+		AuthScheme:            entry.AuthScheme,
+		TimeoutSeconds:        entry.TimeoutSeconds,
+		CapabilitiesOverride:  entry.Capabilities,
+		AllowMetadataEndpoint: entry.AllowMetadataEndpoint,
 	}, nil
 }
 
@@ -238,17 +274,103 @@ func validateEntry(id string, p ProviderConfig) error {
 	if p.APIKeyEnv != "" && !isEnvVarName(p.APIKeyEnv) {
 		return fmt.Errorf("providers.%s.api_key_env %q is not a valid environment variable name", id, p.APIKeyEnv)
 	}
-	for name := range p.Headers {
+	for name, value := range p.Headers {
 		if !isValidHeaderName(name) {
 			return fmt.Errorf("providers.%s has an invalid header name %q", id, name)
 		}
 		if isReservedAuthHeader(name) {
 			return fmt.Errorf("providers.%s header %q is reserved for authentication and would silently override the resolved API key - remove it and provide the key via api_key_env instead", id, name)
 		}
+		if !providers.IsValidHeaderValue(value) {
+			return fmt.Errorf("providers.%s header %q value contains invalid control characters and will not be sent", id, name)
+		}
 	}
 	for i, m := range p.Models {
 		if strings.TrimSpace(m) == "" {
 			return fmt.Errorf("providers.%s.models[%d] is empty", id, i)
+		}
+	}
+	if err := validateAPIPath(id, p.APIPath); err != nil {
+		return err
+	}
+	if err := validateAuthMode(id, p); err != nil {
+		return err
+	}
+	if p.TimeoutSeconds < 0 || p.TimeoutSeconds > 300 {
+		return fmt.Errorf("providers.%s.timeout_seconds %d is out of range (0 keeps the default, else 1-300)", id, p.TimeoutSeconds)
+	}
+	if p.BaseURL != "" && providers.IsMetadataHost(providers.EndpointHost(p.BaseURL)) && !p.AllowMetadataEndpoint {
+		return fmt.Errorf("providers.%s.base_url points at a cloud metadata endpoint (%s) - refusing to send requests there (set allow_metadata_endpoint: true only if you intentionally run a model server there)", id, providers.EndpointHost(p.BaseURL))
+	}
+	return nil
+}
+
+// validateAPIPath checks an optional chat-path override without touching
+// the network. Empty keeps the default "/chat/completions".
+func validateAPIPath(id, p string) error {
+	if p == "" {
+		return nil
+	}
+	if !strings.HasPrefix(p, "/") {
+		return fmt.Errorf("providers.%s.api_path %q must start with \"/\"", id, p)
+	}
+	if len(p) < 2 {
+		return fmt.Errorf("providers.%s.api_path %q is too short", id, p)
+	}
+	if strings.ContainsAny(p, " \t\r\n\\?#") {
+		return fmt.Errorf("providers.%s.api_path %q must be a plain absolute path without spaces, query, or fragment", id, p)
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return fmt.Errorf("providers.%s.api_path %q must not contain \"..\"", id, p)
+		}
+	}
+	return nil
+}
+
+// validateAuthMode checks the custom authentication fields. Empty mode
+// preserves historic behavior (bearer when a key resolves, none
+// otherwise) so existing configs keep working unchanged.
+func validateAuthMode(id string, p ProviderConfig) error {
+	mode := strings.ToLower(strings.TrimSpace(p.AuthMode))
+	switch mode {
+	case "", "bearer", "none", "header":
+	default:
+		return fmt.Errorf("providers.%s.auth_mode %q is not supported (supported: \"bearer\", \"none\", \"header\")", id, p.AuthMode)
+	}
+	if p.AuthHeader != "" && mode != "header" {
+		return fmt.Errorf("providers.%s.auth_header requires auth_mode \"header\"", id)
+	}
+	if mode == "header" {
+		if strings.TrimSpace(p.AuthHeader) == "" {
+			return fmt.Errorf("providers.%s.auth_mode \"header\" requires auth_header", id)
+		}
+		if !isValidHeaderName(p.AuthHeader) {
+			return fmt.Errorf("providers.%s has an invalid auth_header name %q", id, p.AuthHeader)
+		}
+		if isReservedAuthHeader(p.AuthHeader) {
+			return fmt.Errorf("providers.%s auth_header %q is reserved for built-in authentication", id, p.AuthHeader)
+		}
+		for name := range p.Headers {
+			if strings.EqualFold(name, p.AuthHeader) {
+				return fmt.Errorf("providers.%s header %q collides with auth_header - remove it from headers", id, name)
+			}
+		}
+	} else {
+		// Bearer/auto modes own Authorization; a headers entry would
+		// silently override the resolved key.
+		for name := range p.Headers {
+			if strings.EqualFold(name, "authorization") {
+				return fmt.Errorf("providers.%s header %q is reserved for authentication and would silently override the resolved API key - remove it and provide the key via api_key_env instead", id, name)
+			}
+		}
+	}
+	if p.AuthScheme != "" {
+		if mode != "bearer" && mode != "header" {
+			return fmt.Errorf("providers.%s.auth_scheme requires auth_mode \"bearer\" or \"header\"", id)
+		}
+		if !isValidHeaderName(p.AuthScheme) {
+			return fmt.Errorf("providers.%s.auth_scheme %q is not a valid auth scheme", id, p.AuthScheme)
 		}
 	}
 	return nil

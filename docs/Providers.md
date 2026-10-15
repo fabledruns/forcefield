@@ -186,6 +186,15 @@ The generic transport powers NVIDIA NIM, LM Studio, llama.cpp (llama-server), Op
 - `GET {base_url}/models` for discovery.
 - `Authorization: Bearer <key>` when an API key resolves; custom headers pass through unmodified.
 
+Custom endpoints can tune this without new code:
+
+- `api_path` overrides the chat path (default `/chat/completions`) for servers with genuine path differences. Discovery stays `GET {base_url}/models`.
+- `auth_mode`: `""` (auto: bearer when a key resolves, else none), `bearer`, `none`, or `header` (custom header via `auth_header`). `auth_scheme` optionally overrides the prefix (`Bearer` by default for bearer mode, raw key for header mode).
+- `timeout_seconds` overrides the response-header timeout (default 120s).
+- `capabilities` forces flags (`streaming`, `tool_calling`, `reasoning`, `structured_output`, `vision`, `parallel_tool_calls`) for endpoints that do not implement every OpenAI feature. Streaming disabled fails fast with `ErrKindUnsupportedCapability`; tool definitions are withheld by the runtime when tool calling is explicitly disabled.
+
+Redirects are same-host only (max 3, no cross-host forwarding, no https→http downgrade except loopback) so credentials never follow a redirect to an unintended host. Header values containing control characters are rejected at validation and skipped defensively at request time. Resolved API keys are validated before use: a value containing CR, LF, or other control characters fails closed (naming the variable, never the value) instead of being placed in a header. Cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`, ...) are refused at configuration, construction, and probe time unless `allow_metadata_endpoint: true` is set explicitly for that provider.
+
 It normalizes messy real-world behavior: reasoning deltas arrive as either `delta.reasoning_content` or `delta.reasoning`; tool calls stream as index-keyed argument fragments that are reassembled before delivery; streams that end without a finish reason still flush buffered tool calls; usage is parsed when present and ignored when not; malformed chunks surface as normalized protocol errors rather than crashes.
 
 Service-specific request fields (such as NIM's `chat_template_kwargs`) ride an adapter-level extra-body map, not new code paths.

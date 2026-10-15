@@ -62,14 +62,19 @@ func NewOpenAICompatible(spec Spec) *OpenAICompatible {
 			},
 		}
 	}
+	// Timeout precedence: explicit timeout_seconds wins; otherwise Kimi K3
+	// on NIM keeps its longer header bound for slow reasoning TTFB.
 	// Kimi K3 on NIM can be very slow to start streaming (TTFB) due to
 	// reasoning; give it a longer header timeout so a valid slow response
 	// is not timed out and mis-reported as unreachable.
-	if isNvidiaSpec(spec) && strings.Contains(strings.ToLower(spec.Model), "kimi") {
+	if spec.TimeoutSeconds > 0 {
+		p.client = clientForTimeout(spec.TimeoutSeconds)
+	} else if isNvidiaSpec(spec) && strings.Contains(strings.ToLower(spec.Model), "kimi") {
 		p.client = &http.Client{
 			Transport: &http.Transport{
 				ResponseHeaderTimeout: defaultNvidiaTimeout,
 			},
+			CheckRedirect: safeRedirectCheck,
 		}
 	}
 	return p
@@ -85,11 +90,60 @@ func (o *OpenAICompatible) displayName() string {
 
 // Capabilities reports what this transport supports.
 func (o *OpenAICompatible) Capabilities() Capabilities {
-	return Capabilities{
+	base := Capabilities{
 		Streaming:       true,
 		ToolCalling:     true,
 		Reasoning:       true,
 		MaxOutputTokens: 4096,
+	}
+	return o.spec.CapabilitiesOverride.Apply(base)
+}
+
+// ChatPath returns the configured chat-completions path or the default.
+func (o *OpenAICompatible) ChatPath() string {
+	return o.spec.EffectiveChatPath()
+}
+
+// applyAuth stamps the configured authentication onto req. Modes:
+// "" (auto: bearer when a key resolves), "bearer", "none", "header".
+// It fails closed on a key that cannot be sent safely instead of
+// forwarding a header-injection vector. Errors never include the key.
+func (o *OpenAICompatible) applyAuth(req *http.Request) error {
+	mode := o.spec.NormalizedAuthMode()
+	key := o.spec.APIKey
+	switch mode {
+	case "none":
+		return nil
+	case "header":
+		if key == "" {
+			return nil
+		}
+		if !IsValidAPIKey(key) {
+			return invalidAPIKeyError(o.spec.ID, "")
+		}
+		name := o.spec.AuthHeader
+		if name == "" {
+			return nil
+		}
+		value := key
+		if o.spec.AuthScheme != "" {
+			value = o.spec.AuthScheme + " " + key
+		}
+		req.Header.Set(name, value)
+		return nil
+	default: // "", "bearer"
+		if key == "" {
+			return nil
+		}
+		if !IsValidAPIKey(key) {
+			return invalidAPIKeyError(o.spec.ID, "")
+		}
+		scheme := "Bearer"
+		if o.spec.AuthScheme != "" {
+			scheme = o.spec.AuthScheme
+		}
+		req.Header.Set("Authorization", scheme+" "+key)
+		return nil
 	}
 }
 
@@ -339,10 +393,16 @@ func (o *OpenAICompatible) newRequest(ctx context.Context, method, url, accept s
 	if accept != "" {
 		req.Header.Set("Accept", accept)
 	}
-	if o.spec.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.spec.APIKey)
+	if err := o.applyAuth(req); err != nil {
+		return nil, err
 	}
 	for name, value := range o.spec.Headers {
+		// Values were rejected at validation when they contain control
+		// characters; skip any that slipped through a programmatic Spec
+		// instead of forwarding a header-injection vector.
+		if !IsValidHeaderValue(value) {
+			continue
+		}
 		req.Header.Set(name, value)
 	}
 	return req, nil
@@ -379,12 +439,18 @@ func (o *OpenAICompatible) do(ctx context.Context, method, path, accept string, 
 // StreamEvent values. The channel closes when the turn ends, the context
 // is canceled, or an error occurs.
 func (o *OpenAICompatible) StreamChat(ctx context.Context, messages []Message, defs []tools.Definition) (<-chan StreamEvent, error) {
+	if caps := o.Capabilities(); !caps.Streaming {
+		return nil, unsupportedCapability(o.displayName(), "streaming", "providers.<id>.capabilities.streaming")
+	}
+	if caps := o.Capabilities(); !caps.ToolCalling && len(defs) > 0 {
+		return nil, unsupportedCapability(o.displayName(), "tool calling", "providers.<id>.capabilities.tool_calling")
+	}
 	body, err := o.buildPayload(true, messages, defs)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := o.do(ctx, http.MethodPost, "/chat/completions", "text/event-stream", body)
+	resp, err := o.do(ctx, http.MethodPost, o.ChatPath(), "text/event-stream", body)
 	if err != nil {
 		return nil, err
 	}
@@ -539,16 +605,31 @@ type protocolError struct{ msg string }
 
 func (e *protocolError) Error() string { return e.msg }
 
+// capabilityError marks a request for a feature the provider or model has
+// explicitly disabled via capabilities configuration.
+type capabilityError struct{ msg string }
+
+func (e *capabilityError) Error() string { return e.msg }
+
+// unsupportedCapability builds an ErrKindUnsupportedCapability error naming
+// the capability and the config key that controls it.
+func unsupportedCapability(provider, capability, configKey string) error {
+	return &capabilityError{msg: fmt.Sprintf("%s does not support %s (set %s in config.yaml to change this)", provider, capability, configKey)}
+}
+
 // Complete performs one non-streaming completion and returns the full
 // response. It exists for callers that want a single synchronous answer;
 // the agent loop itself always streams.
 func (o *OpenAICompatible) Complete(ctx context.Context, messages []Message, defs []tools.Definition) (Response, error) {
+	if caps := o.Capabilities(); !caps.ToolCalling && len(defs) > 0 {
+		return Response{}, unsupportedCapability(o.displayName(), "tool calling", "providers.<id>.capabilities.tool_calling")
+	}
 	body, err := o.buildPayload(false, messages, defs)
 	if err != nil {
 		return Response{}, err
 	}
 
-	resp, err := o.do(ctx, http.MethodPost, "/chat/completions", "application/json", body)
+	resp, err := o.do(ctx, http.MethodPost, o.ChatPath(), "application/json", body)
 	if err != nil {
 		return Response{}, err
 	}

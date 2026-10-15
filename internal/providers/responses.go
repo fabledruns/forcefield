@@ -235,9 +235,15 @@ func (o *OpenAIResponses) newRequest(ctx context.Context, method, url, accept st
 	// still wins when set.
 	req.Header.Set("User-Agent", "Forcefield")
 	if o.spec.APIKey != "" {
+		if !IsValidAPIKey(o.spec.APIKey) {
+			return nil, invalidAPIKeyError(o.spec.ID, "")
+		}
 		req.Header.Set("Authorization", "Bearer "+o.spec.APIKey)
 	}
 	for name, value := range o.spec.Headers {
+		if !IsValidHeaderValue(value) {
+			continue
+		}
 		req.Header.Set(name, value)
 	}
 	return req, nil

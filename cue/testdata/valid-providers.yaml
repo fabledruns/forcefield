@@ -32,6 +32,20 @@ providers:
     base_url: http://localhost:1234/v1
     model: local-model
 
+  custom-header:
+    type: openai-compatible
+    base_url: http://localhost:8081/v1
+    api_path: /v1/custom/chat
+    api_key_env: MY_CUSTOM_KEY
+    auth_mode: header
+    auth_header: X-Custom-Auth
+    timeout_seconds: 45
+    capabilities:
+      streaming: true
+      tool_calling: false
+    models:
+      - custom-model
+
   llama-cpp:
     type: llama-cpp
 

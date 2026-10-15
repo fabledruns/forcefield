@@ -92,6 +92,46 @@ type CapabilitiesProvider interface {
 	Capabilities() Capabilities
 }
 
+// CapabilitiesOverride carries explicit per-provider capability choices
+// from configuration. Every field is optional: nil keeps the adapter's
+// built-in default, non-nil forces the value. It exists so custom
+// OpenAI-compatible endpoints can honestly advertise only what they
+// support instead of inheriting every OpenAI feature by default.
+type CapabilitiesOverride struct {
+	Streaming         *bool `json:"streaming,omitempty" yaml:"streaming,omitempty"`
+	ToolCalling       *bool `json:"tool_calling,omitempty" yaml:"tool_calling,omitempty"`
+	Vision            *bool `json:"vision,omitempty" yaml:"vision,omitempty"`
+	StructuredOutput  *bool `json:"structured_output,omitempty" yaml:"structured_output,omitempty"`
+	Reasoning         *bool `json:"reasoning,omitempty" yaml:"reasoning,omitempty"`
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty" yaml:"parallel_tool_calls,omitempty"`
+}
+
+// Apply returns base with every non-nil override field applied.
+func (o *CapabilitiesOverride) Apply(base Capabilities) Capabilities {
+	if o == nil {
+		return base
+	}
+	if o.Streaming != nil {
+		base.Streaming = *o.Streaming
+	}
+	if o.ToolCalling != nil {
+		base.ToolCalling = *o.ToolCalling
+	}
+	if o.Vision != nil {
+		base.Vision = *o.Vision
+	}
+	if o.StructuredOutput != nil {
+		base.StructuredOutput = *o.StructuredOutput
+	}
+	if o.Reasoning != nil {
+		base.Reasoning = *o.Reasoning
+	}
+	if o.ParallelToolCalls != nil {
+		base.ParallelToolCalls = *o.ParallelToolCalls
+	}
+	return base
+}
+
 // ModelLister is implemented by providers whose API can enumerate the
 // models it serves. Model discovery is optional: providers without it are
 // driven entirely by configured or catalog-known models.

@@ -16,6 +16,7 @@ import (
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
 	"forcefield/internal/memory"
+	"forcefield/internal/providers"
 	"forcefield/internal/redact"
 	"forcefield/internal/runtime"
 	"forcefield/internal/sandbox"
@@ -178,6 +179,42 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 	}
 
 	client := &http.Client{Timeout: probeTimeout}
+	if resolved.TimeoutSeconds > 0 {
+		// Honor an explicit custom timeout so slow local servers that
+		// need it do not false-fail the fast default probe. Clamp so a
+		// dead endpoint still fails fast instead of hanging doctor.
+		timeout := time.Duration(resolved.TimeoutSeconds) * time.Second
+		if timeout > 30*time.Second {
+			timeout = 30 * time.Second
+		}
+		if timeout < probeTimeout {
+			// A sub-3s custom timeout is still honored: the probe uses
+			// exactly what a real turn would wait for headers.
+			client.Timeout = timeout
+		} else {
+			client.Timeout = timeout
+		}
+	}
+	// Surface endpoint-security notes without blocking legitimate local
+	// servers. Metadata endpoints are never valid model servers.
+	for _, w := range providers.EndpointSecurityWarnings(resolved.BaseURL, resolved.APIKey != "") {
+		report(vWarn, "%s: %s", resolved.Label, w)
+	}
+	if providers.IsMetadataHost(providers.EndpointHost(resolved.BaseURL)) && !resolved.AllowMetadataEndpoint {
+		report(vFail, "%s: endpoint points at a cloud metadata address - refusing to probe (set allow_metadata_endpoint: true only if you intentionally run a model server there)", resolved.Label)
+		return
+	}
+	if providers.IsMetadataHost(providers.EndpointHost(resolved.BaseURL)) && resolved.AllowMetadataEndpoint {
+		report(vWarn, "%s: metadata endpoint explicitly allowed - credentials and prompt content will be sent there", resolved.Label)
+	}
+	if resolved.APIKey != "" && !providers.IsValidAPIKey(resolved.APIKey) {
+		name := resolved.AuthEnvVar
+		if name == "" {
+			name = "the API key variable"
+		}
+		report(vFail, "%s: value in %s contains invalid control characters (check for stray line breaks) and will not be sent", resolved.Label, name)
+		return
+	}
 	base := strings.TrimRight(resolved.BaseURL, "/")
 
 	var auth func(req *http.Request)
@@ -186,15 +223,48 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 		auth = func(req *http.Request) {}
 	case "openai-compatible", "opencode-zen", "opencode-go":
 		key := resolved.APIKey
+		mode := strings.ToLower(strings.TrimSpace(resolved.AuthMode))
+		header := resolved.AuthHeader
+		scheme := resolved.AuthScheme
 		auth = func(req *http.Request) {
-			if key != "" {
-				req.Header.Set("Authorization", "Bearer "+key)
+			switch mode {
+			case "none":
+				return
+			case "header":
+				if key == "" || header == "" {
+					return
+				}
+				if !providers.IsValidAPIKey(key) {
+					return
+				}
+				value := key
+				if scheme != "" {
+					value = scheme + " " + key
+				}
+				req.Header.Set(header, value)
+			default:
+				if key != "" {
+					if !providers.IsValidAPIKey(key) {
+						return
+					}
+					s := "Bearer"
+					if scheme != "" {
+						s = scheme
+					}
+					req.Header.Set("Authorization", s+" "+key)
+				}
+			}
+			for name, value := range resolved.Headers {
+				if !providers.IsValidHeaderValue(value) {
+					continue
+				}
+				req.Header.Set(name, value)
 			}
 		}
 	case "anthropic":
 		key := resolved.APIKey
 		auth = func(req *http.Request) {
-			if key != "" {
+			if key != "" && providers.IsValidAPIKey(key) {
 				req.Header.Set("x-api-key", key)
 			}
 			req.Header.Set("anthropic-version", "2023-06-01")
@@ -202,7 +272,7 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 	case "gemini":
 		key := resolved.APIKey
 		auth = func(req *http.Request) {
-			if key != "" {
+			if key != "" && providers.IsValidAPIKey(key) {
 				req.Header.Set("x-goog-api-key", key)
 			}
 		}

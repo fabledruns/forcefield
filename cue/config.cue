@@ -88,6 +88,19 @@ package config
 	context_summary?:          bool
 }
 
+// ProviderCapabilities are explicit capability choices for custom
+// OpenAI-compatible endpoints. Every field is optional; omitted keeps the
+// adapter default. Set a flag to false to honestly advertise that an
+// endpoint does not implement that OpenAI feature.
+#ProviderCapabilities: {
+	streaming?:           bool
+	tool_calling?:        bool
+	vision?:              bool
+	structured_output?:   bool
+	reasoning?:           bool
+	parallel_tool_calls?: bool
+}
+
 // ProviderEntry is one section under providers:. Every field is optional;
 // omitted fields fall back to the service's catalog defaults. Secrets are
 // never stored here - api_key_env names an environment variable or .env
@@ -99,6 +112,13 @@ package config
 	model?:      string
 	headers?:    [string]: string
 	models?:     [...#nonEmpty]
+	api_path?:        string & =~ "^/[^ \\t\\r\\n\\\\?#]+$"
+	auth_mode?:       "bearer" | "none" | "header" | ""
+	auth_header?:     string
+	auth_scheme?:     string
+	timeout_seconds?: int & >= 0 & <= 300
+	allow_metadata_endpoint?: bool
+	capabilities?:    #ProviderCapabilities
 }
 
 // Config is the top-level shape of config.yaml. model.provider and

@@ -71,10 +71,17 @@ Each key defines one selectable provider. Every field is optional; omitted value
 | `base_url`    | API root. Overrides the service default. Required when the type has no default (e.g. a self-hosted OpenAI-compatible server). |
 | `api_key_env` | Environment variable (or `.env` file key) holding the API key. Defaults to the service's standard variable. |
 | `model`       | Optional default model recorded for this provider.                             |
-| `headers`     | Extra HTTP headers sent with every request (e.g. OpenRouter's `HTTP-Referer`).  |
+| `headers`     | Extra HTTP headers sent with every request (e.g. OpenRouter's `HTTP-Referer`). Values must not contain control characters. |
 | `models`      | Model IDs offered by providers that cannot enumerate their own models, and extra choices shown alongside discovered models. |
+| `api_path`    | Optional chat-path override for OpenAI-compatible servers (default `/chat/completions`). Must be an absolute path without query, fragment, or `..`. |
+| `auth_mode`   | How the key is sent: empty (auto), `bearer`, `none`, or `header` (requires `auth_header`). Empty preserves historic behavior. |
+| `auth_header` | Custom header name for `auth_mode: header` (e.g. `X-API-Key`). Must not be reserved. |
+| `auth_scheme` | Optional credential prefix override (default `Bearer` for bearer mode, raw key for header mode). Requires `bearer` or `header` mode. |
+| `timeout_seconds` | Optional response-header timeout in seconds (`0` keeps the 120s default, else 1-300). |
+| `allow_metadata_endpoint` | Explicit opt-in to a cloud metadata-service URL as this provider's endpoint. Default `false` (refused). Only enable if you intentionally run a model server there; localhost and LAN addresses are unaffected. |
+| `capabilities` | Optional explicit flags (`streaming`, `tool_calling`, `reasoning`, `structured_output`, `vision`, `parallel_tool_calls`) for endpoints that do not implement every OpenAI feature. Omitted keeps adapter defaults. |
 
-Supported services and their protocols are documented in [Providers](Providers.md).
+Custom providers are managed with `ff provider list|add|test|remove` (see `ff provider --help`). `ff provider test [name]` validates configuration, prints redacted diagnostics, warns about local/private or metadata endpoints, and probes `GET {base_url}/models` without starting a session; `--chat` adds one opt-in `max_tokens=1` ping. Supported services and their protocols are documented in [Providers](Providers.md).
 
 ### Model Discovery
 
@@ -88,7 +95,7 @@ API keys never live in config.yaml - there is no field that could store them. Ke
 2. `.env` in the current project directory
 3. `~/.forcefield/.env`
 
-A key found this way stays inside Forcefield: it is never written back into the process environment and never persisted, so commands run by the shell tool never inherit it. Values are also redacted from every error message in case a provider echoes credentials back.
+A key found this way stays inside Forcefield: it is never written back into the process environment and never persisted, so commands run by the shell tool never inherit it. Values are also redacted from every error message in case a provider echoes credentials back. A resolved value containing control characters (e.g. a stray newline from `.env` editing) is rejected before any request is built: the error names the variable, never the value.
 
 ### `agent`
 

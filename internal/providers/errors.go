@@ -94,6 +94,10 @@ func Classify(err error) ErrorKind {
 		}
 		return statusForKind(se.Status)
 	}
+	var ce *capabilityError
+	if errors.As(err, &ce) {
+		return ErrKindUnsupportedCapability
+	}
 	var pe *protocolError
 	if errors.As(err, &pe) {
 		return ErrKindProtocol
