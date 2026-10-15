@@ -120,6 +120,12 @@ func ModelReasoningCapabilities(providerID, modelID string) ReasoningCapabilitie
 			}
 		}
 		return ReasoningCapabilities{}
+	case "bedrock":
+		// Bedrock serves many models with different reasoning controls
+		// and the adapter sends no model-specific reasoning fields, so
+		// no reasoning capability is advertised until per-model support
+		// is verified.
+		return ReasoningCapabilities{}
 	case "nvidia":
 		// NVIDIA model-specific capabilities must be explicit and verifiable.
 		// Do not use provider-wide heuristics. Unknown models remain unsupported.

@@ -49,5 +49,12 @@ providers:
   llama-cpp:
     type: llama-cpp
 
+  bedrock-example:
+    type: bedrock
+    region: us-east-1
+    profile: work
+    models:
+      - example-model-id
+
 agent:
   name: default

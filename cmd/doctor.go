@@ -117,14 +117,18 @@ func doctorConfig(report func(verdict, string, ...any)) *config.Config {
 
 	resolved, err := cfg.ResolveProvider(cfg.Model.Provider, cfg.Model.Name)
 	endpoint := ""
+	resolvedType := ""
 	if err == nil {
 		endpoint = resolved.BaseURL
+		resolvedType = resolved.Type
 	}
 	if endpoint == "" {
 		endpoint = cfg.Model.Endpoint
 	}
 	report(vOK, "config: %s (%s provider, model %q)", path, cfg.Model.Provider, cfg.Model.Name)
-	if endpoint == "" {
+	// Bedrock endpoints resolve inside the AWS SDK from the region, so
+	// an empty base URL is expected rather than a misconfiguration.
+	if endpoint == "" && resolvedType != "bedrock" {
 		report(vFail, "config: no endpoint resolves for provider %q", cfg.Model.Provider)
 	}
 	return cfg
@@ -217,6 +221,10 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 	}
 	if resolved.Type == "vertex" {
 		doctorVertex(resolved, report)
+		return
+	}
+	if resolved.Type == "bedrock" {
+		doctorBedrock(resolved, report)
 		return
 	}
 	base := strings.TrimRight(resolved.BaseURL, "/")
@@ -371,6 +379,27 @@ func doctorVertex(resolved config.ResolvedProvider, report func(verdict, string,
 		return
 	}
 	report(vWarn, "%s: no per-provider credentials file and GOOGLE_APPLICATION_CREDENTIALS is unset - ADC falls back to the gcloud well-known file or GCE metadata; run `gcloud auth application-default login` for local use", resolved.Label)
+}
+
+// doctorBedrock checks Bedrock configuration without billing a call:
+// region/profile resolution plus credential-chain guidance. Live calls
+// need model access grants that doctor must not assume, so verification
+// stops at configuration (the first model turn names the fix).
+func doctorBedrock(resolved config.ResolvedProvider, report func(verdict, string, ...any)) {
+	if resolved.Region == "" {
+		report(vFail, "%s: missing region - set providers.%s.region (or AWS_REGION)", resolved.Label, resolved.ID)
+		return
+	}
+	endpoint := "Bedrock regional endpoint in " + resolved.Region
+	if strings.TrimRight(resolved.BaseURL, "/") != "" {
+		endpoint = strings.TrimRight(resolved.BaseURL, "/")
+	}
+	report(vOK, "%s: region %s (%s)", resolved.Label, resolved.Region, endpoint)
+	if resolved.Profile != "" {
+		report(vOK, "%s: AWS profile %s (value hidden)", resolved.Label, resolved.Profile)
+		return
+	}
+	report(vWarn, "%s: no profile configured - credentials resolve via environment, shared config, SSO, or IAM role; grant model access in the Bedrock console", resolved.Label)
 }
 
 // probeJSON performs one authenticated-optional GET and decodes a JSON

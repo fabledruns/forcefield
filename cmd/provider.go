@@ -75,6 +75,8 @@ var (
 	providerAddProject   string
 	providerAddLocation  string
 	providerAddCredsFile string
+	providerAddRegion    string
+	providerAddProfile   string
 )
 
 var providerAddCmd = &cobra.Command{
@@ -99,7 +101,7 @@ var providerAddCmd = &cobra.Command{
 		if !providers.IsKnownType(typ) {
 			return fmt.Errorf("type %q is not supported (supported: %s)", typ, strings.Join(providers.KnownTypes(), ", "))
 		}
-		if baseURL == "" && typ != "vertex" {
+		if baseURL == "" && typ != "vertex" && typ != "bedrock" {
 			return fmt.Errorf("base URL is required (--base-url)")
 		}
 
@@ -141,6 +143,8 @@ var providerAddCmd = &cobra.Command{
 			Project:         strings.TrimSpace(providerAddProject),
 			Location:        strings.TrimSpace(providerAddLocation),
 			CredentialsFile: strings.TrimSpace(providerAddCredsFile),
+			Region:          strings.TrimSpace(providerAddRegion),
+			Profile:         strings.TrimSpace(providerAddProfile),
 		}
 		// Validate by resolving and building the adapter spec without
 		// touching the network. ResolveProvider reads env/.env for the
@@ -165,6 +169,11 @@ var providerAddCmd = &cobra.Command{
 		if typ == "vertex" {
 			fmt.Printf("Added provider %q (Vertex AI project %s location %s). Configure ADC (`gcloud auth application-default login` or GOOGLE_APPLICATION_CREDENTIALS), then run `ff provider test %s`.\n",
 				name, resolved.Project, resolved.Location, name)
+			return nil
+		}
+		if typ == "bedrock" {
+			fmt.Printf("Added provider %q (Bedrock region %s). Configure AWS credentials (environment, shared profile, or IAM role) and grant model access, then run `ff provider test %s`.\n",
+				name, resolved.Region, name)
 			return nil
 		}
 		fmt.Printf("Added provider %q (%s at %s). Set %s if it needs a key, then run `ff provider test %s`.\n",
@@ -224,6 +233,9 @@ func authModeDisplay(r config.ResolvedProvider) string {
 	if r.Type == "vertex" {
 		return "adc"
 	}
+	if r.Type == "bedrock" {
+		return "aws-chain"
+	}
 	mode := strings.ToLower(strings.TrimSpace(r.AuthMode))
 	if mode == "" {
 		if r.APIKey != "" || r.AuthRequired || r.AuthEnvVar != "" {
@@ -260,7 +272,11 @@ func runProviderTest(cfg *config.Config, id string, withChat bool, timeoutOverri
 	hasAuth := resolved.APIKey != ""
 	fmt.Printf("Provider: %s (%s)\n", resolved.Label, resolved.ID)
 	fmt.Printf("  type: %s\n", resolved.Type)
-	fmt.Printf("  endpoint: %s\n", redact.Scrub(resolved.BaseURL))
+	if endpoint := strings.TrimRight(resolved.BaseURL, "/"); endpoint != "" {
+		fmt.Printf("  endpoint: %s\n", redact.Scrub(endpoint))
+	} else if resolved.Type == "bedrock" {
+		fmt.Printf("  endpoint: (resolved by the AWS SDK from region)\n")
+	}
 	fmt.Printf("  auth: %s", authModeDisplay(resolved))
 	if resolved.AuthEnvVar != "" {
 		if hasAuth {
@@ -304,6 +320,22 @@ func runProviderTest(cfg *config.Config, id string, withChat bool, timeoutOverri
 			fmt.Printf("  credentials: file %s\n", redact.Scrub(resolved.CredentialsFile))
 		} else {
 			fmt.Printf("  credentials: Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS, gcloud well-known file, or GCE metadata)\n")
+		}
+		fmt.Printf("Connection test passed (configuration valid; no billing call made).\n")
+		return nil
+	}
+	// Bedrock likewise has no models-listing probe here (ListFoundationModels
+	// needs separate permissions and paginates the whole catalog): validate
+	// configuration and describe the credential chain without billing a call.
+	if resolved.Type == "bedrock" {
+		fmt.Printf("  region: %s\n", redact.Scrub(resolved.Region))
+		if resolved.Profile != "" {
+			fmt.Printf("  profile: %s\n", redact.Scrub(resolved.Profile))
+		} else {
+			fmt.Printf("  credentials: standard AWS chain (environment, shared config, SSO, or IAM role)\n")
+		}
+		if len(resolved.Models) == 0 {
+			fmt.Printf("  warning: no models configured under providers.%s.models - set model IDs for this region/account\n", id)
 		}
 		fmt.Printf("Connection test passed (configuration valid; no billing call made).\n")
 		return nil
@@ -535,6 +567,8 @@ func init() {
 	providerAddCmd.Flags().StringVar(&providerAddProject, "project", "", "Google Cloud project ID (--type vertex)")
 	providerAddCmd.Flags().StringVar(&providerAddLocation, "location", "", "Vertex AI location, e.g. us-central1 (--type vertex)")
 	providerAddCmd.Flags().StringVar(&providerAddCredsFile, "credentials-file", "", "service-account JSON key for this provider only (--type vertex)")
+	providerAddCmd.Flags().StringVar(&providerAddRegion, "region", "", "AWS region, e.g. us-east-1 (--type bedrock)")
+	providerAddCmd.Flags().StringVar(&providerAddProfile, "profile", "", "AWS shared-config profile (--type bedrock)")
 	providerAddCmd.Flags().BoolVar(&providerAddForce, "force", false, "overwrite an existing provider entry")
 	providerTestCmd.Flags().BoolVar(&providerTestChat, "chat", false, "also send one max_tokens=1 chat ping (may bill)")
 	providerTestCmd.Flags().IntVar(&providerTestTimeout, "timeout", 0, "probe timeout in seconds (0 = provider timeout or 10s)")

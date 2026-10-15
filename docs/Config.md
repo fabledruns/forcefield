@@ -81,6 +81,8 @@ Each key defines one selectable provider. Every field is optional; omitted value
 | `project` | Google Cloud project ID (`type: vertex`; falls back to `GOOGLE_CLOUD_PROJECT`). |
 | `location` | Cloud region for `type: vertex` (e.g. `us-central1`); required, no env fallback. |
 | `credentials_file` | Service-account JSON key used only for this `type: vertex` provider; empty follows the ADC chain. |
+| `region` | AWS region for `type: bedrock` (e.g. `us-east-1`); falls back to `AWS_REGION`/`AWS_DEFAULT_REGION`. |
+| `profile` | AWS shared-config profile for `type: bedrock`; empty follows the standard chain including `AWS_PROFILE`. |
 | `allow_metadata_endpoint` | Explicit opt-in to a cloud metadata-service URL as this provider's endpoint. Default `false` (refused). Only enable if you intentionally run a model server there; localhost and LAN addresses are unaffected. |
 | `capabilities` | Optional explicit flags (`streaming`, `tool_calling`, `reasoning`, `structured_output`, `vision`, `parallel_tool_calls`) for endpoints that do not implement every OpenAI feature. Omitted keeps adapter defaults. |
 

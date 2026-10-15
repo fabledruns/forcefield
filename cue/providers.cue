@@ -167,6 +167,17 @@ providers: {
 		]
 	}
 
+	bedrock: #ProviderInfo & {
+		name:        "Amazon Bedrock"
+		id:          "bedrock"
+		type:        "bedrock"
+		description: "Foundation models in your AWS account via Bedrock Converse (standard AWS credential chain)."
+		endpoint:    "https://bedrock-runtime.us-east-1.amazonaws.com"
+		scope:       "cloud"
+		requires_api_key: false
+		models: []
+	}
+
 	xai: #ProviderInfo & {
 		name:        "xAI"
 		id:          "xai"

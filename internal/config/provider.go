@@ -60,6 +60,10 @@ type ResolvedProvider struct {
 	// CredentialsFile optionally points at a service-account JSON key
 	// used only for this provider (Vertex AI).
 	CredentialsFile string
+	// Region is the AWS region (Bedrock).
+	Region string
+	// Profile selects an AWS shared-config profile (Bedrock).
+	Profile string
 	// AllowMetadataEndpoint explicitly opts in to a metadata-service URL.
 	AllowMetadataEndpoint bool
 	// CapabilitiesOverride optionally forces capability flags.
@@ -93,6 +97,8 @@ func (r ResolvedProvider) Spec(activeModel string) providers.Spec {
 		Project:               r.Project,
 		Location:              r.Location,
 		CredentialsFile:       r.CredentialsFile,
+		Region:                r.Region,
+		Profile:               r.Profile,
 		CapabilitiesOverride:  r.CapabilitiesOverride,
 		AllowMetadataEndpoint: r.AllowMetadataEndpoint,
 	}
@@ -149,9 +155,22 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 		)
 	}
 
-	// Vertex AI resolves its cloud identity here: project and location
-	// are required, API keys are rejected (ADC owns authentication), and
-	// the regional endpoint is derived unless explicitly overridden.
+	// Bedrock resolves its AWS identity here: region is required (with
+	// standard env fallbacks), long-lived keys are rejected (the SDK
+	// chain owns credentials), and the endpoint stays SDK-resolved
+	// unless base_url overrides it (e.g. VPC endpoints).
+	isBedrock := protocol == "bedrock"
+	region, profile := "", ""
+	if isBedrock {
+		region = strings.TrimSpace(firstNonEmpty(entry.Region, os.Getenv("AWS_REGION"), os.Getenv("AWS_DEFAULT_REGION")))
+		profile = strings.TrimSpace(entry.Profile)
+		if region == "" {
+			return ResolvedProvider{}, fmt.Errorf("provider %q needs a region - set providers.%s.region (or AWS_REGION)", id, id)
+		}
+		if entry.APIKeyEnv != "" {
+			return ResolvedProvider{}, fmt.Errorf("provider %q uses the standard AWS credential chain, not API keys - remove providers.%s.api_key_env and configure AWS credentials instead (environment, shared profile, or IAM role)", id, id)
+		}
+	}
 	isVertex := protocol == "vertex"
 	project, location, credentialsFile := "", "", ""
 	if isVertex {
@@ -190,14 +209,16 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 	if baseURL == "" && isVertex {
 		baseURL = "https://" + location + "-aiplatform.googleapis.com"
 	}
-	if baseURL == "" {
+	if baseURL == "" && protocol != "bedrock" {
 		return ResolvedProvider{}, fmt.Errorf(
 			"provider %q has no base_url - set base_url under providers.%s (or model.endpoint)",
 			id, id,
 		)
 	}
-	if err := validateBaseURL(id, baseURL); err != nil {
-		return ResolvedProvider{}, err
+	if baseURL != "" {
+		if err := validateBaseURL(id, baseURL); err != nil {
+			return ResolvedProvider{}, err
+		}
 	}
 
 	envVar := firstNonEmpty(entry.APIKeyEnv, service.AuthEnvVar)
@@ -250,6 +271,8 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 		Project:               project,
 		Location:              location,
 		CredentialsFile:       credentialsFile,
+		Region:                region,
+		Profile:               profile,
 		CapabilitiesOverride:  entry.Capabilities,
 		AllowMetadataEndpoint: entry.AllowMetadataEndpoint,
 	}, nil
@@ -344,6 +367,9 @@ func validateEntry(id string, p ProviderConfig) error {
 	if err := validateVertexFields(id, p); err != nil {
 		return err
 	}
+	if err := validateBedrockFields(id, p); err != nil {
+		return err
+	}
 	if p.BaseURL != "" && providers.IsMetadataHost(providers.EndpointHost(p.BaseURL)) && !p.AllowMetadataEndpoint {
 		return fmt.Errorf("providers.%s.base_url points at a cloud metadata endpoint (%s) - refusing to send requests there (set allow_metadata_endpoint: true only if you intentionally run a model server there)", id, providers.EndpointHost(p.BaseURL))
 	}
@@ -374,6 +400,30 @@ func validateVertexFields(id string, p ProviderConfig) error {
 	}
 	if p.APIPath != "" {
 		return fmt.Errorf("providers.%s.api_path does not apply to type \"vertex\" - the resource path is derived from project/location", id)
+	}
+	return nil
+}
+
+// validateBedrockFields checks Bedrock identity fields. Region may come
+// from AWS_REGION/AWS_DEFAULT_REGION at resolve time so it is not
+// required here. API keys and OpenAI-transport knobs are rejected so a
+// misconfigured entry fails fast instead of being silently ignored.
+func validateBedrockFields(id string, p ProviderConfig) error {
+	isBedrock := p.Type == "bedrock" || (p.Type == "" && id == "bedrock")
+	if !isBedrock {
+		if p.Region != "" || p.Profile != "" {
+			return fmt.Errorf("providers.%s.region/profile are only supported for type \"bedrock\"", id)
+		}
+		return nil
+	}
+	if p.APIKeyEnv != "" {
+		return fmt.Errorf("providers.%s uses the standard AWS credential chain, not API keys - remove api_key_env and configure AWS credentials instead", id)
+	}
+	if p.AuthMode != "" || p.AuthHeader != "" || p.AuthScheme != "" {
+		return fmt.Errorf("providers.%s authenticates with AWS credentials (SigV4) - auth_mode/auth_header/auth_scheme do not apply to type \"bedrock\"", id)
+	}
+	if p.APIPath != "" {
+		return fmt.Errorf("providers.%s.api_path does not apply to type \"bedrock\" - the Converse API paths are fixed", id)
 	}
 	return nil
 }

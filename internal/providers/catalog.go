@@ -136,6 +136,21 @@ var Catalog = []Preset{
 		},
 	},
 	{
+		ID:          "bedrock",
+		Name:        "Amazon Bedrock",
+		Description: "Foundation models in your AWS account via Bedrock Converse (standard AWS credential chain).",
+		Type:        "bedrock",
+		BaseURL:     "",
+		AuthEnvVar:  "",
+		Auth:        AuthNone,
+		Scope:       ScopeCloud,
+		// No fallback models: IDs (base model IDs, inference profiles,
+		// ARNs) and availability vary by region, account entitlement,
+		// and date, so any hardcoded ID would be a guess. Configure
+		// providers.<id>.models explicitly; the active model always
+		// remains selectable.
+	},
+	{
 		ID:          "xai",
 		Name:        "xAI",
 		Description: "xAI's Grok models.",

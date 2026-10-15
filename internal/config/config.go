@@ -78,6 +78,12 @@ type ProviderConfig struct {
 	// used only for this provider (Vertex AI). Empty follows the
 	// standard ADC chain instead.
 	CredentialsFile string `yaml:"credentials_file,omitempty"`
+	// Region is the AWS region (Bedrock, e.g. us-east-1). Falls back to
+	// AWS_REGION/AWS_DEFAULT_REGION.
+	Region string `yaml:"region,omitempty"`
+	// Profile selects an AWS shared-config profile (Bedrock). Empty
+	// follows the standard chain, including AWS_PROFILE.
+	Profile string `yaml:"profile,omitempty"`
 	// AllowMetadataEndpoint explicitly opts in to using a cloud
 	// instance-metadata URL as this provider's endpoint. Default false.
 	// Only enable if you intentionally run a model server on such an

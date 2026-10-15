@@ -218,6 +218,29 @@ providers:
       - gemini-2.5-flash
 ```
 
+### Bedrock
+
+Native Amazon Bedrock support (`type: bedrock`) uses the Converse API through the maintained AWS SDK for Go v2 — one integration for chat, streaming, tools, usage, and stop reasons across models:
+
+- Operations: `Converse` (one-shot) and `ConverseStream` (turns), requiring `bedrock:InvokeModel` / `bedrock:InvokeModelWithResponseStream` IAM permissions respectively.
+- Auth: the standard AWS credential chain only — environment variables, shared `~/.aws/credentials` + `config` profiles (including SSO), then EC2/ECS/Lambda metadata. Long-lived keys are never stored in Forcefield config: `api_key_env` is rejected for bedrock entries. `profile` pins one shared-config profile; otherwise `AWS_PROFILE` and the rest of the chain apply untouched.
+- Region: `region` (or `AWS_REGION`/`AWS_DEFAULT_REGION`) selects the endpoint; `base_url` optionally overrides it (e.g. VPC endpoints).
+- Models: base model IDs, inference-profile IDs/ARNs, or provisioned-throughput ARNs pass through verbatim. IDs and availability vary by region, account entitlement, and date, so the catalog ships no fallback list: set `providers.<id>.models` explicitly. Not every model supports Converse or every feature — an unsupported model fails fast naming the model and region.
+- Mapping: `end_turn`→`stop`, `tool_use`→`tool_calls`, `max_tokens`/`model_context_window_exceeded`→`length`; `inputTokens`/`outputTokens`/`totalTokens` usage; toolUse input-JSON fragments reassembled per content block.
+- Retries are Forcefield-owned: the SDK retryer is disabled (`MaxAttempts(1)` equivalent) and the shared bounded policy retries transient throttling/server/timeout/connection failures with backoff. Quota exhaustion (`ServiceQuotaExceededException` or quota wording) never retries. No blind retries after a billable stream starts.
+- Errors: `AccessDeniedException` (credentials **and** model-access grants), auth-family signature/token errors, `ResourceNotFoundException` (model ID/region), `ValidationException`, throttling vs quota — each with actionable hints and no credential material in messages.
+
+```yaml
+providers:
+  bedrock:
+    type: bedrock
+    region: us-east-1
+    models:
+      # Use model or inference-profile IDs entitled in your account and
+      # region (Bedrock console → Model access), e.g.:
+      - anthropic.claude-sonnet-4-5-20250929-v1:0
+```
+
 ### Anthropic
 
 Native Messages API client: `x-api-key` + `anthropic-version` headers, top-level `system` field, `tool_use`/`tool_result` content blocks with consecutive results merged into one user turn, `input_json_delta` fragment accumulation, `message_start`/`message_delta` usage parsing, and `stop_reason` mapping (`end_turn`→`stop`, `tool_use`→`tool_calls`, `max_tokens`→`length`).

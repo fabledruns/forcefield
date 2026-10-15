@@ -17,8 +17,8 @@ type Spec struct {
 	ID string
 	// Type is the wire protocol that serves this provider: one of the
 	// registry's factory types ("ollama", "openai-compatible",
-	// "openai-responses", "anthropic", "gemini", "vertex"). Service
-	// presets normalize to their protocol before construction.
+	// "openai-responses", "anthropic", "gemini", "vertex", "bedrock").
+	// Service presets normalize to their protocol before construction.
 	Type string
 	// Label is the human-facing service name used in errors ("LM Studio").
 	Label string
@@ -65,6 +65,11 @@ type Spec struct {
 	Project string
 	// Location is the cloud region (Vertex AI location, e.g. us-central1).
 	Location string
+	// Region is the AWS region (Bedrock, e.g. us-east-1).
+	Region string
+	// Profile selects an AWS shared-config profile (Bedrock). Empty
+	// follows the standard chain, including AWS_PROFILE.
+	Profile string
 	// CredentialsFile optionally points at a service-account JSON key
 	// used only for this provider (Vertex AI). Empty follows the
 	// standard ADC chain instead.
@@ -96,18 +101,33 @@ func (s Spec) Validate() error {
 	if s.Type == "" {
 		return fmt.Errorf("provider %q has no type", s.ID)
 	}
-	if s.BaseURL == "" {
-		return fmt.Errorf("provider %q has no base_url", s.ID)
-	}
-	u, err := url.Parse(s.BaseURL)
-	if err != nil {
-		return fmt.Errorf("provider %q base_url %q is not a valid URL: %w", s.ID, s.BaseURL, err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("provider %q base_url %q must be an http:// or https:// URL", s.ID, s.BaseURL)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("provider %q base_url %q has no host", s.ID, s.BaseURL)
+	// Bedrock endpoints resolve inside the AWS SDK from the region; an
+	// explicit base_url is only an override (e.g. VPC endpoints) and is
+	// validated for shape when present.
+	if s.Type == "bedrock" {
+		if s.BaseURL != "" {
+			u, err := url.Parse(s.BaseURL)
+			if err != nil {
+				return fmt.Errorf("provider %q base_url %q is not a valid URL: %w", s.ID, s.BaseURL, err)
+			}
+			if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return fmt.Errorf("provider %q base_url %q must be an absolute http:// or https:// URL with a host", s.ID, s.BaseURL)
+			}
+		}
+	} else {
+		if s.BaseURL == "" {
+			return fmt.Errorf("provider %q has no base_url", s.ID)
+		}
+		u, err := url.Parse(s.BaseURL)
+		if err != nil {
+			return fmt.Errorf("provider %q base_url %q is not a valid URL: %w", s.ID, s.BaseURL, err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("provider %q base_url %q must be an http:// or https:// URL", s.ID, s.BaseURL)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("provider %q base_url %q has no host", s.ID, s.BaseURL)
+		}
 	}
 	for name, value := range s.Headers {
 		if !isHTTPHeaderName(name) {
@@ -334,6 +354,9 @@ func newDefaultFactories() *FactoryRegistry {
 	})
 	r.MustRegister("vertex", func(spec Spec) (ModelProvider, error) {
 		return NewVertexProvider(spec), nil
+	})
+	r.MustRegister("bedrock", func(spec Spec) (ModelProvider, error) {
+		return NewBedrockProvider(spec), nil
 	})
 	r.MustRegister("openai-responses", func(spec Spec) (ModelProvider, error) {
 		return NewOpenAIResponses(spec), nil
