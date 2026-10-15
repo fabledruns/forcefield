@@ -8,11 +8,13 @@ require (
 	charm.land/glamour/v2 v2.0.1
 	github.com/muesli/termenv v0.16.0
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sys v0.46.0
 )
 
 require (
 	charm.land/lipgloss/v2 v2.0.4 // indirect
+	cloud.google.com/go/compute/metadata v0.3.0 // indirect
 	github.com/alecthomas/chroma/v2 v2.14.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

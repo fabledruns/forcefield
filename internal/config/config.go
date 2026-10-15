@@ -70,6 +70,14 @@ type ProviderConfig struct {
 	// TimeoutSeconds optionally overrides the response-header timeout in
 	// seconds. Zero keeps the built-in default (120s).
 	TimeoutSeconds int `yaml:"timeout_seconds,omitempty"`
+	// Project is the Google Cloud project ID (Vertex AI).
+	Project string `yaml:"project,omitempty"`
+	// Location is the cloud region (Vertex AI location, e.g. us-central1).
+	Location string `yaml:"location,omitempty"`
+	// CredentialsFile optionally points at a service-account JSON key
+	// used only for this provider (Vertex AI). Empty follows the
+	// standard ADC chain instead.
+	CredentialsFile string `yaml:"credentials_file,omitempty"`
 	// AllowMetadataEndpoint explicitly opts in to using a cloud
 	// instance-metadata URL as this provider's endpoint. Default false.
 	// Only enable if you intentionally run a model server on such an

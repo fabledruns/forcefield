@@ -105,6 +105,21 @@ func ModelReasoningCapabilities(providerID, modelID string) ReasoningCapabilitie
 			}
 		}
 		return ReasoningCapabilities{}
+	case "vertex":
+		// Vertex AI serves Gemini models under publisher model IDs with
+		// the same thinking support as the developer API.
+		if geminiThinkingModels[modelLower] {
+			return ReasoningCapabilities{
+				Thinking: &ThinkingCapability{
+					Kind:           ThinkingKindBudget,
+					MinBudget:      0,
+					MaxBudget:      32768,
+					DefaultBudget:  1024,
+					DefaultEnabled: false,
+				},
+			}
+		}
+		return ReasoningCapabilities{}
 	case "nvidia":
 		// NVIDIA model-specific capabilities must be explicit and verifiable.
 		// Do not use provider-wide heuristics. Unknown models remain unsupported.

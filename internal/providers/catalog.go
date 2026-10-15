@@ -122,6 +122,20 @@ var Catalog = []Preset{
 		},
 	},
 	{
+		ID:          "vertex",
+		Name:        "Google Vertex AI",
+		Description: "Gemini models in your Google Cloud project via Vertex AI (Application Default Credentials).",
+		Type:        "vertex",
+		BaseURL:     "",
+		AuthEnvVar:  "",
+		Auth:        AuthNone,
+		Scope:       ScopeCloud,
+		Models: []ModelInfo{
+			{Name: "Gemini 2.5 Flash", ID: "gemini-2.5-flash"},
+			{Name: "Gemini 2.5 Pro", ID: "gemini-2.5-pro"},
+		},
+	},
+	{
 		ID:          "xai",
 		Name:        "xAI",
 		Description: "xAI's Grok models.",

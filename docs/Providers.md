@@ -199,6 +199,25 @@ It normalizes messy real-world behavior: reasoning deltas arrive as either `delt
 
 Service-specific request fields (such as NIM's `chat_template_kwargs`) ride an adapter-level extra-body map, not new code paths.
 
+### Vertex AI
+
+Native Google Cloud Vertex AI support (`type: vertex`) serves Gemini models inside your own project. It speaks the same GenerateContent protocol as Gemini (contents, typed parts, `functionCall`/`functionResponse`, usage metadata, finish reasons), but against regional endpoints with OAuth credentials:
+
+- Endpoint: `https://{location}-aiplatform.googleapis.com` derived from `location` unless `base_url` overrides it; requests go to `/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:streamGenerateContent` (`?alt=sse`) or `:generateContent`.
+- Auth: Application Default Credentials only — `GOOGLE_APPLICATION_CREDENTIALS`, the `gcloud auth application-default login` well-known file, then the GCE metadata server, resolved in that order per Google's documented chain. `api_key_env` and `auth_mode`/`auth_header`/`auth_scheme`/`api_path` are rejected for vertex entries so a misconfiguration fails fast instead of being silently ignored. `credentials_file` optionally pins one service-account key to a single provider.
+- Models: `gemini-2.5-flash`, `gemini-2.5-pro` (publisher `google`); full resource names (`projects/.../models/...`, e.g. tuned endpoints) are used verbatim. There is no models-listing API in this integration: `providers.<id>.models` entries and the catalog defaults populate the picker. Availability depends on the project, region, and model access — verify against a live project.
+- Quota/rate-limit, timeout, retry, redaction, and redirect handling reuse the shared transport. `401/403` hints point at ADC setup; `404` names project/location/model. ADC/token failures never retry and never include credential material.
+
+```yaml
+providers:
+  vertex:
+    type: vertex
+    project: my-gcp-project
+    location: us-central1
+    models:
+      - gemini-2.5-flash
+```
+
 ### Anthropic
 
 Native Messages API client: `x-api-key` + `anthropic-version` headers, top-level `system` field, `tool_use`/`tool_result` content blocks with consecutive results merged into one user turn, `input_json_delta` fragment accumulation, `message_start`/`message_delta` usage parsing, and `stop_reason` mapping (`end_turn`→`stop`, `tool_use`→`tool_calls`, `max_tokens`→`length`).

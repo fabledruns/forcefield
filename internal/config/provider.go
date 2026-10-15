@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 
@@ -52,6 +53,13 @@ type ResolvedProvider struct {
 	AuthScheme string
 	// TimeoutSeconds overrides the response-header timeout (0 = default).
 	TimeoutSeconds int
+	// Project is the Google Cloud project ID (Vertex AI).
+	Project string
+	// Location is the cloud region (Vertex AI location).
+	Location string
+	// CredentialsFile optionally points at a service-account JSON key
+	// used only for this provider (Vertex AI).
+	CredentialsFile string
 	// AllowMetadataEndpoint explicitly opts in to a metadata-service URL.
 	AllowMetadataEndpoint bool
 	// CapabilitiesOverride optionally forces capability flags.
@@ -82,6 +90,9 @@ func (r ResolvedProvider) Spec(activeModel string) providers.Spec {
 		AuthHeader:            r.AuthHeader,
 		AuthScheme:            r.AuthScheme,
 		TimeoutSeconds:        r.TimeoutSeconds,
+		Project:               r.Project,
+		Location:              r.Location,
+		CredentialsFile:       r.CredentialsFile,
 		CapabilitiesOverride:  r.CapabilitiesOverride,
 		AllowMetadataEndpoint: r.AllowMetadataEndpoint,
 	}
@@ -138,6 +149,31 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 		)
 	}
 
+	// Vertex AI resolves its cloud identity here: project and location
+	// are required, API keys are rejected (ADC owns authentication), and
+	// the regional endpoint is derived unless explicitly overridden.
+	isVertex := protocol == "vertex"
+	project, location, credentialsFile := "", "", ""
+	if isVertex {
+		project = strings.TrimSpace(firstNonEmpty(entry.Project, os.Getenv("GOOGLE_CLOUD_PROJECT")))
+		location = strings.TrimSpace(entry.Location)
+		credentialsFile = strings.TrimSpace(entry.CredentialsFile)
+		if project == "" {
+			return ResolvedProvider{}, fmt.Errorf("provider %q needs a Google Cloud project - set providers.%s.project (or GOOGLE_CLOUD_PROJECT)", id, id)
+		}
+		if location == "" {
+			return ResolvedProvider{}, fmt.Errorf("provider %q needs a location - set providers.%s.location (e.g. us-central1)", id, id)
+		}
+		if entry.APIKeyEnv != "" {
+			return ResolvedProvider{}, fmt.Errorf("provider %q uses Application Default Credentials, not API keys - remove providers.%s.api_key_env and configure ADC instead (`gcloud auth application-default login` or GOOGLE_APPLICATION_CREDENTIALS)", id, id)
+		}
+		if credentialsFile != "" {
+			if info, err := os.Stat(credentialsFile); err != nil || info.IsDir() {
+				return ResolvedProvider{}, fmt.Errorf("provider %q credentials_file %q is not readable", id, credentialsFile)
+			}
+		}
+	}
+
 	label := id
 	switch {
 	case isPreset:
@@ -151,6 +187,9 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 		baseURL = c.Model.Endpoint // legacy single-provider field
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == "" && isVertex {
+		baseURL = "https://" + location + "-aiplatform.googleapis.com"
+	}
 	if baseURL == "" {
 		return ResolvedProvider{}, fmt.Errorf(
 			"provider %q has no base_url - set base_url under providers.%s (or model.endpoint)",
@@ -208,6 +247,9 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 		AuthHeader:            entry.AuthHeader,
 		AuthScheme:            entry.AuthScheme,
 		TimeoutSeconds:        entry.TimeoutSeconds,
+		Project:               project,
+		Location:              location,
+		CredentialsFile:       credentialsFile,
 		CapabilitiesOverride:  entry.Capabilities,
 		AllowMetadataEndpoint: entry.AllowMetadataEndpoint,
 	}, nil
@@ -299,8 +341,39 @@ func validateEntry(id string, p ProviderConfig) error {
 	if p.TimeoutSeconds < 0 || p.TimeoutSeconds > 300 {
 		return fmt.Errorf("providers.%s.timeout_seconds %d is out of range (0 keeps the default, else 1-300)", id, p.TimeoutSeconds)
 	}
+	if err := validateVertexFields(id, p); err != nil {
+		return err
+	}
 	if p.BaseURL != "" && providers.IsMetadataHost(providers.EndpointHost(p.BaseURL)) && !p.AllowMetadataEndpoint {
 		return fmt.Errorf("providers.%s.base_url points at a cloud metadata endpoint (%s) - refusing to send requests there (set allow_metadata_endpoint: true only if you intentionally run a model server there)", id, providers.EndpointHost(p.BaseURL))
+	}
+	return nil
+}
+
+// validateVertexFields checks Vertex AI cloud-identity fields. Project
+// may come from GOOGLE_CLOUD_PROJECT at resolve time so it is not
+// required here; location has no env fallback and is required. API keys
+// and OpenAI-transport knobs are rejected for vertex so a misconfigured
+// entry fails fast instead of being silently ignored.
+func validateVertexFields(id string, p ProviderConfig) error {
+	isVertex := p.Type == "vertex" || (p.Type == "" && id == "vertex")
+	if !isVertex {
+		if p.Project != "" || p.Location != "" || p.CredentialsFile != "" {
+			return fmt.Errorf("providers.%s.project/location/credentials_file are only supported for type \"vertex\"", id)
+		}
+		return nil
+	}
+	if strings.TrimSpace(p.Location) == "" {
+		return fmt.Errorf("providers.%s.location is required (e.g. us-central1)", id)
+	}
+	if p.APIKeyEnv != "" {
+		return fmt.Errorf("providers.%s uses Application Default Credentials, not API keys - remove api_key_env and configure ADC instead", id)
+	}
+	if p.AuthMode != "" || p.AuthHeader != "" || p.AuthScheme != "" {
+		return fmt.Errorf("providers.%s authenticates with Application Default Credentials - auth_mode/auth_header/auth_scheme do not apply to type \"vertex\"", id)
+	}
+	if p.APIPath != "" {
+		return fmt.Errorf("providers.%s.api_path does not apply to type \"vertex\" - the resource path is derived from project/location", id)
 	}
 	return nil
 }

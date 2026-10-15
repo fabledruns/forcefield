@@ -153,6 +153,20 @@ providers: {
 		]
 	}
 
+	vertex: #ProviderInfo & {
+		name:        "Google Vertex AI"
+		id:          "vertex"
+		type:        "vertex"
+		description: "Gemini models in your Google Cloud project via Vertex AI (Application Default Credentials)."
+		endpoint:    "https://us-central1-aiplatform.googleapis.com"
+		scope:       "cloud"
+		requires_api_key: false
+		models: [
+			{name: "Gemini 2.5 Flash", id: "gemini-2.5-flash"},
+			{name: "Gemini 2.5 Pro", id: "gemini-2.5-pro"},
+		]
+	}
+
 	xai: #ProviderInfo & {
 		name:        "xAI"
 		id:          "xai"

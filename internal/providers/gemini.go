@@ -320,6 +320,13 @@ func (g *GeminiProvider) generatePath() string {
 // buildPayload marshals the request body for either streaming or
 // non-streaming calls.
 func (g *GeminiProvider) buildPayload(stream bool, messages []Message, defs []tools.Definition) ([]byte, error) {
+	return buildGenAIContentPayload(g.reasoning, stream, messages, defs)
+}
+
+// buildGenAIContentPayload marshals a GenerateContent request body shared
+// by the Gemini (API-key) and Vertex AI (ADC) adapters. The wire format is
+// identical; only endpoints and credentials differ.
+func buildGenAIContentPayload(reasoning ReasoningConfig, stream bool, messages []Message, defs []tools.Definition) ([]byte, error) {
 	system, contents := buildGeminiContents(messages)
 
 	req := map[string]any{
@@ -336,8 +343,8 @@ func (g *GeminiProvider) buildPayload(stream bool, messages []Message, defs []to
 		// Keep responses to one candidate; agent loops consume exactly one.
 		genConfig["candidateCount"] = 1
 	}
-	if g.reasoning.Thinking != nil {
-		tc := g.reasoning.Thinking
+	if reasoning.Thinking != nil {
+		tc := reasoning.Thinking
 		// Budget-based thinking: thinkingBudget 0 disables, -1 dynamic, >0 enables.
 		// For Gemini, 0 means no thinking, positive budget enables.
 		if tc.Budget != nil {

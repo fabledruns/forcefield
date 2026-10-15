@@ -17,8 +17,8 @@ type Spec struct {
 	ID string
 	// Type is the wire protocol that serves this provider: one of the
 	// registry's factory types ("ollama", "openai-compatible",
-	// "anthropic", "gemini"). Service presets normalize to their
-	// protocol before construction.
+	// "openai-responses", "anthropic", "gemini", "vertex"). Service
+	// presets normalize to their protocol before construction.
 	Type string
 	// Label is the human-facing service name used in errors ("LM Studio").
 	Label string
@@ -61,6 +61,14 @@ type Spec struct {
 	// Only set this if you intentionally run a model server on such an
 	// address. Loopback and LAN addresses are unaffected and stay allowed.
 	AllowMetadataEndpoint bool
+	// Project is the Google Cloud project ID (Vertex AI).
+	Project string
+	// Location is the cloud region (Vertex AI location, e.g. us-central1).
+	Location string
+	// CredentialsFile optionally points at a service-account JSON key
+	// used only for this provider (Vertex AI). Empty follows the
+	// standard ADC chain instead.
+	CredentialsFile string
 }
 
 // DefaultChatPath is the standard OpenAI chat-completions path.
@@ -323,6 +331,9 @@ func newDefaultFactories() *FactoryRegistry {
 	})
 	r.MustRegister("gemini", func(spec Spec) (ModelProvider, error) {
 		return NewGeminiProvider(spec), nil
+	})
+	r.MustRegister("vertex", func(spec Spec) (ModelProvider, error) {
+		return NewVertexProvider(spec), nil
 	})
 	r.MustRegister("openai-responses", func(spec Spec) (ModelProvider, error) {
 		return NewOpenAIResponses(spec), nil

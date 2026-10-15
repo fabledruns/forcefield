@@ -215,6 +215,10 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 		report(vFail, "%s: value in %s contains invalid control characters (check for stray line breaks) and will not be sent", resolved.Label, name)
 		return
 	}
+	if resolved.Type == "vertex" {
+		doctorVertex(resolved, report)
+		return
+	}
 	base := strings.TrimRight(resolved.BaseURL, "/")
 
 	var auth func(req *http.Request)
@@ -346,6 +350,27 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 		}
 		report(vOK, "%s: API accepted the request (%d models visible)", resolved.Label, len(body.Models))
 	}
+}
+
+// doctorVertex checks Vertex AI configuration without billing a call:
+// there is no models-listing API in this integration, so it validates
+// project/location, describes which ADC source would be used, and leaves
+// live verification to the first model turn (whose errors name the fix).
+func doctorVertex(resolved config.ResolvedProvider, report func(verdict, string, ...any)) {
+	if resolved.Project == "" || resolved.Location == "" {
+		report(vFail, "%s: missing project or location - set providers.%s.project and providers.%s.location", resolved.Label, resolved.ID, resolved.ID)
+		return
+	}
+	report(vOK, "%s: project %s location %s (%s)", resolved.Label, resolved.Project, resolved.Location, strings.TrimRight(resolved.BaseURL, "/"))
+	if resolved.CredentialsFile != "" {
+		report(vOK, "%s: credentials file %s (value never printed)", resolved.Label, resolved.CredentialsFile)
+		return
+	}
+	if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
+		report(vOK, "%s: GOOGLE_APPLICATION_CREDENTIALS is set (value hidden) - its file supplies ADC", resolved.Label)
+		return
+	}
+	report(vWarn, "%s: no per-provider credentials file and GOOGLE_APPLICATION_CREDENTIALS is unset - ADC falls back to the gcloud well-known file or GCE metadata; run `gcloud auth application-default login` for local use", resolved.Label)
 }
 
 // probeJSON performs one authenticated-optional GET and decodes a JSON

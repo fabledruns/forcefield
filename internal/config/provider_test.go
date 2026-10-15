@@ -443,8 +443,20 @@ providers:
 		t.Fatalf("Load() error = %v", err)
 	}
 	resolved, failures := cfg.ResolveAll("")
-	if len(failures) != 0 {
-		t.Fatalf("failures = %v, want none for a valid config", failures)
+	// Vertex AI needs a project/location before it can resolve, so the
+	// unconfigured preset reports a setup failure instead of resolving.
+	// That is the designed ResolveAll path: pickers show the reason
+	// rather than hiding the provider.
+	vertexFailed := false
+	for _, f := range failures {
+		if f.ID == "vertex" {
+			vertexFailed = true
+			continue
+		}
+		t.Errorf("unexpected failure = %v", f)
+	}
+	if !vertexFailed {
+		t.Error("want the unconfigured vertex preset to fail with setup guidance")
 	}
 	if len(resolved) == 0 {
 		t.Fatal("ResolveAll returned nothing")

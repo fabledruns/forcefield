@@ -72,6 +72,9 @@ var (
 	providerAddAPIPath   string
 	providerAddTimeout   int
 	providerAddForce     bool
+	providerAddProject   string
+	providerAddLocation  string
+	providerAddCredsFile string
 )
 
 var providerAddCmd = &cobra.Command{
@@ -89,15 +92,15 @@ var providerAddCmd = &cobra.Command{
 			return fmt.Errorf("provider name %q is too long (max 64 characters)", name)
 		}
 		baseURL := strings.TrimSpace(providerAddBaseURL)
-		if baseURL == "" {
-			return fmt.Errorf("base URL is required (--base-url)")
-		}
 		typ := strings.TrimSpace(providerAddType)
 		if typ == "" {
 			typ = "openai-compatible"
 		}
 		if !providers.IsKnownType(typ) {
 			return fmt.Errorf("type %q is not supported (supported: %s)", typ, strings.Join(providers.KnownTypes(), ", "))
+		}
+		if baseURL == "" && typ != "vertex" {
+			return fmt.Errorf("base URL is required (--base-url)")
 		}
 
 		cfg, err := config.Load()
@@ -124,17 +127,20 @@ var providerAddCmd = &cobra.Command{
 		}
 
 		entry := config.ProviderConfig{
-			Type:           typ,
-			BaseURL:        baseURL,
-			APIKeyEnv:      strings.TrimSpace(providerAddAPIKeyEnv),
-			Model:          strings.TrimSpace(providerAddModel),
-			Headers:        nil,
-			Models:         append([]string(nil), providerAddModels...),
-			APIPath:        strings.TrimSpace(providerAddAPIPath),
-			AuthMode:       strings.ToLower(strings.TrimSpace(providerAddAuthMode)),
-			AuthHeader:     strings.TrimSpace(providerAddAuthHdr),
-			AuthScheme:     strings.TrimSpace(providerAddAuthSchm),
-			TimeoutSeconds: providerAddTimeout,
+			Type:            typ,
+			BaseURL:         baseURL,
+			APIKeyEnv:       strings.TrimSpace(providerAddAPIKeyEnv),
+			Model:           strings.TrimSpace(providerAddModel),
+			Headers:         nil,
+			Models:          append([]string(nil), providerAddModels...),
+			APIPath:         strings.TrimSpace(providerAddAPIPath),
+			AuthMode:        strings.ToLower(strings.TrimSpace(providerAddAuthMode)),
+			AuthHeader:      strings.TrimSpace(providerAddAuthHdr),
+			AuthScheme:      strings.TrimSpace(providerAddAuthSchm),
+			TimeoutSeconds:  providerAddTimeout,
+			Project:         strings.TrimSpace(providerAddProject),
+			Location:        strings.TrimSpace(providerAddLocation),
+			CredentialsFile: strings.TrimSpace(providerAddCredsFile),
 		}
 		// Validate by resolving and building the adapter spec without
 		// touching the network. ResolveProvider reads env/.env for the
@@ -155,6 +161,11 @@ var providerAddCmd = &cobra.Command{
 		cfg.Providers[name] = entry
 		if err := cfg.Save(); err != nil {
 			return fmt.Errorf("save provider %q: %w", name, err)
+		}
+		if typ == "vertex" {
+			fmt.Printf("Added provider %q (Vertex AI project %s location %s). Configure ADC (`gcloud auth application-default login` or GOOGLE_APPLICATION_CREDENTIALS), then run `ff provider test %s`.\n",
+				name, resolved.Project, resolved.Location, name)
+			return nil
 		}
 		fmt.Printf("Added provider %q (%s at %s). Set %s if it needs a key, then run `ff provider test %s`.\n",
 			name, typ, baseURL, displayKeyName(resolved), name)
@@ -210,6 +221,9 @@ var providerRemoveCmd = &cobra.Command{
 }
 
 func authModeDisplay(r config.ResolvedProvider) string {
+	if r.Type == "vertex" {
+		return "adc"
+	}
 	mode := strings.ToLower(strings.TrimSpace(r.AuthMode))
 	if mode == "" {
 		if r.APIKey != "" || r.AuthRequired || r.AuthEnvVar != "" {
@@ -278,6 +292,21 @@ func runProviderTest(cfg *config.Config, id string, withChat bool, timeoutOverri
 			name = "the API key variable"
 		}
 		return fmt.Errorf("value in %s contains invalid control characters (check for stray line breaks) and will not be sent", name)
+	}
+
+	// Vertex AI has no models-listing API in this integration: validate
+	// configuration and describe the ADC chain without billing a call.
+	// --chat stays unsupported for vertex (probeChat says so explicitly).
+	if resolved.Type == "vertex" {
+		fmt.Printf("  project: %s\n", redact.Scrub(resolved.Project))
+		fmt.Printf("  location: %s\n", redact.Scrub(resolved.Location))
+		if resolved.CredentialsFile != "" {
+			fmt.Printf("  credentials: file %s\n", redact.Scrub(resolved.CredentialsFile))
+		} else {
+			fmt.Printf("  credentials: Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS, gcloud well-known file, or GCE metadata)\n")
+		}
+		fmt.Printf("Connection test passed (configuration valid; no billing call made).\n")
+		return nil
 	}
 
 	if resolved.AuthRequired && !hasAuth {
@@ -503,6 +532,9 @@ func init() {
 	providerAddCmd.Flags().StringVar(&providerAddAuthSchm, "auth-scheme", "", "credential prefix override (default Bearer/raw)")
 	providerAddCmd.Flags().StringVar(&providerAddAPIPath, "api-path", "", "chat path override (default /chat/completions)")
 	providerAddCmd.Flags().IntVar(&providerAddTimeout, "timeout", 0, "response-header timeout in seconds (0 = default 120)")
+	providerAddCmd.Flags().StringVar(&providerAddProject, "project", "", "Google Cloud project ID (--type vertex)")
+	providerAddCmd.Flags().StringVar(&providerAddLocation, "location", "", "Vertex AI location, e.g. us-central1 (--type vertex)")
+	providerAddCmd.Flags().StringVar(&providerAddCredsFile, "credentials-file", "", "service-account JSON key for this provider only (--type vertex)")
 	providerAddCmd.Flags().BoolVar(&providerAddForce, "force", false, "overwrite an existing provider entry")
 	providerTestCmd.Flags().BoolVar(&providerTestChat, "chat", false, "also send one max_tokens=1 chat ping (may bill)")
 	providerTestCmd.Flags().IntVar(&providerTestTimeout, "timeout", 0, "probe timeout in seconds (0 = provider timeout or 10s)")

@@ -24,6 +24,7 @@ func isolateProviderHome(t *testing.T) string {
 	providerAddAuthMode, providerAddAuthHdr, providerAddAuthSchm = "", "", ""
 	providerAddAPIPath, providerAddModels = "", nil
 	providerAddTimeout, providerAddForce = 0, false
+	providerAddProject, providerAddLocation, providerAddCredsFile = "", "", ""
 	providerTestChat, providerTestTimeout = false, 0
 	return home
 }

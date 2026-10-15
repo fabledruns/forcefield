@@ -78,6 +78,9 @@ Each key defines one selectable provider. Every field is optional; omitted value
 | `auth_header` | Custom header name for `auth_mode: header` (e.g. `X-API-Key`). Must not be reserved. |
 | `auth_scheme` | Optional credential prefix override (default `Bearer` for bearer mode, raw key for header mode). Requires `bearer` or `header` mode. |
 | `timeout_seconds` | Optional response-header timeout in seconds (`0` keeps the 120s default, else 1-300). |
+| `project` | Google Cloud project ID (`type: vertex`; falls back to `GOOGLE_CLOUD_PROJECT`). |
+| `location` | Cloud region for `type: vertex` (e.g. `us-central1`); required, no env fallback. |
+| `credentials_file` | Service-account JSON key used only for this `type: vertex` provider; empty follows the ADC chain. |
 | `allow_metadata_endpoint` | Explicit opt-in to a cloud metadata-service URL as this provider's endpoint. Default `false` (refused). Only enable if you intentionally run a model server there; localhost and LAN addresses are unaffected. |
 | `capabilities` | Optional explicit flags (`streaming`, `tool_calling`, `reasoning`, `structured_output`, `vision`, `parallel_tool_calls`) for endpoints that do not implement every OpenAI feature. Omitted keeps adapter defaults. |
 
