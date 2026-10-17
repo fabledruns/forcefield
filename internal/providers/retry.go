@@ -64,10 +64,22 @@ type statusError struct {
 }
 
 func (e *statusError) Error() string {
-	msg := fmt.Sprintf("%s returned status %d for model %q: %s",
-		e.Provider, e.Status, e.Model, strings.TrimSpace(e.Body))
+	var msg string
+	if e.Status > 0 {
+		msg = fmt.Sprintf("%s returned status %d for model %q: %s",
+			e.Provider, e.Status, e.Model, strings.TrimSpace(e.Body))
+	} else {
+		// Bedrock-normalized SDK errors carry service codes, not an
+		// HTTP response; don't fabricate a "status 0" for them.
+		msg = fmt.Sprintf("%s request for model %q failed: %s",
+			e.Provider, e.Model, strings.TrimSpace(e.Body))
+	}
 	switch {
-	case e.NonRetryable:
+	case e.NonRetryable && e.Kind == ErrKindQuota:
+		// Quota/billing exhaustion is the one non-retryable state that
+		// deserves account-specific wording; other non-retryable kinds
+		// (auth, not-found, invalid request) already carry their own
+		// kind and hint and must not be mislabeled as quota.
 		msg += " (quota or billing limit reached; not retryable - check the provider account for this API key)"
 	case e.Retries > 0:
 		msg += fmt.Sprintf(" (rate limited; gave up after %d retries)", e.Retries)

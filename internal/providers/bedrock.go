@@ -151,15 +151,17 @@ func bedrockHTTPClient(timeoutSeconds int) *http.Client {
 	return clientForTimeout(timeoutSeconds)
 }
 
-// statusHint turns Bedrock failures into a concrete next step.
-func (b *BedrockProvider) statusHint(kind ErrorKind, code string) string {
+// statusHint turns Bedrock failures into a concrete next step. The
+// smithy error message already travels in the statusError body, so the
+// hints carry guidance only.
+func (b *BedrockProvider) statusHint(kind ErrorKind) string {
 	switch kind {
 	case ErrKindAuth:
 		return fmt.Sprintf("check AWS credentials (environment, shared profile, or IAM role) and that model access is granted for %q in region %q (Bedrock console → Model access)", b.spec.Model, b.spec.Region)
 	case ErrKindNotFound:
 		return fmt.Sprintf("model %q was not found in region %q - verify the model ID, inference profile, or ARN and that it is available there", b.spec.Model, b.spec.Region)
 	case ErrKindInvalidRequest:
-		return fmt.Sprintf("Bedrock rejected the request (%s) - the model may not support one of the requested features", code)
+		return "Bedrock rejected the request - the model may not support one of the requested features"
 	default:
 		return ""
 	}
@@ -255,7 +257,7 @@ func (b *BedrockProvider) normalizeBedrockError(err error, retries int) error {
 	case ErrKindAuth, ErrKindNotFound, ErrKindInvalidRequest, ErrKindCanceled:
 		se.NonRetryable = true
 	}
-	if hint := b.statusHint(kind, ""); hint != "" {
+	if hint := b.statusHint(kind); hint != "" {
 		se.Hint = hint
 	}
 	_ = retryable

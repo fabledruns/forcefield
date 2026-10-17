@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -493,5 +494,29 @@ func TestBedrockRedactsNothingSensitive(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "secret prompt") {
 		t.Errorf("error echoed prompt content: %q", err)
+	}
+}
+
+func TestBedrockErrorRenderingHasNoEmptyPlaceholders(t *testing.T) {
+	// SDK failures carry service codes, not HTTP responses. The shared
+	// statusError renderer must not fabricate "status 0", and the
+	// invalid-request hint must not render an empty "(...)" placeholder.
+	p := NewBedrockProvider(Spec{ID: "b", Type: "bedrock", Region: "us-east-1", Model: "m"})
+	err := p.normalizeBedrockError(&smithyAPIError{"ValidationException", "bad input", smithy.FaultClient}, 0)
+	if err == nil {
+		t.Fatal("normalizeBedrockError() = nil, want an error")
+	}
+	if strings.Contains(err.Error(), "status 0") {
+		t.Errorf("error = %q, want no fabricated HTTP status", err)
+	}
+	var se *statusError
+	if !errors.As(err, &se) {
+		t.Fatalf("error = %T, want *statusError", err)
+	}
+	if se.Hint == "" || strings.Contains(se.Hint, "()") || strings.Contains(se.Hint, "rejected the request (") {
+		t.Errorf("hint = %q, want guidance without an empty placeholder", se.Hint)
+	}
+	if !strings.Contains(se.Hint, "may not support") {
+		t.Errorf("hint = %q, want the feature-support guidance preserved", se.Hint)
 	}
 }

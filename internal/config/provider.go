@@ -327,6 +327,15 @@ type ProviderError struct {
 	Err error
 }
 
+// ValidateProviderEntry checks one providers entry's structure without
+// touching secrets or the network. It is the same validation Load
+// applies to every entry, exported so mutating commands (ff provider
+// add) can refuse to save an entry that would make the config
+// unloadable.
+func ValidateProviderEntry(id string, p ProviderConfig) error {
+	return validateEntry(id, p)
+}
+
 // validateEntry checks one providers entry's structure without touching
 // secrets.
 func validateEntry(id string, p ProviderConfig) error {

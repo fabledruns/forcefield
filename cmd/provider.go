@@ -148,6 +148,13 @@ var providerAddCmd = &cobra.Command{
 			Profile:         strings.TrimSpace(providerAddProfile),
 			APIVersion:      strings.TrimSpace(providerAddAPIVersion),
 		}
+		// Apply the same entry validation Load applies before anything
+		// is persisted, so an invalid field combination (e.g. api_path
+		// on azure) can never be saved into a config that then refuses
+		// to load.
+		if err := config.ValidateProviderEntry(name, entry); err != nil {
+			return fmt.Errorf("invalid provider %q: %w", name, err)
+		}
 		// Validate by resolving and building the adapter spec without
 		// touching the network. ResolveProvider reads env/.env for the
 		// key name but never requires the value to be set.
