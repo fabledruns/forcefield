@@ -65,8 +65,8 @@ func (r *Runtime) ProviderSummaries() []ProviderSummary {
 	if cfg == nil {
 		return nil
 	}
-	resolved, _ := cfg.ResolveAll(cfg.Model.Name)
-	out := make([]ProviderSummary, 0, len(resolved))
+	resolved, failures := cfg.ResolveAll(cfg.Model.Name)
+	out := make([]ProviderSummary, 0, len(resolved)+len(failures))
 	for _, p := range resolved {
 		caps := providers.CapabilitiesFor(p.Type)
 		scope := "local"
@@ -93,7 +93,53 @@ func (r *Runtime) ProviderSummaries() []ProviderSummary {
 			Available: available,
 		})
 	}
+	// Providers that could not resolve - unconfigured cloud presets
+	// whose per-user setup has not happened yet (Vertex project and
+	// location, Bedrock region, an Azure resource URL) plus entries
+	// with invalid configuration - stay visible with the reason instead
+	// of vanishing: the provider picker is a discovery surface, and the
+	// resolver's comment promises an explanation, not a hide. Failed
+	// rows come after every resolvable provider so existing ordering
+	// assumptions are untouched.
+	for _, f := range failures {
+		out = append(out, failureSummary(f))
+	}
 	return out
+}
+
+// failureSummary renders one ResolveAll failure as a picker row:
+// catalog display name for presets, concise guidance for setup
+// failures, a generic unavailable label for everything else.
+func failureSummary(f config.ProviderError) ProviderSummary {
+	name := f.ID
+	if preset, ok := providers.PresetByID(f.ID); ok {
+		name = preset.Name
+	}
+	detail := "unavailable · invalid providers entry - fix or remove providers." + f.ID
+	if config.IsSetupNeeded(f.Err) {
+		detail = "setup needed · " + setupGuidance(f.Err)
+	}
+	return ProviderSummary{ID: f.ID, Name: name, Detail: detail, Available: false}
+}
+
+// setupGuidance keeps the actionable half of a resolver setup message
+// ("provider "azure" has no base_url - set base_url under providers.azure")
+// and drops the parenthetical env hints ("(or AWS_REGION)") so the
+// guidance fits the picker's detail budget - "setup needed · set
+// providers.vertex.location" renders within the 52-cell detail line.
+// These messages embed only field and environment variable names,
+// never secret values, so the text is safe to show verbatim; the full
+// guidance stays available in the resolver error surfaced on switch.
+func setupGuidance(err error) string {
+	msg := err.Error()
+	clause := msg
+	if _, after, ok := strings.Cut(msg, " - "); ok && after != "" {
+		clause = after
+	}
+	if before, _, ok := strings.Cut(clause, " ("); ok && before != "" {
+		clause = before
+	}
+	return clause
 }
 
 func capsSuffix(caps providers.Capabilities) string {
@@ -110,6 +156,49 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// HasOwnModelList reports whether the provider's own configuration or
+// its catalog preset lists any models - the native list behind /model
+// for transports without discovery (Bedrock, Azure). It never touches
+// the network and treats unresolvable providers as list-less.
+func (r *Runtime) HasOwnModelList(providerID string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	cfg := r.cfg
+	r.mu.RUnlock()
+	if cfg == nil {
+		return false
+	}
+	resolved, err := cfg.ResolveProvider(providerID, "")
+	if err != nil {
+		return false
+	}
+	return len(resolved.Models) > 0
+}
+
+// HasDefaultModel reports whether the provider entry configures a
+// single default model (providers.<id>.model) - the one model a
+// no-discovery transport can still offer without a list. Companion to
+// HasOwnModelList, which covers lists. It never touches the network
+// and treats unresolvable providers as model-less.
+func (r *Runtime) HasDefaultModel(providerID string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	cfg := r.cfg
+	r.mu.RUnlock()
+	if cfg == nil {
+		return false
+	}
+	resolved, err := cfg.ResolveProvider(providerID, "")
+	if err != nil {
+		return false
+	}
+	return resolved.Model != ""
 }
 
 // SetModel switches the active model for the next request (in-memory only

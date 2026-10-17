@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -169,7 +170,7 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 		region = strings.TrimSpace(firstNonEmpty(entry.Region, os.Getenv("AWS_REGION"), os.Getenv("AWS_DEFAULT_REGION")))
 		profile = strings.TrimSpace(entry.Profile)
 		if region == "" {
-			return ResolvedProvider{}, fmt.Errorf("provider %q needs a region - set providers.%s.region (or AWS_REGION)", id, id)
+			return ResolvedProvider{}, &SetupNeededError{fmt.Errorf("provider %q needs a region - set providers.%s.region (or AWS_REGION)", id, id)}
 		}
 		if entry.APIKeyEnv != "" {
 			return ResolvedProvider{}, fmt.Errorf("provider %q uses the standard AWS credential chain, not API keys - remove providers.%s.api_key_env and configure AWS credentials instead (environment, shared profile, or IAM role)", id, id)
@@ -182,10 +183,10 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 		location = strings.TrimSpace(entry.Location)
 		credentialsFile = strings.TrimSpace(entry.CredentialsFile)
 		if project == "" {
-			return ResolvedProvider{}, fmt.Errorf("provider %q needs a Google Cloud project - set providers.%s.project (or GOOGLE_CLOUD_PROJECT)", id, id)
+			return ResolvedProvider{}, &SetupNeededError{fmt.Errorf("provider %q needs a Google Cloud project - set providers.%s.project (or GOOGLE_CLOUD_PROJECT)", id, id)}
 		}
 		if location == "" {
-			return ResolvedProvider{}, fmt.Errorf("provider %q needs a location - set providers.%s.location (e.g. us-central1)", id, id)
+			return ResolvedProvider{}, &SetupNeededError{fmt.Errorf("provider %q needs a location - set providers.%s.location (e.g. us-central1)", id, id)}
 		}
 		if entry.APIKeyEnv != "" {
 			return ResolvedProvider{}, fmt.Errorf("provider %q uses Application Default Credentials, not API keys - remove providers.%s.api_key_env and configure ADC instead (`gcloud auth application-default login` or GOOGLE_APPLICATION_CREDENTIALS)", id, id)
@@ -214,10 +215,10 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 		baseURL = "https://" + location + "-aiplatform.googleapis.com"
 	}
 	if baseURL == "" && protocol != "bedrock" {
-		return ResolvedProvider{}, fmt.Errorf(
+		return ResolvedProvider{}, &SetupNeededError{fmt.Errorf(
 			"provider %q has no base_url - set base_url under providers.%s (or model.endpoint)",
 			id, id,
-		)
+		)}
 	}
 	if baseURL != "" {
 		if err := validateBaseURL(id, baseURL); err != nil {
@@ -325,6 +326,26 @@ func (c *Config) ResolveAll(activeModel string) ([]ResolvedProvider, []ProviderE
 type ProviderError struct {
 	ID  string
 	Err error
+}
+
+// SetupNeededError marks a resolution failure caused by a missing
+// per-user identity or resource setting - Bedrock's region, Vertex's
+// project or location, an Azure resource URL - rather than by a
+// malformed providers entry. These fields cannot live in the shared
+// catalog preset, so the fix is always user configuration. Picker
+// surfaces show these as "setup needed" rows carrying the embedded
+// guidance; every other failure renders as generic unavailability so a
+// typo is never presented as pending setup.
+type SetupNeededError struct{ Err error }
+
+func (e *SetupNeededError) Error() string { return e.Err.Error() }
+func (e *SetupNeededError) Unwrap() error { return e.Err }
+
+// IsSetupNeeded reports whether err stems from a missing required
+// setup field during provider resolution.
+func IsSetupNeeded(err error) bool {
+	var se *SetupNeededError
+	return errors.As(err, &se)
 }
 
 // ValidateProviderEntry checks one providers entry's structure without

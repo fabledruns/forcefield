@@ -258,3 +258,130 @@ func TestProviderSummariesExposeCapabilitiesAndAvailability(t *testing.T) {
 		t.Error("lmstudio models empty; catalog defaults expected")
 	}
 }
+
+func findSummary(summaries []ProviderSummary, id string) ProviderSummary {
+	for _, s := range summaries {
+		if s.ID == id {
+			return s
+		}
+	}
+	return ProviderSummary{}
+}
+
+// Unconfigured cloud presets whose per-user setup has not happened must
+// stay visible in the picker with catalog display names and actionable
+// guidance, after every resolvable provider. Regression for the
+// provider-picker omission of Vertex AI, Bedrock, and Azure AI.
+func TestProviderSummariesIncludesSetupNeededPresets(t *testing.T) {
+	isolateRuntimeHome(t)
+	writeConfigFile(t,
+		"model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: ornith:9b\n")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_DEFAULT_REGION", "")
+
+	rt, err := New()
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	summaries := rt.ProviderSummaries()
+
+	// Existing resolved rows are unchanged: first row, and the
+	// key-missing availability treatment for cloud services.
+	if got := summaries[0]; got.ID != "ollama" || got.Name != "Ollama" || !got.Available {
+		t.Errorf("first row = %+v, want ollama first and available", got)
+	}
+	openai := findSummary(summaries, "openai")
+	if openai.ID == "" || openai.Available || !strings.Contains(openai.Detail, "api key missing") {
+		t.Errorf("openai row = %+v, want the unchanged unavailable key-missing row", openai)
+	}
+
+	want := map[string]struct{ name, detail string }{
+		"vertex":  {"Google Vertex AI", "setup needed · set providers.vertex.project"},
+		"bedrock": {"Amazon Bedrock", "setup needed · set providers.bedrock.region"},
+		"azure":   {"Azure AI", "setup needed · set base_url under providers.azure"},
+	}
+	index := map[string]int{}
+	for i, s := range summaries {
+		index[s.ID] = i
+	}
+	for id, w := range want {
+		row := findSummary(summaries, id)
+		if row.ID == "" {
+			t.Errorf("%s missing from summaries - hidden instead of shown", id)
+			continue
+		}
+		if row.Name != w.name {
+			t.Errorf("%s name = %q, want catalog display name %q", id, row.Name, w.name)
+		}
+		if !strings.Contains(row.Detail, w.detail) {
+			t.Errorf("%s detail = %q, want guidance %q", id, row.Detail, w.detail)
+		}
+		if row.Available {
+			t.Errorf("%s Available = true, want false (setup has not happened)", id)
+		}
+		if idx := index[id]; idx <= index["opencode-go"] {
+			t.Errorf("%s row at position %d, want after the last resolved provider (opencode-go at %d)", id, idx, index["opencode-go"])
+		}
+	}
+}
+
+// The location guidance is reachable through the preset plus the
+// project env fallback: a configured GOOGLE_CLOUD_PROJECT moves the
+// first vertex failure from project to location.
+func TestProviderSummariesSetupGuidanceCoversVertexLocation(t *testing.T) {
+	isolateRuntimeHome(t)
+	writeConfigFile(t,
+		"model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: ornith:9b\n")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "preview-proj")
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_DEFAULT_REGION", "")
+
+	rt, err := New()
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	row := findSummary(rt.ProviderSummaries(), "vertex")
+	if row.ID == "" {
+		t.Fatal("vertex missing from summaries")
+	}
+	if !strings.Contains(row.Detail, "set providers.vertex.location") {
+		t.Errorf("vertex detail = %q, want location guidance once the project resolves", row.Detail)
+	}
+}
+
+// Entries that fail resolution for reasons other than missing setup
+// fields must not be presented as pending setup: the generic
+// unavailable wording distinguishes them from the preset setup rows in
+// the same list.
+func TestProviderSummariesLabelsConfigurationErrorsAsUnavailable(t *testing.T) {
+	isolateRuntimeHome(t)
+	writeConfigFile(t,
+		"model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: ornith:9b\n\n"+
+			"providers:\n  vbad:\n    type: vertex\n    project: my-proj\n    location: us-central1\n    credentials_file: definitely-missing.json\n")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_DEFAULT_REGION", "")
+
+	rt, err := New()
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	summaries := rt.ProviderSummaries()
+
+	bad := findSummary(summaries, "vbad")
+	if bad.ID == "" {
+		t.Fatal("vbad missing from summaries")
+	}
+	if bad.Name != "vbad" {
+		t.Errorf("vbad name = %q, want the configured id (no catalog preset)", bad.Name)
+	}
+	if !strings.Contains(bad.Detail, "unavailable · invalid providers entry") || strings.Contains(bad.Detail, "setup needed") {
+		t.Errorf("vbad detail = %q, want generic unavailable wording, not setup guidance", bad.Detail)
+	}
+
+	vertex := findSummary(summaries, "vertex")
+	if vertex.ID == "" || !strings.Contains(vertex.Detail, "setup needed") {
+		t.Errorf("vertex row = %+v, want the setup-needed preset row in the same list", vertex)
+	}
+}
