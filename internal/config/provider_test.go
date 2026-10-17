@@ -443,11 +443,12 @@ providers:
 		t.Fatalf("Load() error = %v", err)
 	}
 	resolved, failures := cfg.ResolveAll("")
-	// Vertex AI needs a project/location and Bedrock needs a region
-	// before they can resolve, so the unconfigured presets report setup
-	// failures instead of resolving. That is the designed ResolveAll
-	// path: pickers show the reason rather than hiding the provider.
-	wantSetupFailures := map[string]bool{"vertex": false, "bedrock": false}
+	// Vertex AI needs a project/location, Bedrock needs a region, and
+	// Azure needs a resource base_url before they can resolve, so the
+	// unconfigured presets report setup failures instead of resolving.
+	// That is the designed ResolveAll path: pickers show the reason
+	// rather than hiding the provider.
+	wantSetupFailures := map[string]bool{"vertex": false, "bedrock": false, "azure": false}
 	for _, f := range failures {
 		if _, ok := wantSetupFailures[f.ID]; ok {
 			wantSetupFailures[f.ID] = true

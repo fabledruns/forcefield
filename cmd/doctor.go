@@ -176,8 +176,9 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 	}
 
 	// A required key that is absent turns every probe into a bare 401;
-	// say that once instead of probing.
-	if resolved.AuthRequired && resolved.APIKey == "" {
+	// say that once instead of probing. Azure validates without a live
+	// probe, so its branch below reports richer auth guidance instead.
+	if resolved.AuthRequired && resolved.APIKey == "" && resolved.Type != "azure" {
 		report(vWarn, "%s: skipping reachability probe while %s is unset", resolved.Label, resolved.AuthEnvVar)
 		return
 	}
@@ -225,6 +226,10 @@ func doctorProvider(cfg *config.Config, report func(verdict, string, ...any)) {
 	}
 	if resolved.Type == "bedrock" {
 		doctorBedrock(resolved, report)
+		return
+	}
+	if resolved.Type == "azure" {
+		doctorAzure(resolved, report)
 		return
 	}
 	base := strings.TrimRight(resolved.BaseURL, "/")
@@ -400,6 +405,37 @@ func doctorBedrock(resolved config.ResolvedProvider, report func(verdict, string
 		return
 	}
 	report(vWarn, "%s: no profile configured - credentials resolve via environment, shared config, SSO, or IAM role; grant model access in the Bedrock console", resolved.Label)
+}
+
+// doctorAzure checks Azure resource configuration without billing a
+// call: resource endpoint shape, api-version, and auth path. Deployment
+// existence needs a data-plane call that would consume quota, so
+// verification stops at configuration (the first model turn names a
+// missing deployment).
+func doctorAzure(resolved config.ResolvedProvider, report func(verdict, string, ...any)) {
+	endpoint := strings.TrimRight(resolved.BaseURL, "/")
+	if endpoint == "" {
+		report(vFail, "%s: missing base_url - set providers.%s.base_url to the resource endpoint (e.g. https://myres.openai.azure.com)", resolved.Label, resolved.ID)
+		return
+	}
+	host := providers.EndpointHost(resolved.BaseURL)
+	if !strings.HasSuffix(host, ".openai.azure.com") && !strings.HasSuffix(host, ".services.ai.azure.com") {
+		report(vWarn, "%s: endpoint host %s does not look like an Azure resource endpoint (expected *.openai.azure.com or *.services.ai.azure.com) - valid only behind a proxy or on a sovereign cloud", resolved.Label, host)
+	}
+	report(vOK, "%s: resource %s (api-version %s)", resolved.Label, endpoint, azureAPIVersionDisplay(resolved.APIVersion))
+	if strings.ToLower(strings.TrimSpace(resolved.AuthMode)) == "bearer" {
+		if resolved.APIKey == "" {
+			report(vWarn, "%s: Entra mode - %s is not set; requests will fail until a token is provided (`az account get-access-token --resource https://cognitiveservices.azure.com`)", resolved.Label, resolved.AuthEnvVar)
+			return
+		}
+		report(vOK, "%s: Entra bearer token via %s (value hidden)", resolved.Label, resolved.AuthEnvVar)
+		return
+	}
+	if resolved.APIKey == "" {
+		report(vWarn, "%s: %s is not set - provide it for api-key auth, or set auth_mode: bearer to use an Entra token instead", resolved.Label, resolved.AuthEnvVar)
+		return
+	}
+	report(vOK, "%s: API key from %s (value hidden, sent as the api-key header)", resolved.Label, resolved.APIKeySource)
 }
 
 // probeJSON performs one authenticated-optional GET and decodes a JSON

@@ -178,6 +178,21 @@ providers: {
 		models: []
 	}
 
+	// Azure has no catalog endpoint: base_url must name your resource
+	// (e.g. https://myres.openai.azure.com). Model names are deployment
+	// names, unique per resource, so no fallback models are listed.
+	azure: #ProviderInfo & {
+		name:        "Azure AI"
+		id:          "azure"
+		type:        "azure"
+		description: "Azure OpenAI / AI Foundry resources via the deployment-scoped Chat Completions API."
+		endpoint:    "https://YOUR-RESOURCE.openai.azure.com"
+		auth_env_var: "AZURE_OPENAI_API_KEY"
+		scope:       "cloud"
+		requires_api_key: true
+		models: []
+	}
+
 	xai: #ProviderInfo & {
 		name:        "xAI"
 		id:          "xai"

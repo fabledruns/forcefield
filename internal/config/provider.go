@@ -64,6 +64,9 @@ type ResolvedProvider struct {
 	Region string
 	// Profile selects an AWS shared-config profile (Bedrock).
 	Profile string
+	// APIVersion pins the Azure data-plane api-version query parameter
+	// (empty keeps the adapter's default).
+	APIVersion string
 	// AllowMetadataEndpoint explicitly opts in to a metadata-service URL.
 	AllowMetadataEndpoint bool
 	// CapabilitiesOverride optionally forces capability flags.
@@ -99,6 +102,7 @@ func (r ResolvedProvider) Spec(activeModel string) providers.Spec {
 		CredentialsFile:       r.CredentialsFile,
 		Region:                r.Region,
 		Profile:               r.Profile,
+		APIVersion:            r.APIVersion,
 		CapabilitiesOverride:  r.CapabilitiesOverride,
 		AllowMetadataEndpoint: r.AllowMetadataEndpoint,
 	}
@@ -273,6 +277,7 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 		CredentialsFile:       credentialsFile,
 		Region:                region,
 		Profile:               profile,
+		APIVersion:            strings.TrimSpace(entry.APIVersion),
 		CapabilitiesOverride:  entry.Capabilities,
 		AllowMetadataEndpoint: entry.AllowMetadataEndpoint,
 	}, nil
@@ -370,6 +375,9 @@ func validateEntry(id string, p ProviderConfig) error {
 	if err := validateBedrockFields(id, p); err != nil {
 		return err
 	}
+	if err := validateAzureFields(id, p); err != nil {
+		return err
+	}
 	if p.BaseURL != "" && providers.IsMetadataHost(providers.EndpointHost(p.BaseURL)) && !p.AllowMetadataEndpoint {
 		return fmt.Errorf("providers.%s.base_url points at a cloud metadata endpoint (%s) - refusing to send requests there (set allow_metadata_endpoint: true only if you intentionally run a model server there)", id, providers.EndpointHost(p.BaseURL))
 	}
@@ -424,6 +432,57 @@ func validateBedrockFields(id string, p ProviderConfig) error {
 	}
 	if p.APIPath != "" {
 		return fmt.Errorf("providers.%s.api_path does not apply to type \"bedrock\" - the Converse API paths are fixed", id)
+	}
+	return nil
+}
+
+// validateAzureFields checks Azure resource fields. The deployment name
+// is the configured model ID (no dedicated field) and the resource
+// endpoint must come from base_url. Key authentication uses Azure's
+// fixed api-key header, so the OpenAI-transport auth knobs are rejected
+// instead of being silently ignored; Entra tokens travel as
+// auth_mode: bearer from an env-var token.
+func validateAzureFields(id string, p ProviderConfig) error {
+	isAzure := p.Type == "azure" || (p.Type == "" && id == "azure")
+	if !isAzure {
+		if p.APIVersion != "" {
+			return fmt.Errorf("providers.%s.api_version is only supported for type \"azure\"", id)
+		}
+		return nil
+	}
+	if p.APIPath != "" {
+		return fmt.Errorf("providers.%s.api_path does not apply to type \"azure\" - the deployment path is derived from the model name", id)
+	}
+	if p.AuthHeader != "" || p.AuthScheme != "" {
+		return fmt.Errorf("providers.%s authenticates with Azure's fixed api-key header or an Entra bearer token - auth_header/auth_scheme do not apply to type \"azure\"", id)
+	}
+	switch strings.ToLower(strings.TrimSpace(p.AuthMode)) {
+	case "", "bearer", "none":
+	default:
+		return fmt.Errorf("providers.%s auth_mode %q is not supported for azure (omit it for api-key auth, or use \"bearer\" for a Microsoft Entra ID token from api_key_env)", id, p.AuthMode)
+	}
+	if err := validateAPIVersion(id, p.APIVersion); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateAPIVersion checks the Azure api-version charset without
+// touching the network. Empty keeps the adapter's default; the allowed
+// characters also prevent query-parameter injection.
+func validateAPIVersion(id, v string) error {
+	if v == "" {
+		return nil
+	}
+	if len(v) > 64 {
+		return fmt.Errorf("providers.%s.api_version %q is too long (max 64 characters)", id, v)
+	}
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			return fmt.Errorf("providers.%s.api_version %q may only contain letters, digits, \".\", \"_\", and \"-\"", id, v)
+		}
 	}
 	return nil
 }

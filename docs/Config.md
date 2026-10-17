@@ -67,7 +67,7 @@ Each key defines one selectable provider. Every field is optional; omitted value
 
 | Field         | Description                                                                    |
 | ------------- | ------------------------------------------------------------------------------ |
-| `type`        | Wire protocol (`ollama`, `openai-compatible`, `openai-responses`, `anthropic`, `gemini`) or a known service id (`openai`, `xai`, `nvidia`, `lmstudio`, `llama-cpp`, `opencode-zen`, `opencode-go`, ...). A custom id can alias a service to inherit its defaults. |
+| `type`        | Wire protocol (`ollama`, `openai-compatible`, `openai-responses`, `anthropic`, `gemini`, `vertex`, `bedrock`, `azure`) or a known service id (`openai`, `xai`, `nvidia`, `lmstudio`, `llama-cpp`, `opencode-zen`, `opencode-go`, ...). A custom id can alias a service to inherit its defaults. |
 | `base_url`    | API root. Overrides the service default. Required when the type has no default (e.g. a self-hosted OpenAI-compatible server). |
 | `api_key_env` | Environment variable (or `.env` file key) holding the API key. Defaults to the service's standard variable. |
 | `model`       | Optional default model recorded for this provider.                             |
@@ -83,6 +83,7 @@ Each key defines one selectable provider. Every field is optional; omitted value
 | `credentials_file` | Service-account JSON key used only for this `type: vertex` provider; empty follows the ADC chain. |
 | `region` | AWS region for `type: bedrock` (e.g. `us-east-1`); falls back to `AWS_REGION`/`AWS_DEFAULT_REGION`. |
 | `profile` | AWS shared-config profile for `type: bedrock`; empty follows the standard chain including `AWS_PROFILE`. |
+| `api_version` | Azure data-plane api-version for `type: azure` (e.g. `2024-06-01`); empty keeps the adapter's default. Letters, digits, `.`, `_`, `-` only. |
 | `allow_metadata_endpoint` | Explicit opt-in to a cloud metadata-service URL as this provider's endpoint. Default `false` (refused). Only enable if you intentionally run a model server there; localhost and LAN addresses are unaffected. |
 | `capabilities` | Optional explicit flags (`streaming`, `tool_calling`, `reasoning`, `structured_output`, `vision`, `parallel_tool_calls`) for endpoints that do not implement every OpenAI feature. Omitted keeps adapter defaults. |
 
@@ -96,7 +97,7 @@ Providers that can enumerate their models do so automatically (lazily, when a pi
 
 API keys never live in config.yaml - there is no field that could store them. Keys resolve per provider from:
 
-1. The process environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY`, `NVIDIA_API_KEY`, `OPENCODE_API_KEY`, ...)
+1. The process environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY`, `NVIDIA_API_KEY`, `AZURE_OPENAI_API_KEY`, `OPENCODE_API_KEY`, ...)
 2. `.env` in the current project directory
 3. `~/.forcefield/.env`
 

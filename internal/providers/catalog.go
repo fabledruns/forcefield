@@ -151,6 +151,19 @@ var Catalog = []Preset{
 		// remains selectable.
 	},
 	{
+		ID:          "azure",
+		Name:        "Azure AI",
+		Description: "Azure OpenAI / AI Foundry resources via the deployment-scoped Chat Completions API.",
+		Type:        "azure",
+		BaseURL:     "",
+		AuthEnvVar:  "AZURE_OPENAI_API_KEY",
+		Auth:        AuthRequired,
+		Scope:       ScopeCloud,
+		// No fallback models: model names are deployment names, unique
+		// per resource. Configure providers.<id>.models with your
+		// deployment names; the active model stays selectable.
+	},
+	{
 		ID:          "xai",
 		Name:        "xAI",
 		Description: "xAI's Grok models.",

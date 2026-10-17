@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"forcefield/internal/tools"
@@ -35,6 +36,11 @@ type OpenAICompatible struct {
 	// services that work without one (e.g. LM Studio), where a 401 means
 	// something else went wrong.
 	noKeyHint string
+
+	// hintFor optionally replaces the generic status hints with ones
+	// specific to a protocol-identical deployment-scoped service (Azure).
+	// Nil keeps the built-in hints; nothing else observes the difference.
+	hintFor func(status int, body string) string
 
 	reasoning ReasoningConfig
 }
@@ -183,8 +189,12 @@ func (o *OpenAICompatible) GetReasoning() ReasoningConfig {
 	return deep
 }
 
-// statusHint turns specific HTTP statuses into a concrete next step.
-func (o *OpenAICompatible) statusHint(status int, _ string) string {
+// statusHint turns specific HTTP statuses into a concrete next step. An
+// adapter-provided hintFor takes precedence when set (Azure).
+func (o *OpenAICompatible) statusHint(status int, body string) string {
+	if o.hintFor != nil {
+		return o.hintFor(status, body)
+	}
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		if o.spec.APIKey == "" {
@@ -424,7 +434,14 @@ func (o *OpenAICompatible) do(ctx context.Context, method, path, accept string, 
 		if body != nil {
 			reader = bytes.NewReader(body)
 		}
-		return o.newRequest(ctx, method, o.spec.BaseURL+path, accept, reader)
+		u := o.spec.BaseURL + path
+		// Versioned data-plane APIs (Azure) pin the api-version on
+		// every request; the charset is validated at spec time so no
+		// extra query parameters can be smuggled in.
+		if v := o.spec.APIVersion; v != "" {
+			u += "?api-version=" + url.QueryEscape(v)
+		}
+		return o.newRequest(ctx, method, u, accept, reader)
 	}
 
 	resp, err := doWithRetry(ctx, o.client, o.retry, o.displayName(), o.spec.Model, buildRequest, o.wrapTransport)

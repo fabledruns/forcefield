@@ -56,5 +56,13 @@ providers:
     models:
       - example-model-id
 
+  azure-example:
+    type: azure
+    base_url: https://myres.openai.azure.com
+    api_key_env: AZURE_OPENAI_API_KEY
+    api_version: 2024-06-01
+    models:
+      - gpt-4o-deployment
+
 agent:
   name: default

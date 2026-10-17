@@ -126,6 +126,13 @@ func ModelReasoningCapabilities(providerID, modelID string) ReasoningCapabilitie
 		// no reasoning capability is advertised until per-model support
 		// is verified.
 		return ReasoningCapabilities{}
+	case "azure":
+		// Azure deployments are user-named, so no per-model reasoning
+		// contract can be inferred from the deployment name. The
+		// adapter sends no reasoning fields by default (sending
+		// reasoning_effort to a model that rejects it fails the
+		// request); capabilities.reasoning opts in explicitly.
+		return ReasoningCapabilities{}
 	case "nvidia":
 		// NVIDIA model-specific capabilities must be explicit and verifiable.
 		// Do not use provider-wide heuristics. Unknown models remain unsupported.

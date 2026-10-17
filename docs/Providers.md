@@ -241,6 +241,28 @@ providers:
       - anthropic.claude-sonnet-4-5-20250929-v1:0
 ```
 
+### Azure AI
+
+Native Azure OpenAI / AI Foundry support (`type: azure`) speaks the deployment-scoped Chat Completions API — the same OpenAI wire protocol, with three Azure-owned differences the adapter bakes in:
+
+- URL: `POST {base_url}/openai/deployments/{deployment}/chat/completions?api-version={ver}` where `base_url` is the resource endpoint (e.g. `https://myres.openai.azure.com`) and the deployment name **is** the configured model ID. Because deployment names are unique per resource, the catalog ships no fallback models; set `providers.<id>.models` to your deployment names.
+- Auth: an API key travels in Azure's fixed `api-key` header (`api_key_env`, the default), while Microsoft Entra ID tokens travel as `auth_mode: bearer` with `api_key_env` naming the variable that holds a token (e.g. from `az account get-access-token --resource https://cognitiveservices.azure.com`; scope `https://cognitiveservices.azure.com/.default`). `auth_header`/`auth_scheme`/`api_path` are rejected so the fixed header and derived path cannot be quietly overridden. Entra tokens are used as provided — refresh them outside Forcefield (the token lifetime is about an hour).
+- Versioning: every data-plane call pins `api-version` (`api_version`, default `2024-06-01`). The charset is validated so no extra query parameters can be smuggled in.
+- Mapping: payloads, SSE streaming, tool-call reassembly, usage, retries, redaction, and redirects are the shared OpenAI transport's; Azure-only extras (`prompt_filter_results` chunks, `content_filter` finish reasons) parse cleanly. `401/403` hints distinguish key auth from Entra scope/role problems; `404` names the deployment-not-found semantics; `400` distinguishes content-filter blocks from api-version mismatches; `429` points at deployment quota.
+- The newer OpenAI-style v1 API (`{base_url}/openai/v1/chat/completions` with the deployment in the body's `model` field) needs no adapter: configure a plain `openai-compatible` entry with that base URL.
+
+```yaml
+providers:
+  azure:
+    type: azure
+    base_url: https://myres.openai.azure.com
+    api_key_env: AZURE_OPENAI_API_KEY
+    # api_version: 2024-06-01   # optional; this is the default
+    models:
+      # Deployment names from Azure portal → Deployments, e.g.:
+      - gpt-4o-deploy
+```
+
 ### Anthropic
 
 Native Messages API client: `x-api-key` + `anthropic-version` headers, top-level `system` field, `tool_use`/`tool_result` content blocks with consecutive results merged into one user turn, `input_json_delta` fragment accumulation, `message_start`/`message_delta` usage parsing, and `stop_reason` mapping (`end_turn`→`stop`, `tool_use`→`tool_calls`, `max_tokens`→`length`).
@@ -266,7 +288,7 @@ Adding a service whose API speaks a supported protocol means adding one catalog 
 ## Factory Registry
 
 ```go
-registry := providers.DefaultFactories() // ollama, openai-compatible, openai-responses, anthropic, gemini, opencode-zen, opencode-go
+registry := providers.DefaultFactories() // ollama, openai-compatible, openai-responses, anthropic, gemini, vertex, bedrock, azure, opencode-zen, opencode-go
 provider, err := registry.Create(providers.Spec{Type: "openai-compatible", BaseURL: ..., Model: ..., APIKey: ...})
 ```
 

@@ -60,23 +60,24 @@ var providerListCmd = &cobra.Command{
 }
 
 var (
-	providerAddName      string
-	providerAddType      string
-	providerAddBaseURL   string
-	providerAddModel     string
-	providerAddModels    []string
-	providerAddAPIKeyEnv string
-	providerAddAuthMode  string
-	providerAddAuthHdr   string
-	providerAddAuthSchm  string
-	providerAddAPIPath   string
-	providerAddTimeout   int
-	providerAddForce     bool
-	providerAddProject   string
-	providerAddLocation  string
-	providerAddCredsFile string
-	providerAddRegion    string
-	providerAddProfile   string
+	providerAddName       string
+	providerAddType       string
+	providerAddBaseURL    string
+	providerAddModel      string
+	providerAddModels     []string
+	providerAddAPIKeyEnv  string
+	providerAddAuthMode   string
+	providerAddAuthHdr    string
+	providerAddAuthSchm   string
+	providerAddAPIPath    string
+	providerAddTimeout    int
+	providerAddForce      bool
+	providerAddProject    string
+	providerAddLocation   string
+	providerAddCredsFile  string
+	providerAddRegion     string
+	providerAddProfile    string
+	providerAddAPIVersion string
 )
 
 var providerAddCmd = &cobra.Command{
@@ -145,6 +146,7 @@ var providerAddCmd = &cobra.Command{
 			CredentialsFile: strings.TrimSpace(providerAddCredsFile),
 			Region:          strings.TrimSpace(providerAddRegion),
 			Profile:         strings.TrimSpace(providerAddProfile),
+			APIVersion:      strings.TrimSpace(providerAddAPIVersion),
 		}
 		// Validate by resolving and building the adapter spec without
 		// touching the network. ResolveProvider reads env/.env for the
@@ -174,6 +176,11 @@ var providerAddCmd = &cobra.Command{
 		if typ == "bedrock" {
 			fmt.Printf("Added provider %q (Bedrock region %s). Configure AWS credentials (environment, shared profile, or IAM role) and grant model access, then run `ff provider test %s`.\n",
 				name, resolved.Region, name)
+			return nil
+		}
+		if typ == "azure" {
+			fmt.Printf("Added provider %q (Azure resource %s, api-version %s). Model IDs are deployment names; set %s, then run `ff provider test %s`.\n",
+				name, baseURL, azureAPIVersionDisplay(resolved.APIVersion), displayKeyName(resolved), name)
 			return nil
 		}
 		fmt.Printf("Added provider %q (%s at %s). Set %s if it needs a key, then run `ff provider test %s`.\n",
@@ -236,6 +243,12 @@ func authModeDisplay(r config.ResolvedProvider) string {
 	if r.Type == "bedrock" {
 		return "aws-chain"
 	}
+	if r.Type == "azure" {
+		if strings.ToLower(strings.TrimSpace(r.AuthMode)) == "bearer" {
+			return "entra"
+		}
+		return "api-key"
+	}
 	mode := strings.ToLower(strings.TrimSpace(r.AuthMode))
 	if mode == "" {
 		if r.APIKey != "" || r.AuthRequired || r.AuthEnvVar != "" {
@@ -254,6 +267,15 @@ func displayKeyName(r config.ResolvedProvider) string {
 		return r.AuthEnvVar
 	}
 	return "the API key variable"
+}
+
+// azureAPIVersionDisplay renders the configured api-version, naming the
+// adapter default when unset.
+func azureAPIVersionDisplay(v string) string {
+	if v = strings.TrimSpace(v); v != "" {
+		return v
+	}
+	return "2024-06-01 (adapter default)"
 }
 
 // runProviderTest validates configuration, prints redacted diagnostics,
@@ -336,6 +358,31 @@ func runProviderTest(cfg *config.Config, id string, withChat bool, timeoutOverri
 		}
 		if len(resolved.Models) == 0 {
 			fmt.Printf("  warning: no models configured under providers.%s.models - set model IDs for this region/account\n", id)
+		}
+		fmt.Printf("Connection test passed (configuration valid; no billing call made).\n")
+		return nil
+	}
+	// Azure likewise has no models-listing probe here: deployments are
+	// user-named and enumerating them would need separate data-plane
+	// permissions. Validate configuration and describe the auth path
+	// without billing a call; the first model turn names any
+	// deployment-not-found issue.
+	if resolved.Type == "azure" {
+		fmt.Printf("  api-version: %s\n", redact.Scrub(azureAPIVersionDisplay(resolved.APIVersion)))
+		if strings.ToLower(strings.TrimSpace(resolved.AuthMode)) == "bearer" {
+			if hasAuth {
+				fmt.Printf("  credentials: Entra bearer token from %s (value hidden; scope https://cognitiveservices.azure.com/.default)\n", resolved.AuthEnvVar)
+			} else {
+				fmt.Printf("  warning: Entra mode - %s is not set; run `az account get-access-token --resource https://cognitiveservices.azure.com` and store the token there\n", resolved.AuthEnvVar)
+			}
+		} else if !hasAuth {
+			fmt.Printf("  warning: %s is not set - Azure authenticates keys via the api-key header, or use auth_mode: bearer with an Entra token\n", resolved.AuthEnvVar)
+		}
+		if spec.Model != "" {
+			fmt.Printf("  deployment: %s\n", redact.Scrub(spec.Model))
+		}
+		if len(resolved.Models) == 0 {
+			fmt.Printf("  warning: no models configured under providers.%s.models - list your deployment names for the picker\n", id)
 		}
 		fmt.Printf("Connection test passed (configuration valid; no billing call made).\n")
 		return nil
@@ -569,6 +616,7 @@ func init() {
 	providerAddCmd.Flags().StringVar(&providerAddCredsFile, "credentials-file", "", "service-account JSON key for this provider only (--type vertex)")
 	providerAddCmd.Flags().StringVar(&providerAddRegion, "region", "", "AWS region, e.g. us-east-1 (--type bedrock)")
 	providerAddCmd.Flags().StringVar(&providerAddProfile, "profile", "", "AWS shared-config profile (--type bedrock)")
+	providerAddCmd.Flags().StringVar(&providerAddAPIVersion, "api-version", "", "Azure data-plane api-version, e.g. 2024-06-01 (--type azure)")
 	providerAddCmd.Flags().BoolVar(&providerAddForce, "force", false, "overwrite an existing provider entry")
 	providerTestCmd.Flags().BoolVar(&providerTestChat, "chat", false, "also send one max_tokens=1 chat ping (may bill)")
 	providerTestCmd.Flags().IntVar(&providerTestTimeout, "timeout", 0, "probe timeout in seconds (0 = provider timeout or 10s)")

@@ -17,8 +17,9 @@ type Spec struct {
 	ID string
 	// Type is the wire protocol that serves this provider: one of the
 	// registry's factory types ("ollama", "openai-compatible",
-	// "openai-responses", "anthropic", "gemini", "vertex", "bedrock").
-	// Service presets normalize to their protocol before construction.
+	// "openai-responses", "anthropic", "gemini", "vertex", "bedrock",
+	// "azure"). Service presets normalize to their protocol before
+	// construction.
 	Type string
 	// Label is the human-facing service name used in errors ("LM Studio").
 	Label string
@@ -74,6 +75,11 @@ type Spec struct {
 	// used only for this provider (Vertex AI). Empty follows the
 	// standard ADC chain instead.
 	CredentialsFile string
+	// APIVersion pins the data-plane api-version query parameter for
+	// services that version their REST surface this way (Azure, e.g.
+	// "2024-06-01"). Empty lets the adapter pick its documented default.
+	// Only the azure type uses it; other types reject it at config time.
+	APIVersion string
 }
 
 // DefaultChatPath is the standard OpenAI chat-completions path.
@@ -146,6 +152,9 @@ func (s Spec) Validate() error {
 	if err := validateChatPath(s.ID, s.ChatPath); err != nil {
 		return err
 	}
+	if err := validateAPIVersion(s.ID, s.APIVersion); err != nil {
+		return err
+	}
 	mode := normalizeAuthMode(s.AuthMode)
 	switch mode {
 	case "", "bearer", "none", "header":
@@ -212,6 +221,26 @@ func validateChatPath(id, p string) error {
 	for _, seg := range strings.Split(p, "/") {
 		if seg == ".." {
 			return fmt.Errorf("provider %q api_path %q must not contain \"..\"", id, p)
+		}
+	}
+	return nil
+}
+
+// validateAPIVersion checks an optional data-plane api-version (Azure).
+// The charset doubles as query-injection prevention: a version
+// containing "&" or "=" could smuggle extra parameters onto the request.
+func validateAPIVersion(id, v string) error {
+	if v == "" {
+		return nil
+	}
+	if len(v) > 64 {
+		return fmt.Errorf("provider %q api_version %q is too long (max 64 characters)", id, v)
+	}
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			return fmt.Errorf("provider %q api_version %q may only contain letters, digits, \".\", \"_\", and \"-\"", id, v)
 		}
 	}
 	return nil
@@ -357,6 +386,9 @@ func newDefaultFactories() *FactoryRegistry {
 	})
 	r.MustRegister("bedrock", func(spec Spec) (ModelProvider, error) {
 		return NewBedrockProvider(spec), nil
+	})
+	r.MustRegister("azure", func(spec Spec) (ModelProvider, error) {
+		return NewAzureProvider(spec), nil
 	})
 	r.MustRegister("openai-responses", func(spec Spec) (ModelProvider, error) {
 		return NewOpenAIResponses(spec), nil

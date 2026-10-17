@@ -84,6 +84,10 @@ type ProviderConfig struct {
 	// Profile selects an AWS shared-config profile (Bedrock). Empty
 	// follows the standard chain, including AWS_PROFILE.
 	Profile string `yaml:"profile,omitempty"`
+	// APIVersion pins the Azure data-plane api-version query parameter
+	// (type azure only, e.g. "2024-06-01"). Empty keeps the adapter's
+	// documented default.
+	APIVersion string `yaml:"api_version,omitempty"`
 	// AllowMetadataEndpoint explicitly opts in to using a cloud
 	// instance-metadata URL as this provider's endpoint. Default false.
 	// Only enable if you intentionally run a model server on such an
