@@ -25,8 +25,10 @@ const (
 	// maxFileBytes bounds how much of a single file is scanned. Larger
 	// files are skipped with a note, not read partially and silently.
 	maxFileBytes = 512 << 10 // 512 KiB
-	// maxLineBytes caps a single reported line so a minified giant line
-	// cannot flood the context.
+	// maxLineBytes is the elision budget for a single reported line, so
+	// a minified giant line cannot flood the context. Lines within it
+	// are reported verbatim; longer lines keep the match plus a bounded
+	// margin (see elideLine).
 	maxLineBytes = 2000
 	// sniffBytes bounds the binary-detection read at the head of each
 	// visited file. A NUL byte inside means binary: skipped with a note.
@@ -217,6 +219,32 @@ func (s SearchFiles) Execute(ctx context.Context, args map[string]any) (tools.Re
 		}
 		return strings.Contains(line, needle)
 	}
+	// matchOffset is the 1-based byte column of the first match, so a
+	// long line can be elided around the match instead of topped off.
+	// It mirrors matchLine's own case folding; for a regex match with
+	// no column of its own, the head of the match is the offset. The
+	// case-insensitive branch locates in the original bytes (see
+	// foldedIndex), because a folded copy can change byte length and
+	// drift the window away from the match it must keep.
+	matchOffset := func(line string) (int, int) {
+		if useRegex {
+			loc := re.FindStringIndex(line)
+			if loc == nil {
+				return 1, 0
+			}
+			return loc[0] + 1, loc[1] - loc[0]
+		}
+		if caseInsensitive {
+			if off, span := foldedIndex(line, needle); off >= 0 {
+				return off + 1, span
+			}
+			return 1, 0
+		}
+		if i := strings.Index(line, needle); i >= 0 {
+			return i + 1, len(needle)
+		}
+		return 1, 0
+	}
 
 	scanFile := func(abs string, rel string) error {
 		if ctx.Err() != nil {
@@ -263,9 +291,11 @@ func (s SearchFiles) Execute(ctx context.Context, args map[string]any) (tools.Re
 			lineNo++
 			text := strings.TrimRight(raw, "\r\n")
 			if matchLine(text) {
-				if len(text) > maxLineBytes {
-					text = text[:maxLineBytes] + "…[line truncated]"
-				}
+				// Elide around the match so the reported line keeps
+				// its symbol even when the line is enormous. The match
+				// is only located when the line is long enough to
+				// need eliding, so short lines are never rescanned.
+				text = elideMatch(text, matchOffset, maxLineBytes)
 				matches = append(matches, match{path: rel, line: lineNo, text: text})
 				if len(matches) >= matchCap {
 					truncated = true

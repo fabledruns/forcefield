@@ -4,6 +4,7 @@ package search
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -330,7 +331,11 @@ func toFloat64(v any) (float64, bool) {
 // map to constants. Paths always travel behind "--".
 func buildRgArgv(pattern, include string, useRegex, caseInsensitive, hidden bool) []string {
 	argv := []string{
-		"--vimgrep",
+		// --json reports every submatch with exact byte offsets, so
+		// the elision path knows the match end instead of guessing it
+		// from the pattern. One event per matching line, one row per
+		// submatch below.
+		"--json",
 		"--color", "never",
 		"--path-separator", "/",
 		// Never follow symlinks: the workspace boundary is enforced
@@ -377,49 +382,97 @@ func rgEnv() []string {
 	return out
 }
 
-// rgMatch is one parsed --vimgrep line: path:line:column:text.
+// rgMatch is one match row: path:line:column:text, plus the match's
+// exact byte length within text so the elider knows the match span.
 type rgMatch struct {
-	path string
-	line int
-	col  int
-	text string
+	path     string
+	line     int
+	col      int
+	matchLen int
+	text     string
 }
 
-// parseVimgrepLine parses one rg --vimgrep output line. Binary-match
-// notices and other non-conforming lines report ok=false and are
-// dropped by the caller.
-func parseVimgrepLine(raw string) (m rgMatch, ok bool) {
-	line := strings.TrimRight(raw, "\r\n")
-	first := strings.IndexByte(line, ':')
-	if first <= 0 {
-		return m, false
+// rgJSONEvent mirrors the one `rg --json` event the tool consumes.
+// Match events carry the line text (with its trailing newline as
+// lines.text; as base64 in lines.bytes when the content is not valid
+// UTF-8) and the byte offsets of every submatch within that line;
+// begin, end, and summary events are ignored.
+type rgJSONEvent struct {
+	Type string `json:"type"`
+	Data *struct {
+		Path struct {
+			Text  string `json:"text"`
+			Bytes []byte `json:"bytes"`
+		} `json:"path"`
+		LineNumber int `json:"line_number"`
+		Lines      struct {
+			Text  string `json:"text"`
+			Bytes []byte `json:"bytes"`
+		} `json:"lines"`
+		Submatches []struct {
+			Start int `json:"start"`
+			End   int `json:"end"`
+		} `json:"submatches"`
+	} `json:"data"`
+}
+
+// parseRgJSONLine converts one `rg --json` line into one row per
+// submatch, each carrying its exact match span. Non-match events and
+// malformed lines report nothing, like --vimgrep's unparsable lines
+// did.
+//
+// Submatch offsets are 0-based byte offsets within the \n-stripped
+// line content, and they include a CRLF line's trailing \r, so both
+// the span check and the reported column stay in that content. When
+// the line content is not valid UTF-8, rg omits lines.text and sends
+// lines.bytes instead: the base64 encoding of the full line, line
+// terminator included. The display text keeps vimgrep parity by
+// trimming exactly one trailing \r with TrimSuffix (contrast the
+// built-in walker's TrimRight, which strips every trailing \r or \n);
+// spans, though, are still validated against the un-\r-trimmed
+// content, so a match may legitimately span the trailing carriage
+// return. A submatch reaching past the content is dropped rather than
+// distorted.
+func parseRgJSONLine(raw string) []rgMatch {
+	var ev rgJSONEvent
+	if err := json.Unmarshal([]byte(raw), &ev); err != nil || ev.Type != "match" || ev.Data == nil {
+		return nil
 	}
-	rest := line[first+1:]
-	second := strings.IndexByte(rest, ':')
-	if second <= 0 {
-		return m, false
+	path := ev.Data.Path.Text
+	if path == "" && ev.Data.Path.Bytes != nil {
+		path = string(ev.Data.Path.Bytes)
 	}
-	third := strings.IndexByte(rest[second+1:], ':')
-	if third <= 0 {
-		return m, false
+	content := ""
+	if ev.Data.Lines.Text != "" {
+		content = strings.TrimSuffix(ev.Data.Lines.Text, "\n")
+	} else if ev.Data.Lines.Bytes != nil {
+		content = strings.TrimSuffix(string(ev.Data.Lines.Bytes), "\n")
 	}
-	var lineNo, colNo int
-	if _, err := fmt.Sscanf(rest[:second], "%d", &lineNo); err != nil || lineNo < 1 {
-		return m, false
+	// Display text (vimgrep parity): a single trailing \r can go,
+	// because no submatch is reported inside the trimmed terminator
+	// beyond it; the spans below stay in content space.
+	text := strings.TrimSuffix(content, "\r")
+	if path == "" || ev.Data.LineNumber < 1 {
+		return nil
 	}
-	if _, err := fmt.Sscanf(rest[second+1:second+1+third], "%d", &colNo); err != nil || colNo < 1 {
-		return m, false
+	rows := make([]rgMatch, 0, len(ev.Data.Submatches))
+	for _, sm := range ev.Data.Submatches {
+		// Validate against content, not text: a submatch covering the
+		// trailing \r of a CRLF line is a real byte of the line and
+		// must survive (the old check against the \r-trimmed text
+		// dropped it and its whole row).
+		if sm.Start < 0 || sm.End > len(content) || sm.End < sm.Start {
+			continue
+		}
+		rows = append(rows, rgMatch{
+			path:     path,
+			line:     ev.Data.LineNumber,
+			col:      sm.Start + 1,
+			matchLen: sm.End - sm.Start,
+			text:     text,
+		})
 	}
-	m = rgMatch{
-		path: line[:first],
-		line: lineNo,
-		col:  colNo,
-		text: rest[second+1+third+1:],
-	}
-	if m.path == "" {
-		return m, false
-	}
-	return m, true
+	return rows
 }
 
 // runRg executes the fixed rg argv under root and formats bounded,
@@ -508,11 +561,7 @@ func (s SearchCode) runRg(ctx context.Context, params searchCodeParams, root, re
 	var matches []rgMatch
 	if out != "" {
 		for _, raw := range strings.Split(out, "\n") {
-			m, ok := parseVimgrepLine(raw)
-			if !ok {
-				continue
-			}
-			matches = append(matches, m)
+			matches = append(matches, parseRgJSONLine(raw)...)
 		}
 	}
 
@@ -543,10 +592,12 @@ func (s SearchCode) runRg(ctx context.Context, params searchCodeParams, root, re
 
 	var b strings.Builder
 	for _, m := range kept {
-		text := m.text
-		if len(text) > maxLineBytes {
-			text = text[:maxLineBytes] + "…[line truncated]"
-		}
+		// A long line is elided around the match rather than topped
+		// off: rg reported the exact span, so the match is inside the
+		// emitted text and the reported column still locates it
+		// exactly. A match bigger than the budget keeps its head and
+		// marks the remainder; the column still points at the match.
+		text := elideLine(m.text, m.col, m.matchLen, maxLineBytes)
 		fmt.Fprintf(&b, "%s:%d:%d: %s\n", m.path, m.line, m.col, text)
 	}
 	content := strings.TrimRight(b.String(), "\n")
