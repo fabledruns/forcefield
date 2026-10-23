@@ -369,7 +369,9 @@ func (r *Runtime) SetAgent(name string) error {
 
 	// Build new filtered manager and agent before mutating to ensure
 	// tool set is valid. Missing mcp__* names are omitted (MCPWarnings);
-	// unknown natives still fail strictly.
+	// unknown natives still fail strictly. Orchestration-enabled agents
+	// that opted into tools gain delegate exactly as at construction.
+	def.Tools = withDelegateTool(r.orch, def.Tools)
 	agentTools, _ := resolveAgentDefinitionTools(full, def)
 	filtered, err := full.Filtered(agentTools)
 	if err != nil {

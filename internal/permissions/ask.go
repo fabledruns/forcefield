@@ -7,10 +7,25 @@ import (
 	"forcefield/internal/sandbox"
 )
 
+// Origin attributes a permission request to the agent that issued it and
+// the delegation chain that led there (root first, joined with " > ").
+// It is populated only for child-agent asks; top-level runs leave it nil,
+// which is the signal that the caller is the operator's own agent.
+type Origin struct {
+	Agent string
+	Chain string
+}
+
 // Request identifies the tool invocation being approved or rejected.
 type Request struct {
 	Tool      string
 	Arguments map[string]any
+
+	// Origin is non-nil when the request comes from a delegated child
+	// agent. Approval surfaces should show the agent and chain so the
+	// operator can distinguish a child's ask from the root agent's own;
+	// nil means the request is from the root agent itself.
+	Origin *Origin
 
 	// ResolvedPath is the canonical absolute path the call would act
 	// on, from the tool's workspace boundary pre-flight. Empty when the

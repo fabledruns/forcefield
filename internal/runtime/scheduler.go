@@ -60,6 +60,14 @@ type scheduler struct {
 	// approval would race on the single permissionPrompt channel.
 	askMu sync.Mutex
 
+	// askSerial, when non-nil, replaces askMu: it serializes asks across
+	// schedulers sharing it (the parent and every interactive child).
+	// Child schedulers get the orchestrator's ask scope in interactive
+	// permission mode so a child prompt and a parent prompt can never
+	// race onto the single approval surface. nil keeps per-scheduler
+	// serialization (deny mode, top-level runs).
+	askSerial *sync.Mutex
+
 	// sessionAllow holds session-scoped Always allow/deny decisions.
 	// It is not persisted to config.yaml; it lives only for the lifetime
 	// of this scheduler (one ff run / one Runtime). This prevents a single
@@ -767,8 +775,15 @@ func (s *scheduler) resolveAskWithManager(ctx context.Context, call providers.To
 		return permissions.Deny, fmt.Errorf("tool %q requires approval but no permission prompt is configured", call.Name)
 	}
 
-	s.askMu.Lock()
-	defer s.askMu.Unlock()
+	if s.askSerial != nil {
+		// Cross-scheduler serialization (interactive children share this
+		// lock with the parent) so one approval surface serves everyone.
+		s.askSerial.Lock()
+		defer s.askSerial.Unlock()
+	} else {
+		s.askMu.Lock()
+		defer s.askMu.Unlock()
+	}
 
 	req := permissions.Request{Tool: call.Name, Arguments: call.Arguments, ResolvedPath: resolvedPath}
 	if src, ok := lookupEnforcementSource(manager, call.Name); ok {

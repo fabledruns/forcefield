@@ -52,6 +52,18 @@ func (a *StdinAsker) Ask(ctx context.Context, req Request) (Prompt, error) {
 	// itself is unaffected.
 	fmt.Fprintf(out, "\nTool wants permission\n\nTool:\n%s\n\nArguments:\n%s\n", req.Tool, redact.Scrub(string(args)))
 
+	// Child-agent attribution: a delegated child's ask shows the chain
+	// that led there (root first) so the operator is never left guessing
+	// who is asking. Top-level asks carry no Origin and print nothing
+	// extra.
+	if req.Origin != nil {
+		display := req.Origin.Agent
+		if req.Origin.Chain != "" {
+			display = req.Origin.Chain
+		}
+		fmt.Fprintf(out, "\nRequested by child agent: %s\n", display)
+	}
+
 	// Execution facts come from the executor itself, so the prompt can
 	// never claim more isolation than exists. When absent (tools without
 	// an execution story), nothing extra is printed — except MCP tools,

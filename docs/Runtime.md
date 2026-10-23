@@ -240,6 +240,33 @@ filesystem tools share the same boundary pipeline (see
   waits; a turn streaming past 8 MiB without terminating fails as a
   non-retryable runaway-stream error.
 
+## Orchestration (multi-agent delegation)
+
+Delegation is a per-run capability, implemented as an ordinary tool:
+
+- With `orchestration.enabled`, one `Orchestrator` is owned by the
+  Runtime and one orchestration scope is attached to each top-level run
+  context at `StreamChatWithMode` entry. The scope carries the parent
+  run's fixed snapshot (provider, limits, budget) and the run's shared
+  spawn budget; delegate calls find it through the context — outside a
+  run, delegate fails closed with "delegation is only available inside
+  an agent run".
+- Each child run is an ordinary bounded run loop (`Runtime.run`) on the
+  orchestrator's child snapshot: fresh scheduler (MaxConcurrency 2),
+  empty session approvals, definition-scoped tools/skills, chat mode, a
+  user-role task message, and its own trace run id.
+- The delegate tool call joins its child unconditionally (even under
+  cancellation) and emits at most one throttled lifecycle line per child
+  turn (≤ 32), with a scrubbed, size-capped final report in the result.
+- Caps (depth, concurrency semaphore, cumulative per-run spawns, task
+  size) are enforced in `ExecuteStream` before any child spawns; see
+  [Agents](Agents.md#delegation-orchestration) for the bound table and
+  child isolation rules.
+- Duplicate tool call IDs replay recorded results like any other tool
+  (which never re-runs a child). Interactive child asks share one ask
+  serializer with the parent scheduler so the single approval surface is
+  never overwritten.
+
 ## Design Notes
 
 - The runtime owns the multi-turn tool loop. Providers stream only one turn.

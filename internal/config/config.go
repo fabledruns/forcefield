@@ -233,17 +233,69 @@ type Tracing struct {
 	Dir     string `yaml:"dir,omitempty"`
 }
 
+// Orchestration configures secure multi-agent delegation: a parent agent
+// running child agent runs via the delegate tool. The feature is off by
+// default; every bound exists so delegation can never recurse or fan out
+// without explicit operator configuration. See docs/Agents.md.
+//
+// Omitted bounds keep their defaults from the runtime resolver; explicit
+// values must fall inside the absolute ceilings below (validate rejects
+// anything outside them at load, mirroring the ToolLimits timeout rule).
+type Orchestration struct {
+	// Enabled gates the delegate tool. Off (default) means no delegation
+	// capability exists anywhere: agents naming "delegate" fail config
+	// load with "unknown tool", which is fail-closed.
+	Enabled bool `yaml:"enabled,omitempty"`
+	// MaxDepth caps delegation nesting. Omitted resolves to 1 (children
+	// only; grandchildren impossible). Absolute ceiling: 3. An explicit
+	// value must be 1..3; explicit 0 is invalid (use the default by
+	// omitting the field).
+	MaxDepth *int `yaml:"max_depth,omitempty"`
+	// MaxConcurrentChildren caps child runs running at once. Omitted
+	// resolves to 4 (same as the tool scheduler default). Ceiling: 8.
+	MaxConcurrentChildren *int `yaml:"max_concurrent_children,omitempty"`
+	// MaxChildrenPerRun caps total child spawns per parent run (all
+	// levels counted against the top run). Omitted resolves to 16.
+	// Ceiling: 64.
+	MaxChildrenPerRun *int `yaml:"max_children_per_run,omitempty"`
+	// MaxTaskChars caps one delegation task payload. Omitted resolves to
+	// 8000. Absolute ceiling: 65536; floor: 256.
+	MaxTaskChars *int `yaml:"max_task_chars,omitempty"`
+	// ChildPermissions is how child agents resolve permission prompts:
+	// "deny" (default/equivalent, fail-closed) or "interactive" (child
+	// asks route to the operator's real approval surface, attributed,
+	// never persisted). Unknown values are rejected at load.
+	ChildPermissions string `yaml:"child_permissions,omitempty"`
+}
+
+// Child permission modes.
+const (
+	ChildPermissionsDeny        = "deny"
+	ChildPermissionsInteractive = "interactive"
+)
+
+// Orchestration ceilings. Anything above is rejected at load so an
+// under-specified value can never widen the footprint.
+const (
+	MaxOrchestrationDepth     = 3
+	MaxOrchestrationChildren  = 8
+	MaxOrchestrationPerRun    = 64
+	MinOrchestrationTaskChars = 256
+	MaxOrchestrationTaskChars = 65536
+)
+
 // Config is the top-level shape of config.yaml.
 type Config struct {
-	Model       Model                     `yaml:"model"`
-	Providers   map[string]ProviderConfig `yaml:"providers,omitempty"`
-	Agent       Agent                     `yaml:"agent"`
-	Agents      map[string]AgentConfig    `yaml:"agents,omitempty"`
-	Permissions Permissions               `yaml:"permissions"`
-	Sandbox     Sandbox                   `yaml:"sandbox"`
-	Tools       map[string]ToolLimits     `yaml:"tools,omitempty"`
-	Workspace   Workspace                 `yaml:"workspace,omitempty"`
-	Tracing     Tracing                   `yaml:"tracing,omitempty"`
+	Model         Model                     `yaml:"model"`
+	Providers     map[string]ProviderConfig `yaml:"providers,omitempty"`
+	Agent         Agent                     `yaml:"agent"`
+	Agents        map[string]AgentConfig    `yaml:"agents,omitempty"`
+	Permissions   Permissions               `yaml:"permissions"`
+	Sandbox       Sandbox                   `yaml:"sandbox"`
+	Tools         map[string]ToolLimits     `yaml:"tools,omitempty"`
+	Workspace     Workspace                 `yaml:"workspace,omitempty"`
+	Tracing       Tracing                   `yaml:"tracing,omitempty"`
+	Orchestration Orchestration             `yaml:"orchestration,omitempty"`
 	// MCP holds local stdio MCP server definitions. The shape and
 	// per-server bounds live in internal/mcp (the sole MCP owner); this
 	// package owns file I/O, error wording, and persistence. Omitted
@@ -629,7 +681,44 @@ func (c *Config) validate() (ResolvedProvider, error) {
 		return ResolvedProvider{}, fmt.Errorf("workspace.mode: %w", err)
 	}
 
+	if err := validateOrchestration(c.Orchestration); err != nil {
+		return ResolvedProvider{}, err
+	}
+
 	return resolved, nil
+}
+
+// validateOrchestration rejects out-of-range or unknown delegation
+// settings at load time so a bad value can never silently widen the
+// orchestration footprint. Disabled orchestration validates too: the
+// bounds are still checked so enabling later cannot surprise.
+func validateOrchestration(o Orchestration) error {
+	if o.MaxDepth != nil {
+		if *o.MaxDepth < 1 || *o.MaxDepth > MaxOrchestrationDepth {
+			return fmt.Errorf("orchestration.max_depth %d must be 1..%d (omit the field for the default)", *o.MaxDepth, MaxOrchestrationDepth)
+		}
+	}
+	if o.MaxConcurrentChildren != nil {
+		if *o.MaxConcurrentChildren < 1 || *o.MaxConcurrentChildren > MaxOrchestrationChildren {
+			return fmt.Errorf("orchestration.max_concurrent_children %d must be 1..%d (omit the field for the default)", *o.MaxConcurrentChildren, MaxOrchestrationChildren)
+		}
+	}
+	if o.MaxChildrenPerRun != nil {
+		if *o.MaxChildrenPerRun < 1 || *o.MaxChildrenPerRun > MaxOrchestrationPerRun {
+			return fmt.Errorf("orchestration.max_children_per_run %d must be 1..%d (omit the field for the default)", *o.MaxChildrenPerRun, MaxOrchestrationPerRun)
+		}
+	}
+	if o.MaxTaskChars != nil {
+		if *o.MaxTaskChars < MinOrchestrationTaskChars || *o.MaxTaskChars > MaxOrchestrationTaskChars {
+			return fmt.Errorf("orchestration.max_task_chars %d must be %d..%d (omit the field for the default)", *o.MaxTaskChars, MinOrchestrationTaskChars, MaxOrchestrationTaskChars)
+		}
+	}
+	switch o.ChildPermissions {
+	case "", ChildPermissionsDeny, ChildPermissionsInteractive:
+	default:
+		return fmt.Errorf("orchestration.child_permissions %q is unknown (supported: %q, %q)", o.ChildPermissions, ChildPermissionsDeny, ChildPermissionsInteractive)
+	}
+	return nil
 }
 
 // knownAgents is the set of built-in agent names for config validation.
@@ -703,6 +792,7 @@ var knownTools = map[string]struct{}{
 	"read_file": {}, "write_file": {}, "list_files": {}, "pwd": {},
 	"shell": {}, "shell_job": {}, "search_files": {}, "search_code": {}, "find_files": {}, "git": {}, "secret_scan": {},
 	"load_skill": {}, "update_task_state": {}, "add_project_memory": {},
+	"delegate": {},
 }
 
 // validateRunLimits rejects negative run/context bounds. Zero stays valid:

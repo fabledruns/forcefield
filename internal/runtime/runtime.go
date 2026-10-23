@@ -93,6 +93,12 @@ type Runtime struct {
 	// fullManager holds every tool (before filtering) so filtered managers
 	// can reuse the same Tool instances.
 	fullManager *tools.Manager
+	// orch owns delegation. nil unless orchestration is enabled in
+	// config: there is then no delegate tool in any universe and no
+	// scope is ever attached to a run context (fail-closed default).
+	// Set once at construction and never swapped; agent switches rebuild
+	// filtered managers, not the orchestrator.
+	orch *Orchestrator
 	// mcpHost owns MCP server subprocesses when any MCP server is
 	// enabled, nil otherwise. Runtime owns Host lifecycle (Close); the
 	// Host owns process lifecycle. The adapters it registered stay in
@@ -246,6 +252,19 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 		return nil, err
 	}
 
+	// Delegation is opt-in: with orchestration disabled there is no
+	// orchestrator and no delegate tool in any universe. Enabled, the
+	// delegate tool joins the full universe once; per-agent visibility
+	// follows the opt-into-tools rule in withDelegateTool, applied at
+	// construction and on every agent switch.
+	var orch *Orchestrator
+	if cfg.Orchestration.Enabled {
+		orch = newOrchestrator(cfg.Orchestration, registry, skillStore, fullManager)
+		if err := fullManager.Register(newDelegateTool(orch)); err != nil {
+			return nil, fmt.Errorf("register delegate tool: %w", err)
+		}
+	}
+
 	activeName := resolveInitialAgent(cfg, registry)
 	def, err := registry.Get(activeName)
 	if err != nil {
@@ -255,7 +274,9 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 	}
 
 	// Requested-but-missing mcp__* names are omitted (see MCPWarnings);
-	// unknown native names still fail strictly inside Filtered.
+	// unknown native names still fail strictly inside Filtered. When
+	// orchestration is enabled, tool-opted agents also gain delegate.
+	def.Tools = withDelegateTool(orch, def.Tools)
 	agentTools, _ := resolveAgentDefinitionTools(fullManager, def)
 	filtered, err := fullManager.Filtered(agentTools)
 	if err != nil {
@@ -280,6 +301,7 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 		provider:            provider,
 		manager:             filtered,
 		fullManager:         fullManager,
+		orch:                orch,
 		mcpHost:             mcpHost,
 		mcpStatusNote:       mcpStatusNote,
 		skills:              skillStore,
@@ -300,6 +322,14 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 	// the same tool instance stays shared across filtered managers.
 	loadSkill.allowed = r.agentSkillSet
 	loadSkill.agentName = r.CurrentAgent
+	if orch != nil {
+		// The orchestrator needs its owning runtime (buildAgent for child
+		// universes, the live asker for interactive child permissions).
+		// The ask scope is shared with the parent scheduler only where
+		// children can open prompts at all; deny mode stays nil.
+		orch.parent = r
+		r.scheduler.askSerial = orch.childAskSerial()
+	}
 	r.refreshAuthState()
 	r.applyReasoning()
 

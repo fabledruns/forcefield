@@ -102,6 +102,61 @@ New tools ship with defaults: `search_files: allow`, `search_code: allow`, `find
 sensitive-path escalation set (`secret_scan` on a sensitive path still
 requires approval).
 
+## Delegation (orchestration)
+
+A parent agent can hand bounded subtasks to child agent runs with the
+`delegate` tool. The whole feature is off by default
+(`orchestration.enabled: false`): with it off there is no orchestrator and
+no delegate tool in any universe; a config naming `delegate` under
+`agents.*.tools` fails load with "unknown tool" (fail-closed).
+
+When enabled, `delegate` joins the full tool universe once, and every
+agent that opted into tools (non-empty `tools` list) gains it. An agent
+with an explicitly empty `tools` list stays a pure-text agent. Delegation
+bounds are configured under `orchestration:` and enforced at the call
+site, never in prompts:
+
+| Setting | Default | Ceiling | Meaning |
+|---|---|---|---|
+| `max_depth` | 1 | 3 | nesting levels (1 = children only) |
+| `max_concurrent_children` | 4 | 8 | child runs running at once, process-wide |
+| `max_children_per_run` | 16 | 64 | spawns per top-level run, cumulative across levels |
+| `max_task_chars` | 8000 | 65536 | payload per delegation (floor 256) |
+
+Child runs are isolated by construction:
+
+- The child scheduler shares the global rule set but starts with an empty
+  session-approval map: nothing the operator approved in the parent
+  session carries in, and nothing the child records leaks back.
+- `child_permissions: deny` (default) fails closed: any call that would
+  prompt is denied, no approval surface is opened, and nothing is
+  persisted.
+- `child_permissions: interactive` routes child asks to the operator's
+  assessment surface, stamped with the delegation chain (`root > child`),
+  and downgrades `always allow`/`always deny` answers to one-time
+  decisions: a child can never persist a global rule.
+- Each child gets a definition-scoped `load_skill` (its own assignment
+  only) and a tool set filtered exactly like a parent's (missing MCP
+  names omitted; unknown natives fail).
+- The task enters the child as a user message only: parent conversation
+  never reaches the child context, and the task text never enters a
+  system prompt.
+- Children always run in chat mode: plan overlays never leak into child
+  policy.
+
+Depth is structural: a child at the deepest permitted level has
+`delegate` stripped from its universe entirely, so a grandchild attempt
+fails at tool resolution even if the model hallucinates the call; the
+per-run spawn budget additionally covers every level combined (completed
+children never free budget).
+
+The parent receives a bounded report: honest lifecycle counts (turns,
+tool calls, failures, denials), the child's final answer (size-capped and
+secret-scrubbed), and denial notes. Child statuses are informational —
+the parent's own verification state is computed independently and is
+never upgraded by a child's claim. Parent cancellation joins the child
+first: nothing runs detached, nothing reports after the tool result.
+
 ## Configuration
 
 ```yaml

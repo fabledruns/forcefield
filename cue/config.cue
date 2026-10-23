@@ -38,7 +38,7 @@ package config
 #AgentName: "coding" | "cyber" | "legal" | "docs" | "research" | "devops" | "general"
 
 // ToolName lists the tool names a tools: override block may address.
-#ToolName: "read_file" | "write_file" | "list_files" | "pwd" | "shell" | "shell_job" | "search_files" | "search_code" | "find_files" | "git" | "secret_scan" | "load_skill" | "update_task_state" | "add_project_memory"
+#ToolName: "read_file" | "write_file" | "list_files" | "pwd" | "shell" | "shell_job" | "search_files" | "search_code" | "find_files" | "git" | "secret_scan" | "load_skill" | "update_task_state" | "add_project_memory" | "delegate"
 
 // MCPToolName matches namespaced MCP tool override keys
 // (mcp__server__tool). Overrides share the native limits mechanism;
@@ -164,6 +164,20 @@ package config
 	}
 
 	agents?: [#AgentName]: #AgentConfig
+
+	// Multi-agent delegation (the delegate tool). Off by default: with
+	// enabled false no delegate tool exists in any universe, and a
+	// config naming delegate under agents.*.tools fails load
+	// (fail-closed). Ranges mirror Go validation; omitted fields keep
+	// their documented defaults.
+	orchestration?: {
+		enabled?:                 bool
+		max_depth?:               int & >= 1 & <= 3
+		max_concurrent_children?: int & >= 1 & <= 8
+		max_children_per_run?:    int & >= 1 & <= 64
+		max_task_chars?:          int & >= 256 & <= 65536
+		child_permissions?:       "deny" | "interactive" | ""
+	}
 
 	permissions?: {
 		default?: #Permission

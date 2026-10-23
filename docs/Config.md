@@ -173,6 +173,38 @@ tools:
 
 Unknown tool names are rejected at load.
 
+### `orchestration`
+
+Optional multi-agent delegation settings (the `delegate` tool). The
+whole feature is off by default; see [Agents](Agents.md#delegation-orchestration)
+for child isolation rules. Every field is optional and omitted values
+keep their default; explicit out-of-range values are rejected at load.
+
+```yaml
+orchestration:
+  enabled: true
+  max_depth: 1
+  max_concurrent_children: 4
+  max_children_per_run: 16
+  max_task_chars: 8000
+  child_permissions: deny
+```
+
+| Field | Default | Valid range | Description |
+| --- | --- | --- | --- |
+| `enabled` | `false` | bool | Gates the `delegate` tool entirely. |
+| `max_depth` | `1` | 1–3 | Delegation nesting levels (1 = children only). |
+| `max_concurrent_children` | `4` | 1–8 | Child runs running at once, process-wide. |
+| `max_children_per_run` | `16` | 1–64 | Spawns per top-level run, cumulative across levels. |
+| `max_task_chars` | `8000` | 256–65536 | Payload cap for one delegation task. |
+| `child_permissions` | `deny` | `deny` / `interactive` | How child permission asks resolve; `deny` fails closed, `interactive` routes attributed one-time asks to the operator's surface. |
+
+`child_permissions: deny` never opens a prompt or persists anything.
+`interactive` downgrades "always allow"/"always deny" answers to
+one-time decisions on the child's request; nothing a child runs is ever
+persisted. Setting any of these to an unknown value is rejected, so a
+typo cannot silently widen the footprint.
+
 ### `mcp`
 
 Optional local MCP server definitions. Each key names a server (1–32 characters: letters, digits, `_`, `-`); at most 8 servers may be enabled.

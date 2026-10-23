@@ -87,4 +87,9 @@ tools: [
 		description:        "Persist a durable fact about the current project."
 		default_permission: "ask"
 	},
+	{
+		name:               "delegate"
+		description:        "Run a bounded child agent run inside one tool call (orchestration.enabled only)."
+		default_permission: "ask"
+	},
 ]

@@ -40,6 +40,10 @@ type runSnapshot struct {
 	// planmode.go). It is fixed at StreamChat entry, like the rest of
 	// the snapshot, so a run can never change policy mid-turn.
 	mode RunMode
+	// orch is the runtime's orchestrator (nil unless orchestration is
+	// enabled). Copied under RLock with the rest of the snapshot; the
+	// orchestrator itself is built once and never mutated.
+	orch *Orchestrator
 }
 
 // snapshotRunState copies the switchable run state under RLock.
@@ -54,6 +58,7 @@ func (r *Runtime) snapshotRunState() runSnapshot {
 	snap.manager = r.manager
 	snap.provider = r.provider
 	snap.scheduler = r.scheduler
+	snap.orch = r.orch
 	snap.limits = r.limits
 	snap.authRequired = r.authRequired
 	snap.authEnvVar = r.authEnvVar
@@ -103,6 +108,14 @@ func (r *Runtime) StreamChatWithMode(ctx context.Context, messages []providers.M
 		snap.manager = pm
 	}
 	initial := buildMessagesWithBudget(messages, snap.agent, snap.contextBudget)
+	// One orchestration scope per top-level run, attached before the loop
+	// starts: delegate calls find the parent's fixed snapshot and this
+	// run's shared spawn budget through it. Root chain is seeded with the
+	// active agent's registry name for attribution. With orchestration
+	// disabled the context is untouched and no delegate tool exists.
+	if snap.orch != nil {
+		ctx = withOrchestrationScope(ctx, snap.orch.rootScope(&snap))
+	}
 	if overlay := mode.planOverlay(); overlay != "" &&
 		len(initial) > 0 && initial[0].Role == providers.SystemRole {
 		initial[0].Content += overlay
