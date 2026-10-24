@@ -108,7 +108,8 @@ A parent agent can hand bounded subtasks to child agent runs with the
 `delegate` tool. The whole feature is off by default
 (`orchestration.enabled: false`): with it off there is no orchestrator and
 no delegate tool in any universe; a config naming `delegate` under
-`agents.*.tools` fails load with "unknown tool" (fail-closed).
+`agents.*.tools` is rejected at load (fail-closed, truthfully reported: the
+capability requires the orchestrator).
 
 When enabled, `delegate` joins the full tool universe once, and every
 agent that opted into tools (non-empty `tools` list) gains it. An agent
@@ -192,7 +193,7 @@ agents:
     skills: []   # explicitly no skills
 ```
 
-- `agents.<name>.tools` must list known tool names; unknown tools are rejected at load.
+- `agents.<name>.tools` may list known tool names (incl. `delegate`, which additionally requires orchestration); unknown tools fail at startup when the tool universe is built, rejecting the run (fail-closed).
 - `agents.<name>.skills` accepts any IDs; unknown IDs warn at runtime (skills are user-local), never fail load. Empty/missing entries are rejected; duplicates are rejected.
 - `agents.<name>` may only override built-in names (`coding, cyber, legal, docs, research, devops, general`); unknown names are rejected. Config cannot create genuinely new agents in v1.
 - Model/provider hints are in-memory only and are applied via the existing `SetProvider`/`SetModel` path. Failures leave the previous agent, provider, model, tools, and skills unchanged.

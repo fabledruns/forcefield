@@ -167,9 +167,10 @@ package config
 
 	// Multi-agent delegation (the delegate tool). Off by default: with
 	// enabled false no delegate tool exists in any universe, and a
-	// config naming delegate under agents.*.tools fails load
-	// (fail-closed). Ranges mirror Go validation; omitted fields keep
-	// their documented defaults.
+	// config naming delegate under agents.*.tools is requested but
+	// unavailable (warned). Ranges mirror Go validation; omitted fields
+	// keep their documented defaults. One cross-field rule lives in Go
+	// validation only: max_concurrent_children must be >= max_depth.
 	orchestration?: {
 		enabled?:                 bool
 		max_depth?:               int & >= 1 & <= 3

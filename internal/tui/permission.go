@@ -169,6 +169,19 @@ func (p *permissionPrompt) renderOptions(hoveredKey string) string {
 func (p *permissionPrompt) formatToolBlock() string {
 	var b strings.Builder
 	b.WriteString(permissionHelpStyle.Render("Tool: " + p.request.Tool))
+	// Child-agent attribution with the same chain fallback as the stdin
+	// asker: the delegation chain (root first) when present, otherwise
+	// the requesting child's name. Top-level asks carry no Origin and
+	// render nothing extra. Display only; the answer path is unchanged
+	// (see docs/Agents.md: attribution is informational).
+	if p.request.Origin != nil {
+		display := p.request.Origin.Agent
+		if p.request.Origin.Chain != "" {
+			display = p.request.Origin.Chain
+		}
+		b.WriteString("\n")
+		b.WriteString(permissionHelpStyle.Render("Requested by child agent: " + display))
+	}
 	// The canonical path from the workspace boundary pre-flight: what
 	// the tool would actually open, create, list, or search — never the
 	// raw model spelling alone (e.g. "/go/main.go" on Windows resolves

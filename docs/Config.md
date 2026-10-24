@@ -205,6 +205,12 @@ one-time decisions on the child's request; nothing a child runs is ever
 persisted. Setting any of these to an unknown value is rejected, so a
 typo cannot silently widen the footprint.
 
+One cross-field rule: `max_concurrent_children` must be
+`>= max_depth` when both are set. A full-depth nesting chain holds one
+child slot per level at the same time, so a smaller cap would stall
+nested delegation on the child semaphore until its timeout instead of
+doing any work. It is rejected at load with an error naming both fields.
+
 ### `mcp`
 
 Optional local MCP server definitions. Each key names a server (1–32 characters: letters, digits, `_`, `-`); at most 8 servers may be enabled.

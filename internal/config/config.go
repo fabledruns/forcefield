@@ -685,6 +685,17 @@ func (c *Config) validate() (ResolvedProvider, error) {
 		return ResolvedProvider{}, err
 	}
 
+	// delegate is a known tool name, but the capability only exists when
+	// the orchestrator is built (enabled). Name it while disabled and the
+	// tool-universe build would later reject the whole config with the
+	// misleading "unknown tool" error; the same misconfiguration surfaces
+	// here with a truthful, actionable message instead (fail-closed).
+	if !c.Orchestration.Enabled {
+		if err := validateDelegateNeedsOrchestration(c.Agents); err != nil {
+			return ResolvedProvider{}, err
+		}
+	}
+
 	return resolved, nil
 }
 
@@ -708,6 +719,15 @@ func validateOrchestration(o Orchestration) error {
 			return fmt.Errorf("orchestration.max_children_per_run %d must be 1..%d (omit the field for the default)", *o.MaxChildrenPerRun, MaxOrchestrationPerRun)
 		}
 	}
+	// Cross-field: every nesting level needs its own child slot at the same
+	// time (a depth-D chain holds D slots). cap < depth makes any
+	// full-depth chain stall on the child semaphore until the delegate
+	// timeout - rejected at load instead, naming both fields.
+	if o.MaxDepth != nil && o.MaxConcurrentChildren != nil && *o.MaxConcurrentChildren < *o.MaxDepth {
+		return fmt.Errorf(
+			"orchestration.max_concurrent_children %d must be >= orchestration.max_depth %d (nested chains need one child slot per level)",
+			*o.MaxConcurrentChildren, *o.MaxDepth)
+	}
 	if o.MaxTaskChars != nil {
 		if *o.MaxTaskChars < MinOrchestrationTaskChars || *o.MaxTaskChars > MaxOrchestrationTaskChars {
 			return fmt.Errorf("orchestration.max_task_chars %d must be %d..%d (omit the field for the default)", *o.MaxTaskChars, MinOrchestrationTaskChars, MaxOrchestrationTaskChars)
@@ -717,6 +737,21 @@ func validateOrchestration(o Orchestration) error {
 	case "", ChildPermissionsDeny, ChildPermissionsInteractive:
 	default:
 		return fmt.Errorf("orchestration.child_permissions %q is unknown (supported: %q, %q)", o.ChildPermissions, ChildPermissionsDeny, ChildPermissionsInteractive)
+	}
+	return nil
+}
+
+// validateDelegateNeedsOrchestration rejects agent tool overrides that name
+// delegate while orchestration is disabled. The capability never exists in
+// that state, so refusing the config is fail-closed; the point of doing it
+// here (rather than at the tool-universe build) is the truthful error.
+func validateDelegateNeedsOrchestration(agents map[string]AgentConfig) error {
+	for name, cfg := range agents {
+		for _, t := range cfg.Tools {
+			if t == "delegate" {
+				return fmt.Errorf("agents.%s.tools names delegate but orchestration.enabled is false - enable orchestration or drop the delegate entry", name)
+			}
+		}
 	}
 	return nil
 }
