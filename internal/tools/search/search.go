@@ -35,6 +35,35 @@ const (
 	sniffBytes = 8000
 )
 
+// search_files truncation strings. The walk can stop on one of two
+// caps — the match cap or the 2000-file cap — and they are mutually
+// exclusive (the first to hit stops the walk); summaries discriminate
+// via filesVisited > maxFilesVisited. Summaries lead the content and
+// the tail note closes it, so a later runtime head-window truncation
+// cannot erase the summary.
+const (
+	// walkerSummaryRowCapFmt (W1) opens output the match cap stopped:
+	// args are matches kept and files actually visited.
+	walkerSummaryRowCapFmt = "[search truncated: showing first %d matches; walk stopped after %d files; more matches may exist; narrow pattern, path, or include glob]\n"
+	// walkerSummaryFilesCapFmt (W2) opens output the file-walk cap
+	// stopped: args are matches kept, files actually visited, and the
+	// cap that fired.
+	walkerSummaryFilesCapFmt = "[search truncated: showing %d matches; walk stopped after %d files (cap %d); more matches may exist; narrow the path]\n"
+	// walkerFilesCapNote (W3) is the second line of a zero-match
+	// result whose walk stopped on the file-walk cap; the zero-match
+	// branch bypasses the tail builder, so the cap names itself here.
+	walkerFilesCapNote = "\n[search truncated: walk stopped after %d files (cap %d); matches may exist beyond; narrow the path]"
+	// walkerTailNote (W4) closes truncated output with the actual
+	// counts, not the configured bounds.
+	walkerTailNote = "[output truncated at %d matches / %d files visited; narrow pattern, path, or include glob]"
+	// walkerLargeTailNote (W5) reports skipped oversize files on a
+	// search with matches.
+	walkerLargeTailNote = "[%d files over 512 KiB skipped; if a match may be inside one, use read_file]"
+	// walkerLargeZeroNote (W6) replaces the bare large-file count in
+	// the zero-row branch with the count plus a read_file hint.
+	walkerLargeZeroNote = " (%d large files skipped; if a match may be inside one, use read_file)"
+)
+
 // excludedDirNames are never descended into: version-control metadata,
 // dependency trees, and build output are noise for content search and
 // huge enough to wedge a walk. The set is fixed so search behavior stays
@@ -391,10 +420,16 @@ func (s SearchFiles) Execute(ctx context.Context, args map[string]any) (tools.Re
 	if len(matches) == 0 {
 		note := ""
 		if skippedLarge > 0 {
-			note = fmt.Sprintf(" (%d large files skipped)", skippedLarge)
+			note = fmt.Sprintf(walkerLargeZeroNote, skippedLarge)
 		}
 		if skippedBinary > 0 {
 			note += fmt.Sprintf(" (%d binary files skipped)", skippedBinary)
+		}
+		if filesVisited > maxFilesVisited {
+			// The files cap fired but the zero-match branch bypasses
+			// the tail builder, so the cap names itself here or the
+			// model reads the walk as exhaustive. Metadata stays nil.
+			note += fmt.Sprintf(walkerFilesCapNote, filesVisited, maxFilesVisited)
 		}
 		return tools.Result{Content: fmt.Sprintf("no matches for %q under %s%s", pattern, rootArg, note)}, nil
 	}
@@ -404,16 +439,28 @@ func (s SearchFiles) Execute(ctx context.Context, args map[string]any) (tools.Re
 		fmt.Fprintf(&b, "%s:%d: %s\n", m.path, m.line, m.text)
 	}
 	out := strings.TrimRight(b.String(), "\n")
+
+	// Summary first, loss last: the runtime guard keeps only a head
+	// window plus a small tail of long tool results, so the summary
+	// that names the truncation must lead the content to survive it.
+	// Cap discrimination: the walk cap fired at the visit counter,
+	// so filesVisited > maxFilesVisited, and the two caps cannot both
+	// fire. The counter is the actual visit count, not the bound.
 	var meta map[string]any
 	if truncated {
-		out += fmt.Sprintf("\n\n[output truncated at %d matches / %d files visited; narrow pattern, path, or include glob]", matchCap, maxFilesVisited)
+		if filesVisited > maxFilesVisited {
+			out = fmt.Sprintf(walkerSummaryFilesCapFmt, len(matches), filesVisited, maxFilesVisited) + out
+		} else {
+			out = fmt.Sprintf(walkerSummaryRowCapFmt, len(matches), filesVisited) + out
+		}
+		out += "\n\n" + fmt.Sprintf(walkerTailNote, len(matches), filesVisited)
 		meta = map[string]any{
 			"truncated": true, "matches": len(matches),
 			"match_limit": matchCap, "files_visited": filesVisited,
 		}
 	} else {
 		if skippedLarge > 0 {
-			out += fmt.Sprintf("\n\n[%d files over 512 KiB skipped]", skippedLarge)
+			out += "\n\n" + fmt.Sprintf(walkerLargeTailNote, skippedLarge)
 		}
 		if skippedBinary > 0 {
 			out += fmt.Sprintf("\n\n[%d binary files skipped]", skippedBinary)

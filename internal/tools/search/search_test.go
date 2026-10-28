@@ -157,8 +157,14 @@ func TestSearch_MatchCapTruncates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(res.Content, "truncated") {
-		t.Fatalf("expected truncation marker, got:\n%.500s", res.Content)
+	// Fixture: one file, 150 rows, default cap 100 → the walk stops
+	// after 1 file with 100 matches kept; the summary states the actual
+	// counts and the tail note repeats them.
+	if !strings.Contains(res.Content, "[search truncated: showing first 100 matches") {
+		t.Fatalf("expected kept-count summary, got:\n%.500s", res.Content)
+	}
+	if !strings.Contains(res.Content, "output truncated at 100 matches / 1 files visited") {
+		t.Fatalf("expected tail note with actual counts, got:\n%.500s", res.Content)
 	}
 }
 
@@ -180,8 +186,13 @@ func TestSearch_SkipsOversizeFiles(t *testing.T) {
 	if strings.Contains(res.Content, "huge.bin") {
 		t.Fatalf("oversize file must be skipped, got:\n%s", res.Content)
 	}
+	// Fixture: one oversize file skipped and no matches — the skip note
+	// states the count with the read_file hint.
 	if !strings.Contains(res.Content, "skipped") {
 		t.Fatalf("expected skip note, got:\n%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "(1 large files skipped; if a match may be inside one, use read_file)") {
+		t.Fatalf("large-file note must name the count and the read_file hint, got:\n%s", res.Content)
 	}
 }
 

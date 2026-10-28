@@ -35,6 +35,34 @@ const (
 	searchCodeWaitDelay = time.Second
 )
 
+// search_code truncation strings. Gating: a fired capture bound
+// (stdout.cut) forces byte-truth summaries (S2) and tail (T2) because
+// rg's begin/end byte stream was capped and parsed totals can no longer
+// be trusted; otherwise row-capped runs report totals from the parsed
+// rows (S1/T1). Summaries lead the content and the tail note closes it,
+// so a later runtime head-window truncation cannot erase either.
+const (
+	// rgSummaryRowCapFmt (S1) opens row-capped output when the capture
+	// bound never fired: args are matches kept and total parsed matches.
+	rgSummaryRowCapFmt = "[search truncated: showing first %d of %d matches; narrow pattern, path, or include glob]\n"
+	// rgSummaryCutFmt (S2) opens output whenever the capture bound
+	// fired — matches or none: args are the byte cap, bytes produced,
+	// and matches shown so far. Never claims a total.
+	rgSummaryCutFmt = "[search truncated: rg output capped at %d bytes, %d bytes produced; %d matches shown so far; more may exist; narrow pattern, path, or include glob]\n"
+	// rgTailRowCapFmt (T1) closes row-capped output that was not cut.
+	rgTailRowCapFmt = "[output truncated: showing %d of %d matches; narrow pattern, path, or include glob]"
+	// rgTailCutFmt (T2) closes output the capture bound fired on.
+	rgTailCutFmt = "[...rg output truncated at %d bytes, %d bytes produced; narrow pattern, path, or include glob]"
+	// searchCodeZeroNote states the per-file size policy on every
+	// zero-row result and points at read_file for content the search
+	// skipped by construction.
+	searchCodeZeroNote = " (files over 512 KiB are not searched; if a match may be inside one, use read_file)"
+	// rgZeroCutNote (Z3 second line) joins a zero-row rg exit 1 whose
+	// begin/end byte stream was consumed by the capture bound: the
+	// search itself ran to completion, only the report was capped.
+	rgZeroCutNote = "\n[search truncated: rg output capped at %d bytes, %d bytes produced; the search itself ran to completion; narrow pattern, path, or include glob]"
+)
+
 // rgExclusions are never searched: version-control metadata,
 // dependency trees, build output, and lockfiles are noise for code
 // search. The set mirrors excludedDirNames/isLockFile in search.go so
@@ -544,8 +572,17 @@ func (s SearchCode) runRg(ctx context.Context, params searchCodeParams, root, re
 			switch exitErr.ExitCode() {
 			case 1:
 				// ripgrep's "no matches" is a success shape for the
-				// model, not an error.
-				return tools.Result{Content: fmt.Sprintf("no matches for %q under %s", params.pattern, params.rootArg), DurationMs: durationMs}, nil
+				// model, not an error. State the per-file size policy
+				// so a match inside a skipped large file is still
+				// findable via read_file. When the capture bound fired
+				// on a huge tree the begin/end byte stream was lost,
+				// so name the cap on a second line — the search itself
+				// ran to completion, only the report was capped.
+				content := fmt.Sprintf("no matches for %q under %s%s", params.pattern, params.rootArg, searchCodeZeroNote)
+				if stdout.cut {
+					content += fmt.Sprintf(rgZeroCutNote, maxBytes, stdout.total)
+				}
+				return tools.Result{Content: content, DurationMs: durationMs}, nil
 			case 2:
 				tail := firstLine(stderr.String())
 				if params.useRegex {
@@ -577,17 +614,25 @@ func (s SearchCode) runRg(ctx context.Context, params searchCodeParams, root, re
 		return kept[i].col < kept[j].col
 	})
 
+	// Capture the total before the cap so the row-cap summary and tail
+	// can state exact parsed totals. totalFound is unreliable only when
+	// the capture bound fired — parsed rows are incomplete then, and
+	// the gating rule switches to byte truth (S2/T2).
+	totalFound := len(kept)
 	truncated := false
 	if len(kept) > matchCap {
 		kept = kept[:matchCap]
 		truncated = true
 	}
 	if len(kept) == 0 {
-		note := ""
+		content := fmt.Sprintf("no matches for %q under %s%s", params.pattern, params.rootArg, searchCodeZeroNote)
 		if stdout.cut {
-			note = " (output exceeded the byte limit)"
+			// Byte truth first: the capture-bound summary leads even
+			// the no-matches sentence, because the cap hid rows this
+			// branch can no longer see. Metadata stays nil, as today.
+			content = fmt.Sprintf(rgSummaryCutFmt, maxBytes, stdout.total, 0) + content
 		}
-		return tools.Result{Content: fmt.Sprintf("no matches for %q under %s%s", params.pattern, params.rootArg, note), DurationMs: durationMs}, nil
+		return tools.Result{Content: content, DurationMs: durationMs}, nil
 	}
 
 	var b strings.Builder
@@ -601,21 +646,31 @@ func (s SearchCode) runRg(ctx context.Context, params searchCodeParams, root, re
 		fmt.Fprintf(&b, "%s:%d:%d: %s\n", m.path, m.line, m.col, text)
 	}
 	content := strings.TrimRight(b.String(), "\n")
+
+	// Summary first, loss last: the runtime guard keeps only a head
+	// window plus a small tail of long tool results, so the summary
+	// that names the truncation must lead the content to survive it.
+	// Byte truth (S2) always wins over parsed totals (S1).
+	if stdout.cut {
+		content = fmt.Sprintf(rgSummaryCutFmt, maxBytes, stdout.total, len(kept)) + content
+	} else if truncated {
+		content = fmt.Sprintf(rgSummaryRowCapFmt, len(kept), totalFound) + content
+	}
+
 	var meta map[string]any
 	if truncated || stdout.cut {
 		meta = map[string]any{
 			"truncated": true, "matches": len(kept),
 			"match_limit": matchCap, "rg_used": true,
 		}
-		if truncated {
-			content += fmt.Sprintf("\n\n[output truncated at %d matches; narrow pattern, path, or include glob]", matchCap)
-		}
 		if stdout.cut {
 			tMeta := tools.Truncation{Truncated: true, OriginalBytes: stdout.total, KeptBytes: len(stdout.buf), Limit: maxBytes}.Fields()
 			for k, v := range tMeta {
 				meta[k] = v
 			}
-			content += fmt.Sprintf("\n\n[...rg output truncated at %d bytes; narrow pattern, path, or include glob]", maxBytes)
+			content += "\n\n" + fmt.Sprintf(rgTailCutFmt, maxBytes, stdout.total)
+		} else {
+			content += "\n\n" + fmt.Sprintf(rgTailRowCapFmt, len(kept), totalFound)
 		}
 	}
 	return tools.Result{Content: content, Metadata: meta, DurationMs: durationMs}, nil

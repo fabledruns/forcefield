@@ -110,4 +110,9 @@ func TestSearch_BinaryAndLargeNotesCombine(t *testing.T) {
 	if !strings.Contains(res.Content, "skipped") {
 		t.Errorf("large-file note missing, got:\n%s", res.Content)
 	}
+	// Fixture: one oversize file — the large-file tail note names the
+	// count with the read_file hint.
+	if !strings.Contains(res.Content, "[1 files over 512 KiB skipped; if a match may be inside one, use read_file") {
+		t.Errorf("large-file tail note must name the count and the read_file hint, got:\n%s", res.Content)
+	}
 }

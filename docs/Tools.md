@@ -80,8 +80,8 @@ Built-in tools are registered through `tools/builtin`.
 | `pwd`         | `tools/shell`           | Return the current working directory.            |
 | `shell`         | `tools/shell`                 | Run a Bash command. Combined stdout+stderr capped at 2 MiB (lines capped at 256 KiB each); 30s default timeout, per-call up to 300s. |
 | `shell_job`   | `tools/shell`           | Run a Bash command in the background; poll, list, or cancel by job id. Max 4 running jobs, 1 MiB output, 300s lifetime, 10 min idle expiry. |
-| `search_files`| `tools/search`          | Search file contents under a directory. Skips excluded dirs, lockfiles, sensitive and binary files; max 100 matches. Matching lines over 2000 bytes are elided around the match (`…text…[line elided]`) instead of head-truncated; every cut side is marked, and a match larger than the budget keeps its head and marks the rest (`…text[match elided: N bytes]…[line elided]`). |
-| `search_code` | `tools/search`          | Fast code search via ripgrep (`rg` argv, never a shell). Same skips as `search_files` plus `.gitignore` support; path:line:column matches with exact match spans (from `rg --json` events), max 100. Falls back to built-in search when `rg` is not on PATH. Matching lines over 2000 bytes are elided around the match (`…text…[line elided]`) instead of head-truncated; every cut side is marked, and a match larger than the budget keeps its head and marks the rest (`…text[match elided: N bytes]…[line elided]`). A line only a few bytes over the cap may keep itself whole when a rune boundary forces the window to cover the entire line. Match spans include the CRLF line's trailing carriage return; the display text has that trailing CR trimmed, and invalid-UTF-8 lines are delivered via rg's base64 line bytes with lossy display. |
+| `search_files`| `tools/search`          | Search file contents under a directory. Skips excluded dirs, lockfiles, sensitive and binary files; max 100 matches. Matching lines over 2000 bytes are elided around the match (`…text…[line elided]`) instead of head-truncated; every cut side is marked, and a match larger than the budget keeps its head and marks the rest (`…text[match elided: N bytes]…[line elided]`). Truncated runs open the content with a one-line loss summary reporting actual counts (matches kept, files actually visited, which cap fired) before the matches, so later head-replacement truncation cannot erase it; large-file skips state counts with a read_file hint; binary skips state counts; a walk stopped by the 2000-file cap says so even when zero matches were found. |
+| `search_code` | `tools/search`          | Fast code search via ripgrep (`rg` argv, never a shell). Same skips as `search_files` plus `.gitignore` support; path:line:column matches with exact match spans (from `rg --json` events), max 100. Falls back to built-in search when `rg` is not on PATH. Matching lines over 2000 bytes are elided around the match (`…text…[line elided]`) instead of head-truncated; every cut side is marked, and a match larger than the budget keeps its head and marks the rest (`…text[match elided: N bytes]…[line elided]`). A line only a few bytes over the cap may keep itself whole when a rune boundary forces the window to cover the entire line. Match spans include the CRLF line's trailing carriage return; the display text has that trailing CR trimmed, and invalid-UTF-8 lines are delivered via rg's base64 line bytes with lossy display. Truncated runs lead the content with a one-line loss summary: row-capped runs state "showing first N of M matches" from parsed totals; byte-capped runs state the capture bound with bytes produced and matches shown without claiming a total; zero-match results state the 512 KiB per-file size policy and suggest read_file; the rg-absent fallback keeps the provenance note first. |
 | `find_files`  | `tools/search`          | Find files/dirs by glob or substring. Sorted workspace-relative paths; max 50 results. |
 | `git`           | `tools/git`                   | Inspect a git repository (read-only): status, diffs, log, changed files. Max 256 KiB output. Repo config execution neutralized (`core.fsmonitor` override, no textconv/external drivers, content-filter drivers replaced with identity), minimal child environment. |
 | `secret_scan` | `tools/security`        | Defensively scan one file/text for hardcoded secrets (local-only, redacted output). Max 50 findings, 1 MiB input. |
@@ -100,9 +100,14 @@ consume the whole model context:
    note the model can see, plus structured `Metadata` (`truncated`,
    sizes, limits). Shell separates stdout/stderr, always reports the
    exit code, and truncates before the runtime ever sees the bytes.
+   Truncation summaries lead tool content because the runtime
+   guard preserves only a head window plus a small tail.
 2. **Runtime context guard**: the runtime additionally caps each tool
-   result at 6000 characters before sending history to the provider
-   (see [Runtime](Runtime.md)).
+   result at 6000 bytes before sending history to the provider —
+   preserving the start of the output, a useful tail (recent rows and
+   the tool's own truncation note), and an explicit center-elision
+   marker naming the dropped byte count (bytes, not characters; see
+   [Runtime](Runtime.md)).
 
 Timeouts: every tool execution runs under a timeout (30s default; shell
 `timeout_seconds` per call). The scheduler clamps everything to a 300s

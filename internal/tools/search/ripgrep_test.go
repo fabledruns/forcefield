@@ -168,6 +168,9 @@ func TestSearchCode_NoMatches(t *testing.T) {
 	if !strings.Contains(res.Content, "no matches") {
 		t.Fatalf("want no-matches note, got:\n%s", res.Content)
 	}
+	if !strings.Contains(res.Content, "files over 512 KiB are not searched") {
+		t.Fatalf("no-matches note must state the per-file size policy, got:\n%s", res.Content)
+	}
 }
 
 func TestSearchCode_InvalidRegexIsSoftError(t *testing.T) {
@@ -349,8 +352,13 @@ func TestSearchCode_MaxResultsTruncates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(res.Content, "truncated at 10 matches") {
-		t.Fatalf("expected truncation marker, got:\n%.500s", res.Content)
+	// Fixture: 150 matching rows, capped at 10 — the summary states
+	// the exact kept/total counts and the tail note repeats them.
+	if !strings.Contains(res.Content, "[search truncated: showing first 10 of 150 matches") {
+		t.Fatalf("expected kept/total summary, got:\n%.500s", res.Content)
+	}
+	if !strings.Contains(res.Content, "[output truncated: showing 10 of 150 matches") {
+		t.Fatalf("expected tail note with real counts, got:\n%.500s", res.Content)
 	}
 	if res.Metadata == nil || res.Metadata["truncated"] != true || res.Metadata["matches"] != 10 {
 		t.Fatalf("want truncation metadata, got: %v", res.Metadata)
@@ -372,8 +380,12 @@ func TestSearchCode_ConfiguredLimitApplies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(res.Content, "truncated at 3 matches") {
-		t.Fatalf("expected configured-limit truncation, got:\n%.500s", res.Content)
+	// Fixture: 50 matching rows, configured cap 3.
+	if !strings.Contains(res.Content, "[search truncated: showing first 3 of 50 matches") {
+		t.Fatalf("expected configured-limit summary, got:\n%.500s", res.Content)
+	}
+	if !strings.Contains(res.Content, "[output truncated: showing 3 of 50 matches") {
+		t.Fatalf("expected configured-limit tail note, got:\n%.500s", res.Content)
 	}
 }
 
@@ -389,6 +401,9 @@ func TestSearchCode_MissingRgFallsBack(t *testing.T) {
 	}
 	if res.IsError {
 		t.Fatalf("fallback found a match yet reports error: %s", res.Content)
+	}
+	if !strings.HasPrefix(res.Content, "[note: rg not found on PATH; used built-in search]\n") {
+		t.Fatalf("fallback must open with the provenance note, got:\n%.120s", res.Content)
 	}
 	if !strings.Contains(res.Content, "rg not found on PATH") {
 		t.Fatalf("fallback must note provenance, got:\n%s", res.Content)

@@ -37,6 +37,11 @@ func TestSearchFiles_MatchOverrideBoundsOutput(t *testing.T) {
 	if !strings.Contains(result.Content, "[output truncated at 4 matches") {
 		t.Errorf("content lacks override marker:\n%s", result.Content)
 	}
+	// Fixture: 4 matches across as many files — the leading summary
+	// names the actual kept count, not the configured bound alone.
+	if !strings.Contains(result.Content, "[search truncated: showing first 4 matches") {
+		t.Errorf("content lacks the loss summary:\n%s", result.Content)
+	}
 	if result.Metadata == nil || result.Metadata["truncated"] != true || result.Metadata["match_limit"] != 4 {
 		t.Errorf("Metadata = %v, want truncation record with limit 4", result.Metadata)
 	}

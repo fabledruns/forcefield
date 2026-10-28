@@ -228,30 +228,195 @@ func truncatePersistedToolResult(content string) string {
 
 // MaxModelToolResultChars is the model-visible window for one tool
 // result: the bound the originating run applies before the result
-// enters provider history. It lives here (not in the runtime) so both
-// the run loop and ProviderMessages share one source of truth: the
-// persisted record keeps up to 48 KiB for diagnostics, but replay must
-// not expose more than the window the model originally saw.
+// enters provider history. The composed model-visible result (head +
+// center marker + tail + truncation notice) never exceeds this byte
+// budget; content is cut on rune boundaries inside the budget. It
+// lives here (not in the runtime) so both the run loop and
+// ProviderMessages share one source of truth: the persisted record
+// keeps up to 48 KiB for diagnostics, but replay must not expose more
+// than the window the model originally saw.
 const MaxModelToolResultChars = 6000
 
-// TruncateModelToolResult caps content to MaxModelToolResultChars on a
-// rune boundary, preserving valid UTF-8 and leaving an explicit marker
-// with both sizes. Content within the bound is returned unchanged.
+// Truncation chrome for the model-visible window. The format strings
+// are the byte-identical successors of the old inline Sprintf strings;
+// the bound constants let the window arithmetic pin the reservation
+// once, without each caller re-measuring chrome.
+const (
+	// truncationNoticeFmt closes the composed result: it is the
+	// byte-identical successor of the old inline truncation string.
+	// Its first %d names the budget constant (6000), not a
+	// runtime-computed cut.
+	truncationNoticeFmt = "[...output truncated at %d bytes, %d bytes total. Re-run with narrower output (e.g. filters, -run, grep) if you need the rest.]"
+	// windowMarkerFmt names the bytes dropped between head and tail
+	// instead of silently eliding them.
+	windowMarkerFmt = "[...center elided: %d bytes...]"
+)
+
+// Window-budget constants. The unit is bytes, not characters: digits
+// reserve room for the formatted figures so the bounds below are true
+// composition upper limits, not estimates.
+const (
+	// modelToolResultTailBytes is the suffix window the composed result
+	// preserves: recent rows and the tool's own truncation note land
+	// here, where callers look for freshness.
+	modelToolResultTailBytes = 600
+	// sizeDigitsReserve is the worst-case decimal digit count for the
+	// marker's elided figure and the notice's total-bytes figure
+	// (999,999,999 bytes ≈ 1 GiB), so the bounds stay true for any
+	// input this program can realistically pass through.
+	sizeDigitsReserve = 9
+	// maxRowCleanSkim is the farthest the tail window's head skims
+	// forward to open on a line boundary instead of mid-row.
+	maxRowCleanSkim = 63
+	// windowMarkerMax bounds the center marker: its literal frame plus
+	// the reserved digits for the elided figure.
+	windowMarkerMax = len("[...center elided: ") + sizeDigitsReserve + len(" bytes...]")
+	// truncationNoticeMax bounds the closing notice. Literal base 127
+	// is the format weight with the first %d resolved to the constant
+	// 6000 (4 digits); it was verified against fmt.Sprintf with
+	// 999999999 total before pinning, and one sizeDigitsReserve covers
+	// the total figure's digits.
+	truncationNoticeMax = 127 + sizeDigitsReserve
+)
+
+// modelHeadBudget is the head-window reservation: everything the
+// composed result may spend besides the head itself. Reservation
+// happens before window selection — the tail, the three "\n\n"
+// separators, and the bounded chrome are subtracted up front, so head
+// selection can never orphan the tail or the chrome.
+//
+//	MaxModelToolResultChars − modelToolResultTailBytes − 3·len("\n\n")
+//	− windowMarkerMax − truncationNoticeMax	= 5220 (pinned).
+func modelHeadBudget() int {
+	return MaxModelToolResultChars - modelToolResultTailBytes - 3*len("\n\n") - windowMarkerMax - truncationNoticeMax
+}
+
+// TruncateModelToolResult caps content to MaxModelToolResultChars while
+// preserving valid UTF-8, a fresh-row tail, an explicit marker naming
+// the dropped bytes, and the truncation notice. Content within the
+// bound is returned unchanged.
+//
+// Live runs (the runtime's truncateToolResult in
+// internal/runtime/runtime_messages.go) and replay (ProviderMessages in
+// this package) share this one implementation: live and replay parity,
+// so a resumed session never widens the window the model originally
+// saw. Ordering asymmetry (pre-existing, documented here): the live
+// path truncates raw output before the scrub step, while replay
+// truncates the already-scrubbed persisted record — scrub-length
+// deltas can therefore make the two paths differ byte for byte. The
+// bounds hold on both paths; only the exact bytes at the window edges
+// may track the scrubbed lengths.
 func TruncateModelToolResult(content string) string {
 	if len(content) <= MaxModelToolResultChars {
 		return content
 	}
+	return truncateModelResult(content, MaxModelToolResultChars, modelHeadBudget(), modelToolResultTailBytes)
+}
 
-	// Cut on a rune boundary so multi-byte characters at the limit are
+// runeHeadLen decides how much of s may enter a result as head content:
+// the cutRuneBoundary length, demoted to an empty head when it would tear
+// the first rune. cutRuneBoundary's zero-cut fallback forces a one-byte
+// cut even when the headroom is smaller than the first rune (tiny test
+// budgets, negative guard headroom); a torn leading byte is never
+// allowed into the composed result, so the head empties instead.
+// cutRuneBoundary itself stays untouched: its other callers (persisted
+// records, argument strings) always pass real limits and keep the
+// fallback.
+func runeHeadLen(s string, limit int) int {
+	if len(s) == 0 {
+		return 0
+	}
+	cut := cutRuneBoundary(s, limit)
+	if cut > len(s) || (cut < len(s) && !utf8.RuneStart(s[cut])) {
+		return 0
+	}
+	return cut
+}
+
+// truncateModelResult composes head + center marker + tail + notice
+// within maxChars. Expects len(content) > maxChars and
+// headBudget + tailBytes ≤ maxChars (the TruncateModelToolResult
+// constants satisfy both; the guard chain below still holds the bound
+// for callers that pass tighter budgets, e.g. tests).
+//
+// Fit guarantee by reservation: head ≤ headBudget via runeHeadLen (the
+// cutRuneBoundary cut, emptied rather than torn when the first rune
+// does not fit the headroom), tail ≤ tailBytes (the window is a suffix
+// of the input, so its far end is len(content) and a trailing partial
+// rune cannot exist by construction), marker ≤ windowMarkerMax, notice
+// ≤ truncationNoticeMax, and the three "\n\n" separators are the only
+// other spend — so the composed result never exceeds
+// MaxModelToolResultChars.
+//
+// Non-overlap proof: for len(content) > maxChars ≥ headBudget +
+// tailBytes, the head window ends at headBudget while the tail window
+// starts at len(content) − tailBytes > headBudget, leaving
+// len(content) − headBudget − tailBytes bytes always elided between
+// them (181+ at the pin) — the windows can never overlap, so head and
+// tail never claim the same bytes.
+func truncateModelResult(content string, maxChars, headBudget, tailBytes int) string {
+	head := content[:runeHeadLen(content, headBudget)]
+	// Cut on a rune boundary so multi-byte characters at the edges are
 	// never split into invalid UTF-8, which would poison every later
-	// provider request that replays this tool result.
-	cut := cutRuneBoundary(content, MaxModelToolResultChars)
-	if cut == 0 {
-		cut = 1
+	// provider request that replays this tool result. The tail start
+	// snaps forward to a rune start; its far end is the input's end.
+	tailStart := len(content) - tailBytes
+	if tailStart < 0 {
+		tailStart = 0
+	}
+	for tailStart < len(content) && !utf8.RuneStart(content[tailStart]) {
+		tailStart++
+	}
+	// Skim to a clean row: when a newline arrives within the skim
+	// limit, the tail opens on the line after it. The byte after a
+	// newline is always a rune start, so no second snap is needed.
+	if skim := len(content) - tailStart; skim > 0 {
+		limit := maxRowCleanSkim
+		if limit > skim {
+			limit = skim
+		}
+		if nl := strings.IndexByte(content[tailStart:tailStart+limit], '\n'); nl >= 0 {
+			tailStart += nl + 1
+		}
 	}
 
-	return fmt.Sprintf("%s\n\n[...output truncated at %d bytes, %d bytes total. Re-run with narrower output (e.g. filters, -run, grep) if you need the rest.]",
-		content[:cut], cut, len(content))
+	compose := func(headLen, tailStart int) string {
+		tail := content[tailStart:]
+		elided := len(content) - headLen - len(tail)
+		return content[:headLen] + "\n\n" + fmt.Sprintf(windowMarkerFmt, elided) + "\n\n" + tail + "\n\n" +
+			fmt.Sprintf(truncationNoticeFmt, maxChars, len(content))
+	}
+
+	out := compose(len(head), tailStart)
+	if len(out) <= maxChars {
+		return out
+	}
+
+	// Guard chain (unreachable with the pinned constants below a 1 GiB
+	// input, but not something to trust): shrink the tail first,
+	// re-snapping the moved start on its new rune position; the
+	// recomputed elided figure follows automatically.
+	tailStart += len(out) - maxChars
+	if tailStart > len(content) {
+		tailStart = len(content)
+	}
+	for tailStart < len(content) && !utf8.RuneStart(content[tailStart]) {
+		tailStart++
+	}
+	out = compose(len(head), tailStart)
+	if len(out) <= maxChars {
+		return out
+	}
+	// Still over: shrink the head next. runeHeadLen keeps the cut
+	// rune-aligned within the shrunken head; when the remaining
+	// headroom is smaller than the first rune (or empty), the head
+	// empties entirely instead of tearing that rune.
+	out = compose(runeHeadLen(head, len(head)-(len(out)-maxChars)), tailStart)
+	if len(out) <= maxChars {
+		return out
+	}
+	// Absolute stop: a rune-snapped hard clamp of everything above.
+	return out[:cutRuneBoundary(out, maxChars)]
 }
 
 // maxPersistedArgStringBytes caps any single string value inside
