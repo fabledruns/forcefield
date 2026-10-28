@@ -44,6 +44,9 @@ func (m model) switchToSession(id string) (tea.Model, tea.Cmd) {
 	// belongs to the old session before swapping it out.
 	m.stopStream(true)
 	m.permissionPrompt = nil
+	// The agents panel describes the active session's children; stale
+	// rows have no future events to retire them.
+	m.agents = agentsState{}
 
 	// Switch runtime agent to the new session's agent, if any.
 	desired := strings.TrimSpace(sess.Agent)
@@ -106,6 +109,7 @@ func (m *model) footerHeight() int {
 	)
 	h := inputBorder + m.input.Height() + helpLine
 	h += m.suggestionsHeight()
+	h += m.agentsPanelHeight()
 	return h
 }
 
@@ -448,6 +452,7 @@ func (m model) View() string {
 		lipgloss.Left,
 		m.renderHeader(),
 		m.viewport.View(),
+		m.renderAgentsPanel(m.width),
 		m.renderFooter(),
 	)
 }

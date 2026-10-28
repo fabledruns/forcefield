@@ -193,6 +193,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.streamGen {
 			return m, nil // stale event from a replaced stream
 		}
+		m.agents.apply(msg.Event)
+		// A finished delegate child leaves the panel (terminal rows are
+		// not rendered) and collapses into one bounded transcript entry.
+		if summaries := m.agents.drainCollapsed(); len(summaries) > 0 {
+			for _, summary := range summaries {
+				m.Println("agent %s", summary)
+			}
+			m.refreshTranscript()
+		}
 		switch msg.Event.Type {
 		case runtime.EventText:
 			if msg.Event.Text == "" {

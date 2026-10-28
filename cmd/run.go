@@ -8,8 +8,10 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"forcefield/internal/config"
+	"forcefield/internal/orchevents"
 	"forcefield/internal/providers"
 	"forcefield/internal/recovery"
 	"forcefield/internal/runtime"
@@ -19,10 +21,13 @@ import (
 )
 
 // runtimeRun is a package var so tests can inject a fake without
-// redesigning the command architecture. Production creates a runtime and
-// runs with the caller's context so SIGINT/SIGTERM cancels the operation
-// instead of leaving tools or provider streams running. The status is
-// returned alongside the response so the process exit code reflects
+// redesigning the command architecture. Production creates a runtime
+// and runs the headless flow with the caller's context so SIGINT/SIGTERM
+// cancels the operation instead of leaving tools or provider streams
+// running. Since v1.6 the run is persisted as a session (resumable via
+// --resume) with a structured event log beside it, so every headless
+// run leaves local evidence of what happened. The status is returned
+// alongside the response so the process exit code reflects
 // verification: only a verified completion exits 0. The warnings carry
 // pull-based MCP integration notes (dead servers, missing tools) for
 // stderr reporting; headless runs have no /mcp surface.
@@ -31,8 +36,7 @@ var runtimeRun = func(ctx context.Context, msgs []providers.Message) (providers.
 	if err != nil {
 		return providers.Response{}, "", nil, err
 	}
-	resp, status, err := rt.RunContextWithStatus(ctx, msgs)
-	return resp, status, rt.MCPWarnings(), err
+	return runHeadlessSession(ctx, rt, msgs)
 }
 
 // runtimeNew is a package var so tests can inject a fake runtime for
@@ -117,13 +121,13 @@ func runCommand(args []string) error {
 		if err := rt.SetAgent(agentFlag); err != nil {
 			return err
 		}
-		response, status, err := rt.RunContextWithStatus(ctx, []providers.Message{
+		response, status, warns, err := runHeadlessSession(ctx, rt, []providers.Message{
 			{Role: providers.UserRole, Content: task},
 		})
 		if err != nil {
 			return mapRunError(err)
 		}
-		reportMCPWarnings(rt.MCPWarnings())
+		reportMCPWarnings(warns)
 		fmt.Println(response.Content)
 		return exitForRunStatus(status)
 	}
@@ -176,6 +180,228 @@ func mapRunError(err error) error {
 		return fmt.Errorf("operation cancelled: %w", err)
 	}
 	return err
+}
+
+// runHeadlessSession executes a fresh headless agent run and persists
+// its evidence: the session file (resumable by --resume) and a
+// structured orchestration-event log beside it. The run folds through
+// the same recovery driver the resume path uses, but the returned
+// status stays in the plain-run vocabulary: only a verified completion
+// maps to exit 0, an unverified or runtime-stopped finish maps to 5,
+// and cancellations, failures, and save-gate breaches stay errors (1).
+//
+// Evidence failure can never upgrade an outcome: a persist failure
+// fails the run through the same session-save gate the resume path
+// applies, and a verified completion whose event log could not be
+// written downgrades to unverified (exit 5) with the reason on stderr.
+func runHeadlessSession(ctx context.Context, rt *runtime.Runtime, msgs []providers.Message) (providers.Response, runtime.Status, []string, error) {
+	if len(msgs) == 0 {
+		return providers.Response{}, "", nil, errors.New("no task given")
+	}
+	warns := rt.MCPWarnings()
+
+	// Plain `ff run` historically ran a single throwaway turn without
+	// any session on disk. Persisting first means every headless run is
+	// resumable and every delegation shows up in the event log.
+	sess := session.New()
+	if agentFlag != "" {
+		sess.Agent = agentFlag
+	}
+	taskChars := 0
+	for _, m := range msgs {
+		sess.AddProviderMessage(m)
+		taskChars += len(m.Content)
+	}
+	if err := sess.Save(); err != nil {
+		// Without this first save there is no evidence at all, not even
+		// the record that the run happened: refuse to start.
+		return providers.Response{}, "", warns, fmt.Errorf("ff run: persist session: %w", err)
+	}
+
+	evw, openErr := orchevents.NewWriter(sess.EventLogPath(), "")
+	if openErr != nil {
+		fmt.Fprintf(os.Stderr, "ff run: orchestration event log could not be opened (%v): %s\n", openErr, sess.EventLogPath())
+	} else {
+		defer evw.Close()
+		rt.SetOrchestrationEventSink(evw)
+	}
+	emit := func(e orchevents.Event) {
+		if evw != nil {
+			evw.Emit(e)
+		}
+	}
+
+	emit(orchevents.Event{
+		Type:      orchevents.RunStarted,
+		Agent:     sess.Agent,
+		TaskChars: taskChars,
+	})
+
+	start := time.Now()
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	events, err := rt.StreamChat(runCtx, sess.ProviderMessages())
+	if err != nil {
+		emit(orchevents.Event{
+			Type:    orchevents.RunFailed,
+			Outcome: orchevents.OutcomeError,
+			Error:   err.Error(),
+		})
+		return providers.Response{}, "", warns, err
+	}
+	driver := recovery.NewDriver(sess)
+	driver.OnPersistFailure(cancel)
+	for ev := range events {
+		driver.HandleEvent(ev)
+		if mapped, ok := mapRunEvent(ev); ok {
+			emit(mapped)
+		}
+	}
+
+	// A persistence failure anywhere in the run overrides the outcome:
+	// even a verified Done is unusable when its record never reached
+	// disk. This is the same gate runResumeSession applies.
+	if driver.PersistFailed() {
+		err := fmt.Errorf("ff run: session save failed (%s)", driver.PersistErr())
+		emit(orchevents.Event{
+			Type:    orchevents.RunFailed,
+			Outcome: orchevents.OutcomeError,
+			Error:   err.Error(),
+		})
+		return providers.Response{}, "", warns, err
+	}
+
+	// Terminal classification mirrors the plain run's historical exit
+	// vocabulary: EventDone resolves through the verification status
+	// (0 verified / 5 otherwise), a runtime-enforced stop (EventBlocked)
+	// behaves like an unverified finish, and cancellation and errors
+	// return as errors (exit 1 via mapRunError).
+	kind, termErr, hasTerm := driver.Outcome()
+	status, statusOK := driver.FinalStatus()
+	if !statusOK {
+		if hasTerm && kind == runtime.EventBlocked {
+			status = runtime.StatusBlocked
+		} else {
+			status = runtime.StatusPartial
+		}
+	}
+	resp, respOK := driver.FinalResponse()
+
+	var finalType orchevents.Type
+	finalOutcome := ""
+	switch {
+	case !hasTerm:
+		err = errors.New("ff run ended without a terminal event")
+		finalType, finalOutcome = orchevents.RunFailed, orchevents.OutcomeError
+	case kind == runtime.EventDone:
+		finalType, finalOutcome = orchevents.RunCompleted, orchevents.OutcomeDone
+	case kind == runtime.EventBlocked:
+		finalType, finalOutcome = orchevents.RunBlocked, orchevents.OutcomeBlocked
+	case kind == runtime.EventCancelled:
+		if termErr == nil {
+			termErr = context.Canceled
+		}
+		err = termErr
+		finalType, finalOutcome = orchevents.RunCancelled, orchevents.OutcomeCancelled
+	case kind == runtime.EventError:
+		if termErr == nil {
+			termErr = errors.New("run failed")
+		}
+		err = termErr
+		finalType, finalOutcome = orchevents.RunFailed, orchevents.OutcomeError
+	default:
+		err = fmt.Errorf("ff run: unexpected terminal event %d", kind)
+		finalType, finalOutcome = orchevents.RunFailed, orchevents.OutcomeError
+	}
+
+	// Telemetry can never upgrade an outcome: a verified completion
+	// whose own evidence could not be written exits unverified instead,
+	// with the reason on stderr. Failed runs keep failing.
+	if evw != nil && openErr == nil && evw.Err() != "" {
+		fmt.Fprintf(os.Stderr, "ff run: orchestration event log write failed (%s); session evidence may be incomplete\n", evw.Err())
+	}
+	if (openErr != nil || (evw != nil && evw.Err() != "")) && err == nil && status == runtime.StatusVerified {
+		fmt.Fprintln(os.Stderr, "ff run: result marked unverified: orchestration event log unusable")
+		status = runtime.StatusPartial
+	}
+
+	exitCode := recovery.ExitUnverified
+	switch {
+	case err != nil:
+		exitCode = 1
+	case status == runtime.StatusVerified:
+		exitCode = 0
+	}
+	final := orchevents.Event{
+		Type:       finalType,
+		Outcome:    finalOutcome,
+		Status:     string(status),
+		DurationMS: time.Since(start).Milliseconds(),
+		ExitCode:   &exitCode,
+	}
+	if termErr != nil {
+		final.Error = termErr.Error()
+	}
+	emit(final)
+
+	if respOK {
+		return resp, status, warns, err
+	}
+	return providers.Response{}, status, warns, err
+}
+
+// mapRunEvent translates one runtime event into the orchestration event
+// vocabulary. Text, thinking, and progress paints carry no run evidence
+// and produce no line. Only identity, counters, and durations cross:
+// no content, no arguments, no paths.
+func mapRunEvent(ev runtime.Event) (orchevents.Event, bool) {
+	switch ev.Type {
+	case runtime.EventToolStart:
+		if ev.ToolCall == nil {
+			return orchevents.Event{}, false
+		}
+		return orchevents.Event{
+			Type:   orchevents.ToolStarted,
+			CallID: ev.ToolCall.ID,
+			Tool:   ev.ToolCall.Name,
+		}, true
+	case runtime.EventToolFinish:
+		return mapToolTerminal(ev.ToolResult, orchevents.ToolCompleted)
+	case runtime.EventToolFailed:
+		return mapToolTerminal(ev.ToolResult, orchevents.ToolFailed)
+	case runtime.EventToolDenied:
+		return mapToolTerminal(ev.ToolResult, orchevents.ToolDenied)
+	case runtime.EventToolCancelled:
+		return mapToolTerminal(ev.ToolResult, orchevents.ToolCancelled)
+	default:
+		return orchevents.Event{}, false
+	}
+}
+
+// mapToolTerminal stamps one terminal tool outcome. IsError on a plain
+// finish (the scheduler's composition flag) still counts as a failure;
+// a provider-visible shell exit code rides metadata for forensics.
+func mapToolTerminal(result *runtime.ToolResult, terminal orchevents.Type) (orchevents.Event, bool) {
+	if result == nil {
+		return orchevents.Event{}, false
+	}
+	if result.IsError && terminal == orchevents.ToolCompleted {
+		terminal = orchevents.ToolFailed
+	}
+	e := orchevents.Event{
+		Type:       terminal,
+		CallID:     result.ToolCallID,
+		Tool:       result.Name,
+		DurationMS: result.Duration.Milliseconds(),
+		Attempt:    result.Attempt,
+	}
+	if result.Err != nil {
+		e.Error = result.Err.Error()
+	}
+	if result.HasExitCode {
+		e.Meta = map[string]any{"exit_code": result.ExitCode}
+	}
+	return e, true
 }
 
 // runResumeSession continues an existing session headlessly: load, heal

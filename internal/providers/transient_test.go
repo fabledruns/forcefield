@@ -37,7 +37,7 @@ func TestIsTransient(t *testing.T) {
 		{"canceled", context.Canceled, false},
 		{"protocol", &protocolError{msg: "bad chunk"}, false},
 		{"plain error", errors.New("boom"), false},
-		{"in-flight guard", errRequestInFlight, false},
+		{"in-flight guard", ErrInFlight, false},
 	}
 	for _, tc := range cases {
 		if got := IsTransient(tc.err); got != tc.want {

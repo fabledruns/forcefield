@@ -261,6 +261,13 @@ type Orchestration struct {
 	// MaxTaskChars caps one delegation task payload. Omitted resolves to
 	// 8000. Absolute ceiling: 65536; floor: 256.
 	MaxTaskChars *int `yaml:"max_task_chars,omitempty"`
+	// MaxTotalChildTurns caps aggregate model turns across ALL children
+	// of one top-level run (every nesting level counts against the same
+	// pool, so nesting cannot multiply the budget). Omitted resolves to
+	// 2048. When the pool runs out, the offending child's context is
+	// cancelled honestly (its own events record the cancellation) and
+	// the exhaustion is reported once. Ceiling: 8192.
+	MaxTotalChildTurns *int `yaml:"max_total_child_turns,omitempty"`
 	// ChildPermissions is how child agents resolve permission prompts:
 	// "deny" (default/equivalent, fail-closed) or "interactive" (child
 	// asks route to the operator's real approval surface, attributed,
@@ -282,6 +289,7 @@ const (
 	MaxOrchestrationPerRun    = 64
 	MinOrchestrationTaskChars = 256
 	MaxOrchestrationTaskChars = 65536
+	MaxOrchestrationTurns     = 8192
 )
 
 // Config is the top-level shape of config.yaml.
@@ -731,6 +739,11 @@ func validateOrchestration(o Orchestration) error {
 	if o.MaxTaskChars != nil {
 		if *o.MaxTaskChars < MinOrchestrationTaskChars || *o.MaxTaskChars > MaxOrchestrationTaskChars {
 			return fmt.Errorf("orchestration.max_task_chars %d must be %d..%d (omit the field for the default)", *o.MaxTaskChars, MinOrchestrationTaskChars, MaxOrchestrationTaskChars)
+		}
+	}
+	if o.MaxTotalChildTurns != nil {
+		if *o.MaxTotalChildTurns < 1 || *o.MaxTotalChildTurns > MaxOrchestrationTurns {
+			return fmt.Errorf("orchestration.max_total_child_turns %d must be 1..%d (omit the field for the default)", *o.MaxTotalChildTurns, MaxOrchestrationTurns)
 		}
 	}
 	switch o.ChildPermissions {

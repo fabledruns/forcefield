@@ -120,7 +120,7 @@ func Classify(err error) ErrorKind {
 	if errors.As(err, &opErr) {
 		return ErrKindConnection
 	}
-	if errors.Is(err, errRequestInFlight) {
+	if errors.Is(err, ErrInFlight) {
 		return ErrKindUnknown
 	}
 	var ue *url.Error
@@ -128,6 +128,16 @@ func Classify(err error) ErrorKind {
 		return Classify(ue.Err)
 	}
 	return ErrKindUnknown
+}
+
+// IsInFlight reports whether err is the provider's own one-request-at-a-
+// time gate refusing a second overlapping inference on the same provider
+// instance. It is not provider weather: the overlap is almost always a
+// just-cancelled sibling run (delegate child) whose stream is still
+// draining, so a clean no-output retry at the turn level is the correct
+// recovery. Not transient — the transport must never retry it internally.
+func IsInFlight(err error) bool {
+	return errors.Is(err, ErrInFlight)
 }
 
 // redactSecrets replaces every occurrence of each secret in s with a

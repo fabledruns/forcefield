@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
+	"forcefield/internal/orchevents"
 	"forcefield/internal/providers"
 	"forcefield/internal/session"
 	"forcefield/internal/task"
@@ -109,14 +111,34 @@ func (t delegateTool) ExecuteStream(ctx context.Context, args map[string]any, on
 	}
 	agentName = strings.ToLower(strings.TrimSpace(agentName))
 	taskText = strings.TrimSpace(taskText)
-	if runes := []rune(taskText); len(runes) > scope.orch.resolved.maxTaskChars {
-		return softDelegateResult(fmt.Sprintf(
+	taskRunes := len([]rune(taskText))
+	scope.orch.emitDelegation(ctx, scope, agentName, orchevents.Event{
+		Type:      orchevents.DelegationRequested,
+		Agent:     agentName,
+		TaskChars: taskRunes,
+	})
+	if taskRunes > scope.orch.resolved.maxTaskChars {
+		msg := fmt.Sprintf(
 			"task is %d characters, exceeding the limit of %d - delegate a smaller, more focused task",
-			len(runes), scope.orch.resolved.maxTaskChars)), nil
+			taskRunes, scope.orch.resolved.maxTaskChars)
+		scope.orch.emitDelegation(ctx, scope, agentName, orchevents.Event{
+			Type:        orchevents.DelegationRejected,
+			Agent:       agentName,
+			Budget:      orchevents.BudgetTaskChars,
+			BudgetLimit: scope.orch.resolved.maxTaskChars,
+			BudgetValue: taskRunes,
+			Reason:      msg,
+		})
+		return softDelegateResult(msg), nil
 	}
 
 	def, err := scope.orch.registry.Get(agentName)
 	if err != nil {
+		scope.orch.emitDelegation(ctx, scope, agentName, orchevents.Event{
+			Type:   orchevents.DelegationRejected,
+			Agent:  agentName,
+			Reason: fmt.Sprintf("unknown agent %q (%v)", agentName, err),
+		})
 		return softDelegateResult(fmt.Sprintf("unknown agent %q (%v)", agentName, err)), nil
 	}
 
@@ -136,14 +158,38 @@ func (t delegateTool) ExecuteStream(ctx context.Context, args map[string]any, on
 	newDepth, admitted := scope.admitSpawn()
 	if !admitted {
 		if newDepth > scope.orch.resolved.maxDepth {
-			return tools.Result{IsError: true, Content: fmt.Sprintf(
+			msg := fmt.Sprintf(
 				"delegation depth limit reached (depth %d with limit %d) - handle this task yourself or revise the plan",
-				newDepth, scope.orch.resolved.maxDepth)}, nil
+				newDepth, scope.orch.resolved.maxDepth)
+			scope.orch.emitDelegation(toolCtx, scope, agentName, orchevents.Event{
+				Type:        orchevents.DelegationRejected,
+				Agent:       agentName,
+				Budget:      orchevents.BudgetDepth,
+				BudgetLimit: scope.orch.resolved.maxDepth,
+				BudgetValue: newDepth,
+				Reason:      msg,
+			})
+			return tools.Result{IsError: true, Content: msg}, nil
 		}
-		return softDelegateResult(fmt.Sprintf(
+		msg := fmt.Sprintf(
 			"delegation limit reached (%d child runs in this session, limit %d)",
-			scope.spawnedTotal(), scope.orch.resolved.maxPerRun)), nil
+			scope.spawnedTotal(), scope.orch.resolved.maxPerRun)
+		scope.orch.emitDelegation(toolCtx, scope, agentName, orchevents.Event{
+			Type:        orchevents.DelegationRejected,
+			Agent:       agentName,
+			Budget:      orchevents.BudgetSpawn,
+			BudgetLimit: scope.orch.resolved.maxPerRun,
+			BudgetValue: scope.spawnedTotal(),
+			Reason:      msg,
+		})
+		return softDelegateResult(msg), nil
 	}
+
+	scope.orch.emitDelegation(toolCtx, scope, agentName, orchevents.Event{
+		Type:      orchevents.DelegationAccepted,
+		Agent:     agentName,
+		TaskChars: taskRunes,
+	})
 
 	return scope.orch.runChild(toolCtx, scope, def, newDepth, taskText, onChunk)
 }
@@ -201,6 +247,22 @@ type childRunRecorder struct {
 
 	onChunk   func(tools.StreamChunk)
 	agentName string
+
+	// Run-level evidence hooks. Emissions are best-effort
+	// observability and never touch the child outcome.
+	orch       *Orchestrator
+	childScope *orchestrationScope
+	childRunID string
+	childCtx   context.Context
+
+	// Aggregate budget hooks (Contract: orchestration.max_total_child_
+	// turns): the shared pool, this limit, and the child context cancel
+	// so the offending child stops honestly. overBudget marks that this
+	// child's own cancellation came from the budget, for the report.
+	shared       *orchestrationShared
+	turnLimit    int
+	budgetCancel func()
+	overBudget   bool
 }
 
 type childOutcome struct {
@@ -218,6 +280,16 @@ func (r *childRunRecorder) On(e Event) {
 	defer r.mu.Unlock()
 	switch e.Type {
 	case EventThinking:
+		// A reasoning delta is not a model turn: deltas stream within
+		// one inference, and charging them as turns let verbose models
+		// consume the aggregate turn budget mid-inference (wave-1
+		// evidence: seven "turns" charged inside one 11.4s inference,
+		// killing a healthy child before its second real turn).
+		// runtime_turn emits one empty-thinking marker per inference
+		// attempt start, which is exactly the model-turn unit.
+		if e.Thinking != "" {
+			return
+		}
 		r.turns++
 		// One throttled lifecycle line per child turn. The scheduler
 		// redacts chunks before they reach the transcript.
@@ -225,6 +297,42 @@ func (r *childRunRecorder) On(e Event) {
 			r.budget--
 			name := r.agentName
 			r.onChunk(tools.StreamChunk{Stream: "progress", Data: fmt.Sprintf("[delegate: agent %q turn %d]", name, r.turns)})
+		}
+		// Run-level evidence: one bounded-counter line per child turn,
+		// capped by the event file's byte cap rather than the transcript
+		// budget so evidence counts stay exact.
+		if r.orch != nil {
+			r.orch.emitChildRun(r.childCtx, r.childScope, orchevents.Event{
+				Type:       orchevents.ChildProgress,
+				Agent:      r.agentName,
+				ChildRunID: r.childRunID,
+				Turns:      r.turns,
+			})
+		}
+		// Aggregate budget: every child turn of the top-level run shares
+		// one pool. Crossing it cancels this child's context honestly (the
+		// child records an actual cancellation, never an invented error)
+		// and reports the exhaustion exactly once, on the first crossing.
+		if r.shared != nil && r.turnLimit > 0 {
+			total, over, fire := r.shared.consumeTurn(r.turnLimit)
+			if over {
+				r.overBudget = true
+				if r.budgetCancel != nil {
+					r.budgetCancel()
+				}
+				if fire && r.orch != nil {
+					r.orch.emitChildRun(r.childCtx, r.childScope, orchevents.Event{
+						Type:        orchevents.BudgetExhausted,
+						Agent:       r.agentName,
+						ChildRunID:  r.childRunID,
+						Budget:      orchevents.BudgetTotalTurns,
+						BudgetLimit: r.turnLimit,
+						BudgetValue: total,
+						Reason: fmt.Sprintf(
+							"aggregate child-turn budget exhausted (%d turns across all children, limit %d)", total, r.turnLimit),
+					})
+				}
+			}
 		}
 	case EventToolFinish, EventToolFailed, EventToolCancelled, EventToolDenied:
 		if e.ToolResult == nil {
@@ -330,15 +438,29 @@ func (o *Orchestrator) runChild(
 	history := []providers.Message{{Role: providers.UserRole, Content: taskText}}
 	initial := buildMessagesWithBudget(history, childSnap.agent, childSnap.contextBudget)
 
+	childRunID := orchevents.ChildUUID()
+	childStart := time.Now()
 	rec := &childRunRecorder{
-		budget:    maxChildProgressLines,
-		onChunk:   outerChunk,
-		agentName: def.Name,
+		budget:       maxChildProgressLines,
+		onChunk:      outerChunk,
+		agentName:    def.Name,
+		orch:         o,
+		childScope:   childScope,
+		childRunID:   childRunID,
+		childCtx:     childCtx,
+		shared:       scope.shared,
+		turnLimit:    o.resolved.maxTotalTurns,
+		budgetCancel: cancel,
 	}
 	emit := func(e Event) bool {
 		rec.On(e)
 		return true
 	}
+	o.emitChildRun(childCtx, childScope, orchevents.Event{
+		Type:       orchevents.AgentSpawned,
+		Agent:      def.Name,
+		ChildRunID: childRunID,
+	})
 
 	// Child trace: same enablement, redaction, retention, and caps as a
 	// top-level run. The run id is a fresh UUID; the agent field carries
@@ -384,6 +506,8 @@ func (o *Orchestrator) runChild(
 		rec.out = childOutcome{terminal: EventCancelled, errText: childCtx.Err().Error()}
 		rec.mu.Unlock()
 	}
+
+	o.emitChildCompleted(childCtx, childScope, childRunID, def.Name, rec, childStart)
 
 	return composeDelegateResult(def.Name, rec), nil
 }
@@ -433,10 +557,80 @@ func composeDelegateResult(agentName string, rec *childRunRecorder) tools.Result
 	case EventBlocked:
 		return tools.Result{IsError: true, Content: head + "\nchild run blocked: " + scrubbedContent(out.errText)}
 	case EventCancelled:
-		return tools.Result{IsError: true, Content: head + "\ndelegation cancelled"}
+		return tools.Result{IsError: true, Content: head + "\ndelegation cancelled" + rec.budgetNote()}
 	default:
 		return tools.Result{IsError: true, Content: head + "\nunknown child terminal event"}
 	}
+}
+
+// outcomeSnapshot copies the single terminal record plus counter
+// totals for the event log. Denied totals fold the per-tool map.
+func (r *childRunRecorder) outcomeSnapshot() (out childOutcome, seen, turns, toolCalls, failed, denied int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out = r.out
+	seen = boolToInt(r.seen)
+	turns = r.turns
+	toolCalls = r.toolCalls
+	failed = r.failed
+	for _, n := range r.denied {
+		denied += n
+	}
+	return out, seen, turns, toolCalls, failed, denied
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// emitChildCompleted records the child's final outcome as one
+// structured event. Terminal state is whatever the recorder first
+// observed (or the defensive cancellation record) — never recomposed
+// from the report body.
+func (o *Orchestrator) emitChildCompleted(childCtx context.Context, childScope *orchestrationScope, childRunID, agentName string, rec *childRunRecorder, started time.Time) {
+	out, seen, turns, toolCalls, failed, denied := rec.outcomeSnapshot()
+	ev := orchevents.Event{
+		Type:       orchevents.ChildCompleted,
+		Agent:      agentName,
+		ChildRunID: childRunID,
+		Turns:      turns,
+		ToolCalls:  toolCalls,
+		Failed:     failed,
+		Denied:     denied,
+		DurationMS: time.Since(started).Milliseconds(),
+	}
+	switch {
+	case seen == 0:
+		ev.Outcome = orchevents.OutcomeError
+		ev.Error = "child run ended without a terminal event"
+	case out.terminal == EventDone:
+		ev.Outcome = orchevents.OutcomeDone
+		ev.Status = string(out.status)
+	case out.terminal == EventError:
+		ev.Outcome = orchevents.OutcomeError
+		ev.Error = out.errText
+	case out.terminal == EventBlocked:
+		ev.Outcome = orchevents.OutcomeBlocked
+		ev.Error = out.errText
+	default: // EventCancelled
+		ev.Outcome = orchevents.OutcomeCancelled
+		ev.Error = out.errText
+	}
+	o.emitChildRun(childCtx, childScope, ev)
+}
+
+// budgetNote appends the honest reason when this child's own
+// cancellation came from the aggregate child-turn budget.
+func (r *childRunRecorder) budgetNote() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.overBudget {
+		return ": aggregate child-turn budget exhausted - the orchestrator stopped this child"
+	}
+	return ""
 }
 
 // truncateDelegateBody applies a rune-boundary byte cut with the shared

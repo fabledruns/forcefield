@@ -231,6 +231,10 @@ func (s *scheduler) runWithConcurrency(ctx context.Context, calls []providers.To
 // runOneWithManager executes one tool call against an explicit manager
 // snapshot. See RunWithManager for why the snapshot matters.
 func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCall, emit func(Event) bool, manager *tools.Manager) ToolResult {
+	// The call id rides the context so evidence layers (traces, the
+	// orchestration event log) attribute emissions without parsing
+	// arguments or threading ids through tool signatures.
+	ctx = tools.WithToolCall(ctx, call.ID)
 	started := time.Now()
 	emit(Event{Type: EventToolStart, ToolCall: &call})
 

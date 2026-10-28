@@ -37,7 +37,20 @@ The CLI starts the TUI from:
 | Provider picker   | Modal list of providers from `/provider`, with capabilities and availability per row. |
 | Model picker      | Modal list of models for the active provider.             |
 | System output     | Command results with headings, key/value, command, path, status, and diff hierarchy plus inline code/number/reference styling; long blocks collapse. |
+| Agents panel      | Live delegate-children block above the input box while children run. |
 | Banner / styles   | Visual presentation helpers.                              |
+
+The agents panel appears only while at least one delegate child is queued
+or running, and it renders purely from observed runtime events (never a
+predicted or invented state): one bounded row per child, labeled
+`subagent-N`, with a state glyph, the child agent, the run state, and the
+turn count. Turn counts show the observed progress with a `+` suffix when
+the child's progress budget hid turns (`2+ turns` = at least two observed).
+Narrow terminals drop the task column and switch to ASCII glyphs. When a
+child reaches a terminal state its row leaves the panel and collapses into
+a single transcript entry (`subagent-1 completed: status=partial,
+turns=7`), so the transcript never floods. The panel resets on `/clear`,
+`/new`, and session switches, and always describes the active session.
 
 ### Provider and Model Pickers
 

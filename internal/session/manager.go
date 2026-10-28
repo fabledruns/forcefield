@@ -51,6 +51,20 @@ func validID(id string) bool {
 	return true
 }
 
+// Dir returns the directory session files live in, relative to the
+// working directory. Callers persisting run evidence next to a session
+// use it instead of re-declaring the layout.
+func Dir() string {
+	return filepath.FromSlash(sessionsDir)
+}
+
+// EventLogPath returns the path of this session's orchestration event
+// log (see internal/orchevents), which lives beside the session file.
+// The result is only meaningful for ids validID accepts.
+func (s *Session) EventLogPath() string {
+	return filepath.Join(filepath.FromSlash(sessionsDir), s.ID+".events.jsonl")
+}
+
 // Save persists the session atomically (temp file + flush + rename), so a
 // crash mid-write never leaves a truncated file. See docs/Session.md.
 func (s *Session) Save() (err error) {

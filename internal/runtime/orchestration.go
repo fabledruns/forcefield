@@ -8,6 +8,7 @@ import (
 
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
+	"forcefield/internal/orchevents"
 	"forcefield/internal/permissions"
 	"forcefield/internal/skills"
 	"forcefield/internal/tools"
@@ -21,6 +22,7 @@ type effectiveOrchestration struct {
 	maxConcurrent  int
 	maxPerRun      int
 	maxTaskChars   int
+	maxTotalTurns  int
 	childPermsMode string // config.ChildPermissionsDeny or ...Interactive
 }
 
@@ -28,16 +30,18 @@ type effectiveOrchestration struct {
 // Validation already happened at config load; this only resolves defaults.
 func resolveOrchestration(cfg config.Orchestration) effectiveOrchestration {
 	const (
-		defaultDepth     = 1
-		defaultConc      = 4
-		defaultPerRun    = 16
-		defaultTaskChars = 8000
+		defaultDepth      = 1
+		defaultConc       = 4
+		defaultPerRun     = 16
+		defaultTaskChars  = 8000
+		defaultTotalTurns = 2048
 	)
 	eff := effectiveOrchestration{
 		maxDepth:       defaultDepth,
 		maxConcurrent:  defaultConc,
 		maxPerRun:      defaultPerRun,
 		maxTaskChars:   defaultTaskChars,
+		maxTotalTurns:  defaultTotalTurns,
 		childPermsMode: config.ChildPermissionsDeny,
 	}
 	if cfg.MaxDepth != nil {
@@ -51,6 +55,9 @@ func resolveOrchestration(cfg config.Orchestration) effectiveOrchestration {
 	}
 	if cfg.MaxTaskChars != nil {
 		eff.maxTaskChars = *cfg.MaxTaskChars
+	}
+	if cfg.MaxTotalChildTurns != nil {
+		eff.maxTotalTurns = *cfg.MaxTotalChildTurns
 	}
 	switch cfg.ChildPermissions {
 	case "", config.ChildPermissionsDeny:
@@ -88,6 +95,12 @@ type Orchestrator struct {
 	// is never overwritten by concurrent prompts. nil usage for deny
 	// mode: children never open prompts there, so sharing is moot.
 	askLock sync.Mutex
+
+	// sinkMu guards orchestration-event sink swaps (set through
+	// Runtime.SetOrchestrationEventSink) against emission reads inside
+	// an active run. Emissions are best-effort: a nil sink disables.
+	sinkMu sync.Mutex
+	sink   orchevents.Sink
 }
 
 // newOrchestrator builds the process-wide orchestrator with its bounds
@@ -104,12 +117,94 @@ func newOrchestrator(cfg config.Orchestration, registry *agent.Registry, skillsS
 	}
 }
 
+// setSink swaps the orchestration event sink (nil clears it). See
+// Runtime.SetOrchestrationEventSink.
+func (o *Orchestrator) setSink(s orchevents.Sink) {
+	if o == nil {
+		return
+	}
+	o.sinkMu.Lock()
+	defer o.sinkMu.Unlock()
+	o.sink = s
+}
+
+// emitDelegation records a pre-spawn delegation event (requested,
+// accepted, or rejected), attributed to the requested child's path.
+// The sink is read under the mutex but never held across the emission
+// itself, and a nil sink disables the whole path.
+func (o *Orchestrator) emitDelegation(ctx context.Context, scope *orchestrationScope, target string, ev orchevents.Event) {
+	if o == nil || ctx == nil || scope == nil {
+		return
+	}
+	o.sinkMu.Lock()
+	s := o.sink
+	o.sinkMu.Unlock()
+	if s == nil {
+		return
+	}
+	chain := scope.chain
+	if target != "" {
+		extended := make([]string, len(chain), len(chain)+1)
+		copy(extended, chain)
+		chain = append(extended, strings.ToLower(target))
+	}
+	ev.Chain = strings.Join(chain, " > ")
+	ev.Depth = scope.depth
+	if ev.CallID == "" {
+		ev.CallID = tools.ToolCallIDFromContext(ctx)
+	}
+	s.Emit(ev)
+}
+
+// emitChildRun records a child-run lifecycle event (spawned, progress,
+// completed) with the child's own path attribution; childScope already
+// carries the full chain including the child name.
+func (o *Orchestrator) emitChildRun(ctx context.Context, childScope *orchestrationScope, ev orchevents.Event) {
+	if o == nil || ctx == nil || childScope == nil {
+		return
+	}
+	o.sinkMu.Lock()
+	s := o.sink
+	o.sinkMu.Unlock()
+	if s == nil {
+		return
+	}
+	ev.Chain = strings.Join(childScope.chain, " > ")
+	ev.Depth = childScope.depth
+	if ev.CallID == "" {
+		ev.CallID = tools.ToolCallIDFromContext(ctx)
+	}
+	s.Emit(ev)
+}
+
 // orchestrationShared is the spawn counter shared by every orchestration
 // scope in one top-level run: all levels count against
 // max_children_per_run, so nesting cannot multiply the budget.
 type orchestrationShared struct {
 	mu      sync.Mutex
 	spawned int
+	// turns counts aggregate child model turns across every nesting
+	// level of one top-level run; fired dedups the BudgetExhausted
+	// emission so the first crossing reports exactly once. Cancellation
+	// still applies to every over-limit child that keeps recording.
+	turns int
+	fired bool
+}
+
+// consumeTurn charges one child model turn against the aggregate
+// budget. It reports whether this charge crossed the limit and whether
+// this charge is the one that reports it.
+func (sh *orchestrationShared) consumeTurn(limit int) (total int, over, fire bool) {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	sh.turns++
+	total = sh.turns
+	over = limit > 0 && total > limit
+	if over && !sh.fired {
+		sh.fired = true
+		fire = true
+	}
+	return total, over, fire
 }
 
 // orchestrationScope is the per-parent-run orchestration context. It

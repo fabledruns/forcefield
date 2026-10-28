@@ -76,6 +76,58 @@ Doctor never prints secret values such as API keys. It exits non-zero when a `[F
 ff doctor
 ```
 
+## Run evidence (v1.6)
+
+`ff run` persists every headless run as a session (resumable via `--resume`) and writes a
+structured JSONL orchestration event log beside the session JSON under
+`.forcefield/sessions/` (`<session-id>.events.jsonl`). The log is append-only and
+byte-bounded, and the writer scrubs every field for secrets. The schema is documented in
+[Events](Events.md).
+
+Exit codes reflect verification, not completion:
+
+| Code | Meaning |
+|---|---|
+| 0 | verified completion (a plain answer that used no tools counts as verified) |
+| 5 | unverified: the model finished without verification, the run was blocked, or a verified answer whose event log was unusable |
+| 1 | errors: provider failure, runtime-enforced stop, or cancellation (SIGINT/SIGTERM) |
+
+Telemetry can never upgrade an outcome. When the event log cannot be opened, written, or
+flushed, `ff run` says so on stderr and a verified completion is demoted to unverified
+(exit 5); failed runs keep failing:
+
+```text
+ff run: orchestration event log could not be opened (<error>): <path>
+ff run: orchestration event log write failed (<error>); session evidence may be incomplete
+ff run: result marked unverified: orchestration event log unusable
+```
+
+The log carries identity, counters, and durations only — no task text, no arguments, no
+response content. Common queries:
+
+```bash
+# final exit code of a run
+jq -s '.[-1].exit_code' .forcefield/sessions/<session-id>.events.jsonl
+
+# budget exhaustion (aggregate child turns, depth, spawn, task chars)
+grep budget_exhausted .forcefield/sessions/<session-id>.events.jsonl
+
+# delegation lifecycle (requested / accepted / rejected) and child lifecycle
+grep -E '"(delegation|child)_' .forcefield/sessions/<session-id>.events.jsonl
+
+# tool denials
+grep tool_denied .forcefield/sessions/<session-id>.events.jsonl
+
+# per-child turn counts (one number per child progress line)
+grep child_progress .forcefield/sessions/<session-id>.events.jsonl | jq '.turns'
+```
+
+`ff doctor` does not probe the events path; an unusable events location surfaces as the
+stderr lines above during `ff run`, not at startup.
+
+`ff run --resume <session-id>` keeps the recovery contract's exit codes instead: 0
+verified, 2 terminal, 3 retryable, 4 needs a human, 5 unverified.
+
 ## Request Paths
 
 ### Interactive path

@@ -9,6 +9,7 @@ You can find the index of the contents in this file.
 | ------------------------------------------- | ------------------------------------------------------------------- |
 | [Getting Started](GettingStarted.md) | Install Forcefield, configure Ollama, and run your first session. |
 | [CLI](CLI.md)                        | Command-line entry points: `ff`, `ff chat`, `ff run`, and resume. |
+| [Events](Events.md)                  | JSONL run-evidence log for headless runs: schema, correlation, file semantics, exit codes. |
 | [Audit](Audit.md)                    | Forensic hardening audit record: scope, confirmed findings and fixes, and intentionally unchanged areas. |
 | [Recovery](Recovery.md)              | Run recovery, supervision, and process-tree lifecycle. |
 | [Benchmarks](Benchmarks.md)        | How to measure Forcefield with the standalone HPOV suite, and where its methodology lives. |

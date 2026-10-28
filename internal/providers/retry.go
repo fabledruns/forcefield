@@ -311,10 +311,10 @@ func doWithRetry(
 	}
 }
 
-// errRequestInFlight is returned when a second inference request hits a
+// ErrInFlight is returned when a second inference request hits the
 // provider while one is still streaming. The agent loop is sequential by
 // design, so this always indicates a bug worth surfacing, not queueing.
-var errRequestInFlight = errors.New("another inference request is already in flight for this provider")
+var ErrInFlight = errors.New("another inference request is already in flight for this provider")
 
 // annotateStatusHint attaches a provider-specific action hint to a
 // returned *statusError (found via errors.As) and returns it; any other
@@ -346,7 +346,7 @@ func (g *requestGate) acquire() error {
 	case g.sem <- struct{}{}:
 		return nil
 	default:
-		return errRequestInFlight
+		return ErrInFlight
 	}
 }
 

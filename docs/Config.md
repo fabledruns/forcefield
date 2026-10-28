@@ -187,16 +187,18 @@ orchestration:
   max_concurrent_children: 4
   max_children_per_run: 16
   max_task_chars: 8000
+  max_total_child_turns: 2048
   child_permissions: deny
 ```
 
 | Field | Default | Valid range | Description |
 | --- | --- | --- | --- |
 | `enabled` | `false` | bool | Gates the `delegate` tool entirely. |
-| `max_depth` | `1` | 1–3 | Delegation nesting levels (1 = children only). |
-| `max_concurrent_children` | `4` | 1–8 | Child runs running at once, process-wide. |
-| `max_children_per_run` | `16` | 1–64 | Spawns per top-level run, cumulative across levels. |
-| `max_task_chars` | `8000` | 256–65536 | Payload cap for one delegation task. |
+| `max_depth` | `1` | 1-3 | Delegation nesting levels (1 = children only). |
+| `max_concurrent_children` | `4` | 1-8 | Child runs running at once, process-wide. |
+| `max_children_per_run` | `16` | 1-64 | Spawns per top-level run, cumulative across levels. |
+| `max_task_chars` | `8000` | 256-65536 | Payload cap for one delegation task. |
+| `max_total_child_turns` | `2048` | 1-8192 | Aggregate model turns across ALL children of one top-level run. Crossing it cancels the offending child (honest terminal state = cancelled) and reports `budget_exhausted` (`budget: total_turns`) once. Omit the field for the default; an explicit `0` is rejected. |
 | `child_permissions` | `deny` | `deny` / `interactive` | How child permission asks resolve; `deny` fails closed, `interactive` routes attributed one-time asks to the operator's surface. |
 
 `child_permissions: deny` never opens a prompt or persists anything.

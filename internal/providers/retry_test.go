@@ -350,8 +350,8 @@ func TestSecondConcurrentRequestIsRejected(t *testing.T) {
 		t.Fatal("first stream produced no events")
 	}
 
-	if _, err := p.StreamChat(context.Background(), []Message{{Role: UserRole, Content: "two"}}, nil); !errors.Is(err, errRequestInFlight) {
-		t.Fatalf("second concurrent StreamChat() error = %v, want errRequestInFlight", err)
+	if _, err := p.StreamChat(context.Background(), []Message{{Role: UserRole, Content: "two"}}, nil); !errors.Is(err, ErrInFlight) {
+		t.Fatalf("second concurrent StreamChat() error = %v, want ErrInFlight", err)
 	}
 
 	close(release)

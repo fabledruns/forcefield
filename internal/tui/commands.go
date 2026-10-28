@@ -80,6 +80,7 @@ func (m *model) Clear() {
 	m.stopStream(false)
 	m.entries = nil
 	m.activeTools = make(map[string]int)
+	m.agents = agentsState{}
 	m.assistantBuffer = ""
 	m.status = ""
 	m.clearNotice()
@@ -108,6 +109,7 @@ func (m *model) NewSession() error {
 
 	m.session = next
 	m.entries = nil
+	m.agents = agentsState{}
 	m.assistantBuffer = ""
 	m.activeTools = make(map[string]int)
 	m.permissionPrompt = nil

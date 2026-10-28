@@ -10,6 +10,7 @@ import (
 	"forcefield/internal/config"
 	"forcefield/internal/mcp"
 	"forcefield/internal/memory"
+	"forcefield/internal/orchevents"
 	"forcefield/internal/perfmark"
 	"forcefield/internal/permissions"
 	"forcefield/internal/providers"
@@ -149,6 +150,19 @@ func NewFromConfig(cfg *config.Config) (*Runtime, error) {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
 	return newRuntime(cfg)
+}
+
+// SetOrchestrationEventSink attaches local orchestration-event
+// observability (see internal/orchevents) to this runtime process.
+// Nil-safe. Prefer calling it before the first run in this process:
+// emissions use whichever sink is registered when the event happens,
+// and swaps are mutex-guarded, so a mid-run swap always observes one
+// consistent sink instance, never a half-initialized one.
+func (rt *Runtime) SetOrchestrationEventSink(s orchevents.Sink) {
+	if rt == nil || rt.orch == nil {
+		return
+	}
+	rt.orch.setSink(s)
 }
 
 func newRuntime(cfg *config.Config) (*Runtime, error) {

@@ -151,6 +151,12 @@ type model struct {
 	// shared status string.
 	activeTools map[string]int
 
+	// agents tracks live delegate children for the agents panel (see
+	// agentsstate.go): one row per delegate call, updated from
+	// streamEventMsg and rendered by renderAgentsPanel. Pure presentation
+	// state - the transcript owns the tool-call conversation.
+	agents agentsState
+
 	// picker is non-nil while the /sessions modal is open. It owns
 	// nothing beyond its own selection state; switching the active
 	// session is still handled by the model.

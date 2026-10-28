@@ -95,6 +95,13 @@ func markTransient(err error) error {
 // thinking, or tool calls emitted yet) that is transient, with attempts
 // remaining and a live context. Anything already emitted must never be
 // replayed — the TUI already showed it and the session may reference it.
+//
+// The in-flight guard is the deliberate second exception: it fires when a
+// just-cancelled sibling run (delegate child) is still draining its
+// stream, which is over in milliseconds and remembered nothing, so the
+// clean retry safely recovers instead of failing the whole run (wave-1
+// evidence: budget-cancelled child mid-stream, parent's next inference
+// then lost the gate race and the run exited 1).
 func canRetryTurn(attempt int, emitted bool, err error, ctx context.Context) bool {
 	if attempt >= maxTurnRetries {
 		return false
@@ -104,6 +111,9 @@ func canRetryTurn(attempt int, emitted bool, err error, ctx context.Context) boo
 	}
 	if ctx.Err() != nil {
 		return false
+	}
+	if providers.IsInFlight(err) {
+		return true
 	}
 	return providers.IsTransient(err)
 }
