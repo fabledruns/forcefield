@@ -6,8 +6,9 @@ import (
 )
 
 // TestValidateOrchestrationTotalTurns pins the range for the aggregate
-// child-turn budget: 0/omit = default, explicit values must fall
-// inside 1..MaxOrchestrationTurns, and rejections name the field.
+// child-turn budget: omit = default, explicit 0 is rejected, explicit
+// values must fall inside 1..MaxOrchestrationTurns, and rejections name
+// the field.
 func TestValidateOrchestrationTotalTurns(t *testing.T) {
 	withTurns := func(v int) Orchestration {
 		vv := v

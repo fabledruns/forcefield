@@ -36,8 +36,8 @@ func TestAdversarialOrchestrationAcceptsExactBounds(t *testing.T) {
 		name   string
 		bounds string
 	}{
-		{"all ceilings", "  enabled: true\n  max_depth: 3\n  max_concurrent_children: 8\n  max_children_per_run: 64\n  max_task_chars: 65536"},
-		{"all floors", "  enabled: true\n  max_depth: 1\n  max_concurrent_children: 1\n  max_children_per_run: 1\n  max_task_chars: 256"},
+		{"all ceilings", "  enabled: true\n  max_depth: 3\n  max_concurrent_children: 8\n  max_children_per_run: 64\n  max_task_chars: 65536\n  max_total_child_turns: 8192"},
+		{"all floors", "  enabled: true\n  max_depth: 1\n  max_concurrent_children: 1\n  max_children_per_run: 1\n  max_task_chars: 256\n  max_total_child_turns: 1"},
 		{"all valid, disabled", "  enabled: false\n  max_depth: 1\n  max_concurrent_children: 4"},
 		{"interactive mode", "  enabled: true\n  child_permissions: interactive"},
 		{"downgraded implies child below ceiling", "  enabled: true\n  max_depth: 2\n  max_concurrent_children: 2"},
@@ -71,6 +71,9 @@ func TestAdversarialOrchestrationRejectsOneBeyondEveryBound(t *testing.T) {
 		{"task_chars 65537", "  enabled: true\n  max_task_chars: 65537", "max_task_chars"},
 		{"task_chars 255", "  enabled: true\n  max_task_chars: 255", "max_task_chars"},
 		{"task_chars -100", "  enabled: true\n  max_task_chars: -100", "max_task_chars"},
+		{"total_turns 8193", "  enabled: true\n  max_total_child_turns: 8193", "max_total_child_turns"},
+		{"total_turns 0", "  enabled: true\n  max_total_child_turns: 0", "max_total_child_turns"},
+		{"total_turns -1", "  enabled: true\n  max_total_child_turns: -1", "max_total_child_turns"},
 		{"unknown child mode", "  enabled: true\n  child_permissions: always_ask", "child_permissions"},
 		{"case sensitive mode", "  enabled: true\n  child_permissions: Interactive", "child_permissions"},
 		{"depth beyond ceiling while disabled", "  enabled: false\n  max_depth: 99", "max_depth"},
@@ -118,11 +121,11 @@ func TestAdversarialOrchestrationRejectsConcurrencyBelowDepth(t *testing.T) {
 // TestAdversarialOrchestrationTreatsNullAsUnset pins the missing-field
 // semantics: an explicit YAML null must behave exactly like an omitted key.
 func TestAdversarialOrchestrationTreatsNullAsUnset(t *testing.T) {
-	cfg, err := loadOrchestrationBody(t, "  enabled: true\n  max_depth: null\n  max_task_chars: null")
+	cfg, err := loadOrchestrationBody(t, "  enabled: true\n  max_depth: null\n  max_task_chars: null\n  max_total_child_turns: null")
 	if err != nil {
 		t.Fatalf("Load() rejected null fields: %v", err)
 	}
-	if cfg.Orchestration.MaxDepth != nil || cfg.Orchestration.MaxTaskChars != nil {
+	if cfg.Orchestration.MaxDepth != nil || cfg.Orchestration.MaxTaskChars != nil || cfg.Orchestration.MaxTotalChildTurns != nil {
 		t.Fatalf("null fields must resolve to nil pointers, got %+v", cfg.Orchestration)
 	}
 }
@@ -222,10 +225,10 @@ func TestAdversarialDisabledOrchestrationStillValidates(t *testing.T) {
 // FuzzValidateOrchestration asserts the load boundary as a pure predicate:
 // an error is returned exactly when at least one documented bound is
 // violated (depth inside 1..3, children inside 1..8, perRun inside
-// 1..64, taskChars inside 256..65536, mode in the two supported values,
-// and the O2 cross-field rule cap >= depth when both are set). No
-// combination of inputs may panic, and identical inputs produce
-// identical outcomes.
+// 1..64, taskChars inside 256..65536, totalChildTurns inside 1..8192,
+// mode in the two supported values, and the O2 cross-field rule cap >=
+// depth when both are set). No combination of inputs may panic, and
+// identical inputs produce identical outcomes.
 func FuzzValidateOrchestration(f *testing.F) {
 	// Set/nil selectors plus each field's exact ceilings, floors, and
 	// one-step-beyond values, plus int extremes' neighborhood.
@@ -238,34 +241,39 @@ func FuzzValidateOrchestration(f *testing.F) {
 		pr       int
 		setChars bool
 		chars    int
+		setTurns bool
+		turns    int
 		mode     string
 	}{
-		{false, 0, false, 0, false, 0, false, 0, ""},
-		{true, 1, true, 1, true, 1, true, 256, ""},
-		{true, 3, true, 8, true, 64, true, 65536, ""},
-		{true, 3, true, 8, true, 64, true, 65536, "interactive"},
-		{true, 3, true, 8, true, 64, true, 65536, "deny"},
-		{true, 4, true, 8, true, 64, true, 65536, ""},           // depth beyond ceiling
-		{true, 0, true, 8, true, 64, true, 65536, ""},           // depth below floor
-		{true, 1, true, 9, true, 64, true, 65536, ""},           // cap beyond ceiling
-		{true, 1, true, 0, true, 64, true, 65536, ""},           // cap below floor
-		{true, 1, true, 8, true, 65, true, 65536, ""},           // perRun beyond ceiling
-		{true, 1, true, 8, true, 0, true, 65536, ""},            // perRun below floor
-		{true, 1, true, 8, true, 64, true, 65537, ""},           // chars beyond ceiling
-		{true, 1, true, 8, true, 64, true, 255, ""},             // chars below floor
-		{true, 2, true, 1, true, 64, true, 65536, ""},           // O2: cap < depth
-		{true, 3, true, 3, true, 64, true, 65536, ""},           // O2: cap == depth (legal)
-		{true, 2, false, 0, true, 64, true, 65536, ""},          // cross-field skipped when cap unset
-		{false, 0, true, 4, false, 0, false, 0, ""},             // unset fields never validate
-		{false, 0, false, 0, false, 0, false, 0, "INTERACTIVE"}, // case-sensitive
-		{false, 0, false, 0, false, 0, false, 0, "always_ask"},
-		{true, 1, true, 8, true, 64, true, 9223372036854775807, ""},
-		{true, 1, true, 8, true, 64, true, -9223372036854775808, ""},
+		{false, 0, false, 0, false, 0, false, 0, false, 0, ""},
+		{true, 1, true, 1, true, 1, true, 256, true, 1, ""},
+		{true, 3, true, 8, true, 64, true, 65536, true, 2048, ""},
+		{true, 3, true, 8, true, 64, true, 65536, true, 8192, ""},
+		{true, 3, true, 8, true, 64, true, 65536, true, 8192, "interactive"},
+		{true, 3, true, 8, true, 64, true, 65536, true, 8192, "deny"},
+		{true, 4, true, 8, true, 64, true, 65536, false, 0, ""},           // depth beyond ceiling
+		{true, 0, true, 8, true, 64, true, 65536, false, 0, ""},           // depth below floor
+		{true, 1, true, 9, true, 64, true, 65536, false, 0, ""},           // cap beyond ceiling
+		{true, 1, true, 0, true, 64, true, 65536, false, 0, ""},           // cap below floor
+		{true, 1, true, 8, true, 65, true, 65536, false, 0, ""},           // perRun beyond ceiling
+		{true, 1, true, 8, true, 0, true, 65536, false, 0, ""},            // perRun below floor
+		{true, 1, true, 8, true, 64, true, 65537, false, 0, ""},           // chars beyond ceiling
+		{true, 1, true, 8, true, 64, true, 255, false, 0, ""},             // chars below floor
+		{true, 1, true, 8, true, 64, true, 65536, true, 8193, ""},         // turns beyond ceiling
+		{true, 1, true, 8, true, 64, true, 65536, true, 0, ""},            // turns below floor
+		{true, 2, true, 1, true, 64, true, 65536, false, 0, ""},           // O2: cap < depth
+		{true, 3, true, 3, true, 64, true, 65536, false, 0, ""},           // O2: cap == depth (legal)
+		{true, 2, false, 0, true, 64, true, 65536, false, 0, ""},          // cross-field skipped when cap unset
+		{false, 0, true, 4, false, 0, false, 0, false, 0, ""},             // unset fields never validate
+		{false, 0, false, 0, false, 0, false, 0, false, 0, "INTERACTIVE"}, // case-sensitive
+		{false, 0, false, 0, false, 0, false, 0, false, 0, "always_ask"},
+		{true, 1, true, 8, true, 64, true, 9223372036854775807, false, 0, ""},
+		{true, 1, true, 8, true, 64, true, -9223372036854775808, false, 0, ""},
 	} {
-		f.Add(seeds.setDepth, seeds.depth, seeds.setCap, seeds.cap, seeds.setPR, seeds.pr, seeds.setChars, seeds.chars, seeds.mode)
+		f.Add(seeds.setDepth, seeds.depth, seeds.setCap, seeds.cap, seeds.setPR, seeds.pr, seeds.setChars, seeds.chars, seeds.setTurns, seeds.turns, seeds.mode)
 	}
-	f.Fuzz(func(t *testing.T, setDepth bool, depth int, setCap bool, capN int, setPR bool, perRun int, setChars bool, chars int, mode string) {
-		cfg := configOrchestrationForFuzz(setDepth, depth, setCap, capN, setPR, perRun, setChars, chars, mode)
+	f.Fuzz(func(t *testing.T, setDepth bool, depth int, setCap bool, capN int, setPR bool, perRun int, setChars bool, chars int, setTurns bool, turns int, mode string) {
+		cfg := configOrchestrationForFuzz(setDepth, depth, setCap, capN, setPR, perRun, setChars, chars, setTurns, turns, mode)
 		err1 := validateOrchestration(cfg)
 		err2 := validateOrchestration(cfg)
 		if (err1 == nil) != (err2 == nil) {
@@ -289,6 +297,9 @@ func FuzzValidateOrchestration(f *testing.F) {
 		if setChars && (chars < MinOrchestrationTaskChars || chars > MaxOrchestrationTaskChars) {
 			wantErr = true
 		}
+		if setTurns && (turns < 1 || turns > MaxOrchestrationTurns) {
+			wantErr = true
+		}
 		if setDepth && setCap && capN < depth {
 			// O2 cross-field rule: nested chains need one slot per level.
 			wantErr = true
@@ -310,7 +321,7 @@ func FuzzValidateOrchestration(f *testing.F) {
 
 // configOrchestrationForFuzz builds the pointer-shaped config record from
 // flat fuzz arguments (nil-ness is encoded in the set flags).
-func configOrchestrationForFuzz(setDepth bool, depth int, capSet bool, capN int, setPR bool, perRun int, setChars bool, chars int, mode string) Orchestration {
+func configOrchestrationForFuzz(setDepth bool, depth int, capSet bool, capN int, setPR bool, perRun int, setChars bool, chars int, setTurns bool, turns int, mode string) Orchestration {
 	cfg := Orchestration{ChildPermissions: mode}
 	if setDepth {
 		d := depth
@@ -327,6 +338,10 @@ func configOrchestrationForFuzz(setDepth bool, depth int, capSet bool, capN int,
 	if setChars {
 		ch := chars
 		cfg.MaxTaskChars = &ch
+	}
+	if setTurns {
+		tr := turns
+		cfg.MaxTotalChildTurns = &tr
 	}
 	return cfg
 }
