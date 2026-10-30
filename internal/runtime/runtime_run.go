@@ -25,6 +25,7 @@ type runSnapshot struct {
 	provider      providers.ModelProvider
 	scheduler     *scheduler
 	limits        Limits
+	baseLimits    Limits
 	contextBudget ContextBudget
 	// caps holds the negotiated provider capabilities for this run
 	// (transport features from the instance, limits from the model
@@ -60,6 +61,10 @@ func (r *Runtime) snapshotRunState() runSnapshot {
 	snap.scheduler = r.scheduler
 	snap.orch = r.orch
 	snap.limits = r.limits
+	if r.cfg != nil && snap.limits == (Limits{}) {
+		snap.limits = limitsFromConfig(r.cfg)
+	}
+	snap.baseLimits = snap.limits
 	snap.authRequired = r.authRequired
 	snap.authEnvVar = r.authEnvVar
 	// Capabilities negotiate independently of configuration: even a
@@ -73,7 +78,7 @@ func (r *Runtime) snapshotRunState() runSnapshot {
 	snap.caps = providers.ResolveCapabilities(r.provider, modelName)
 	snap.capsReported = providers.ReportsCapabilities(r.provider)
 	if r.cfg != nil {
-		snap.limits = limitsForAgent(r.cfg, r.activeAgent, snap.limits)
+		snap.limits = limitsForAgent(r.cfg, r.activeAgent, snap.baseLimits)
 		snap.contextBudget = contextBudgetFromConfig(r.cfg, modelName, r.activeAgent, snap.caps)
 	} else {
 		snap.contextBudget = DefaultContextBudget()

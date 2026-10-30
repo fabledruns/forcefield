@@ -56,6 +56,16 @@ func (r *Runtime) authSnapshot() (required bool, envVar, provider string) {
 	return r.authRequired, r.authEnvVar, provider
 }
 
+// configSnapshot returns the runtime's loaded configuration under RLock.
+func (r *Runtime) configSnapshot() *config.Config {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.cfg
+}
+
 // checkAuth reports an actionable error when the active provider needs an
 // API key that was not found.
 func (r *Runtime) checkAuth() error {

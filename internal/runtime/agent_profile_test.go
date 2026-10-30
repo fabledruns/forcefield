@@ -2,8 +2,10 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"forcefield/internal/agent"
 	"forcefield/internal/config"
 	"forcefield/internal/providers"
 )
@@ -130,4 +132,227 @@ func TestAgentProfileLimitsEnforced(t *testing.T) {
 	if !done {
 		t.Error("general run did not finish")
 	}
+}
+
+// TestDelegateChildAgentProfileLimitsEnforced verifies that delegated
+// child runs apply their own per-agent profile limits (e.g.,
+// agents.<child>.max_iterations) rather than inheriting the parent
+// snapshot's agent-specific limits.
+func TestDelegateChildAgentProfileLimitsEnforced(t *testing.T) {
+	t.Run("child profile max_iterations blocks child without blocking parent", func(t *testing.T) {
+		turns := [][]providers.StreamEvent{
+			// Parent turn 1: delegates to researcher
+			{
+				{ToolCalls: []providers.ToolCall{{
+					ID:        "del-1",
+					Name:      "delegate",
+					Arguments: map[string]any{"agent": "researcher", "task": "investigate"},
+				}}},
+				{Done: true},
+			},
+			// Child turn 1: calls echo (allowed; child MaxIterations=1)
+			{
+				{ToolCalls: []providers.ToolCall{{
+					ID:        "c-echo-1",
+					Name:      "echo",
+					Arguments: map[string]any{"value": "step-1"},
+				}}},
+				{Done: true},
+			},
+			// Parent turn 2: receives blocked child report and completes
+			{
+				{Text: "handled child block"},
+				{Done: true},
+			},
+		}
+		provider := &scriptedProvider{turns: turns}
+		rt := newOrchestrationTestRuntime(t, provider)
+		rt.limits = DefaultLimits
+		rt.cfg = &config.Config{
+			Agents: map[string]config.AgentConfig{
+				"researcher": {MaxIterations: 1},
+			},
+		}
+
+		events, err := rt.StreamChat(context.Background(), []providers.Message{
+			{Role: providers.UserRole, Content: "run"},
+		})
+		if err != nil {
+			t.Fatalf("StreamChat: %v", err)
+		}
+		finish, final := delegateRunSummary(events)
+		if finish == nil {
+			t.Fatal("missing delegate tool result")
+		}
+		if !finish.IsError || !strings.Contains(finish.Content, "child run blocked: stopped after 1 iterations") {
+			t.Errorf("delegate result = %+v, want child blocked after 1 iteration", finish)
+		}
+		if final == nil || final.Content != "handled child block" {
+			t.Errorf("parent final = %+v, want parent to complete normally", final)
+		}
+	})
+
+	t.Run("parent profile max_iterations does not leak into child without override", func(t *testing.T) {
+		// Parent ("root") has MaxIterations: 2, global base has MaxIterations: 10,
+		// child ("researcher") has no override and takes 3 turns (2 tool turns + 1 final answer).
+		turns := [][]providers.StreamEvent{
+			// Parent turn 1: delegates to researcher
+			{
+				{ToolCalls: []providers.ToolCall{{
+					ID:        "del-1",
+					Name:      "delegate",
+					Arguments: map[string]any{"agent": "researcher", "task": "three-turn task"},
+				}}},
+				{Done: true},
+			},
+			// Child turn 1
+			{
+				{ToolCalls: []providers.ToolCall{{
+					ID:        "c-echo-1",
+					Name:      "echo",
+					Arguments: map[string]any{"value": "one"},
+				}}},
+				{Done: true},
+			},
+			// Child turn 2
+			{
+				{ToolCalls: []providers.ToolCall{{
+					ID:        "c-echo-2",
+					Name:      "echo",
+					Arguments: map[string]any{"value": "two"},
+				}}},
+				{Done: true},
+			},
+			// Child turn 3 (exceeds parent's MaxIterations=2, within base MaxIterations=10)
+			{
+				{Text: "child finished on turn 3"},
+				{Done: true},
+			},
+			// Parent turn 2: completes within parent's MaxIterations=2
+			{
+				{Text: "parent done"},
+				{Done: true},
+			},
+		}
+		provider := &scriptedProvider{turns: turns}
+		rt := newOrchestrationTestRuntime(t, provider)
+		rt.limits = Limits{MaxIterations: 10, MaxToolCalls: 100, MaxConsecutiveFailures: 5}
+		rt.cfg = &config.Config{
+			Agents: map[string]config.AgentConfig{
+				"root": {MaxIterations: 2},
+			},
+		}
+
+		events, err := rt.StreamChat(context.Background(), []providers.Message{
+			{Role: providers.UserRole, Content: "run"},
+		})
+		if err != nil {
+			t.Fatalf("StreamChat: %v", err)
+		}
+		finish, final := delegateRunSummary(events)
+		if finish == nil || finish.IsError {
+			t.Fatalf("delegate finish = %+v, want success on child turn 3", finish)
+		}
+		if !strings.Contains(finish.Content, "turns=3") || !strings.Contains(finish.Content, "child finished on turn 3") {
+			t.Errorf("delegate content = %q, want turns=3 and child answer", finish.Content)
+		}
+		if final == nil || final.Content != "parent done" {
+			t.Errorf("parent final = %+v, want parent done", final)
+		}
+	})
+
+	t.Run("nested delegation resolves depth-1 and depth-2 profile limits independently", func(t *testing.T) {
+		// Depth 0 ("root") has MaxIterations=2.
+		// Depth 1 ("coding") has MaxIterations=2 and delegates to "researcher".
+		// Depth 2 ("researcher") has no profile override and takes 3 turns (within base MaxIterations=10).
+		turns := [][]providers.StreamEvent{
+			// Root turn 1: delegates to coding
+			{
+				{ToolCalls: []providers.ToolCall{{
+					ID:        "del-root-1",
+					Name:      "delegate",
+					Arguments: map[string]any{"agent": "coding", "task": "coordinate"},
+				}}},
+				{Done: true},
+			},
+			// Coding (depth 1) turn 1: delegates to researcher (depth 2)
+			{
+				{ToolCalls: []providers.ToolCall{{
+					ID:        "del-coding-1",
+					Name:      "delegate",
+					Arguments: map[string]any{"agent": "researcher", "task": "deep dive"},
+				}}},
+				{Done: true},
+			},
+			// Researcher (depth 2) turn 1
+			{
+				{ToolCalls: []providers.ToolCall{{
+					ID:        "r-echo-1",
+					Name:      "echo",
+					Arguments: map[string]any{"value": "one"},
+				}}},
+				{Done: true},
+			},
+			// Researcher (depth 2) turn 2
+			{
+				{ToolCalls: []providers.ToolCall{{
+					ID:        "r-echo-2",
+					Name:      "echo",
+					Arguments: map[string]any{"value": "two"},
+				}}},
+				{Done: true},
+			},
+			// Researcher (depth 2) turn 3: finishes (exceeds coding's MaxIterations=2, allowed by base=10)
+			{
+				{Text: "researcher finished on turn 3"},
+				{Done: true},
+			},
+			// Coding (depth 1) turn 2: finishes within its MaxIterations=2
+			{
+				{Text: "coding synthesized researcher report"},
+				{Done: true},
+			},
+			// Root (depth 0) turn 2: finishes
+			{
+				{Text: "root complete"},
+				{Done: true},
+			},
+		}
+		provider := &scriptedProvider{turns: turns}
+		rt := newOrchestrationTestRuntime(t, provider)
+		if err := rt.orch.registry.Register(agent.Definition{
+			Name:         "coding",
+			Description:  "test coding agent",
+			SystemPrompt: "coding-system",
+			Tools:        []string{"echo"},
+			Skills:       []string{},
+		}); err != nil {
+			t.Fatalf("register coding: %v", err)
+		}
+		rt.orch.resolved.maxDepth = 2
+		rt.limits = Limits{MaxIterations: 10, MaxToolCalls: 100, MaxConsecutiveFailures: 5}
+		rt.cfg = &config.Config{
+			Agents: map[string]config.AgentConfig{
+				"root":   {MaxIterations: 2},
+				"coding": {MaxIterations: 2, ContextWindow: 16000},
+			},
+		}
+
+		events, err := rt.StreamChat(context.Background(), []providers.Message{
+			{Role: providers.UserRole, Content: "run nested"},
+		})
+		if err != nil {
+			t.Fatalf("StreamChat: %v", err)
+		}
+		finish, final := delegateRunSummary(events)
+		if finish == nil || finish.IsError {
+			t.Fatalf("delegate finish = %+v, want success across nested chain", finish)
+		}
+		if !strings.Contains(finish.Content, "coding synthesized researcher report") {
+			t.Errorf("delegate content = %q, want coding synthesis", finish.Content)
+		}
+		if final == nil || final.Content != "root complete" {
+			t.Errorf("root final = %+v, want root complete", final)
+		}
+	})
 }

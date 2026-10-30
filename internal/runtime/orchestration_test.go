@@ -323,3 +323,48 @@ func delegateRunSummary(events <-chan Event) (*ToolResult, *providers.Response) 
 	}
 	return finish, final
 }
+
+func TestComposeDelegateResultMetadataStatusAndDeterministicDenied(t *testing.T) {
+	rec := &childRunRecorder{
+		turns:     3,
+		toolCalls: 4,
+		failed:    1,
+		denied: map[string]int{
+			"write_file": 1,
+			"shell":      2,
+			"git":        1,
+		},
+		seen: true,
+		out: childOutcome{
+			terminal: EventDone,
+			status:   StatusPartial,
+			response: &providers.Response{Content: "done work"},
+		},
+	}
+
+	res := composeDelegateResult("researcher", rec)
+	if res.IsError {
+		t.Fatalf("composeDelegateResult IsError = true, want false: %s", res.Content)
+	}
+	if got, _ := res.Metadata["status"].(string); got != string(StatusPartial) {
+		t.Errorf("Metadata[\"status\"] = %q, want %q", got, StatusPartial)
+	}
+	if got, _ := res.Metadata["agent"].(string); got != "researcher" {
+		t.Errorf("Metadata[\"agent\"] = %q, want researcher", got)
+	}
+	if got, _ := res.Metadata["turns"].(int); got != 3 {
+		t.Errorf("Metadata[\"turns\"] = %d, want 3", got)
+	}
+	if got, _ := res.Metadata["tool_calls"].(int); got != 4 {
+		t.Errorf("Metadata[\"tool_calls\"] = %d, want 4", got)
+	}
+	if got, _ := res.Metadata["denied"].(int); got != 4 {
+		t.Errorf("Metadata[\"denied\"] = %d, want 4", got)
+	}
+	if !strings.Contains(res.Content, "(denied: git, shell, write_file)") {
+		t.Errorf("Content = %q, want deterministically sorted denied list (denied: git, shell, write_file)", res.Content)
+	}
+	if !strings.Contains(res.Content, "[delegate] child status=partial") {
+		t.Errorf("Content = %q, want [delegate] child status=partial line preserved", res.Content)
+	}
+}

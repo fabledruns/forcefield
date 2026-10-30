@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -384,6 +385,7 @@ func (r *childRunRecorder) deniedTotal() (total int, names []string) {
 		total += n
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return total, names
 }
 
@@ -431,6 +433,19 @@ func (o *Orchestrator) runChild(
 	childSnap.manager = childMgr
 	childSnap.scheduler = scheduler
 	childSnap.mode = ModeChat // children always chat: plan overlays never leak into child policy
+	if cfg := o.parent.configSnapshot(); cfg != nil {
+		base := scope.snap.baseLimits
+		if base == (Limits{}) {
+			base = scope.snap.limits
+		}
+		if base == (Limits{}) {
+			base = limitsFromConfig(cfg)
+		}
+		childSnap.baseLimits = base
+		childSnap.limits = limitsForAgent(cfg, def.Name, base)
+		childSnap.contextBudget = contextBudgetFromConfig(cfg, childSnap.modelName, def.Name, childSnap.caps)
+	}
+	childScope.snap = &childSnap
 
 	childCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -549,7 +564,7 @@ func composeDelegateResult(agentName string, rec *childRunRecorder) tools.Result
 		return tools.Result{
 			Content: content,
 			Metadata: map[string]any{
-				"agent": agentName, "turns": turns, "tool_calls": toolCalls, "denied": denied,
+				"agent": agentName, "status": string(out.status), "turns": turns, "tool_calls": toolCalls, "denied": denied,
 			},
 		}
 	case EventError:

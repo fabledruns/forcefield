@@ -119,10 +119,12 @@ site, never in prompts:
 
 | Setting | Default | Ceiling | Meaning |
 |---|---|---|---|
-| `max_depth` | 1 | 3 | nesting levels (1 = children only) |
-| `max_concurrent_children` | 4 | 8 | child runs running at once, process-wide |
-| `max_children_per_run` | 16 | 64 | spawns per top-level run, cumulative across levels |
-| `max_task_chars` | 8000 | 65536 | payload per delegation (floor 256) |
+| `max_depth` | 1 | 3 | nesting levels (1 = children only; omit for default, explicit 0 rejected) |
+| `max_concurrent_children` | 4 | 8 | child runs running at once, process-wide (omit for default, explicit 0 rejected) |
+| `max_children_per_run` | 16 | 64 | spawns per top-level run, cumulative across levels (omit for default, explicit 0 rejected) |
+| `max_task_chars` | 8000 | 65536 | payload per delegation, floor 256 (omit for default, explicit 0 rejected) |
+| `max_total_child_turns` | 2048 | 8192 | aggregate model turns across all children of one top-level run (omit for default, explicit 0 rejected) |
+| `child_permissions` | `deny` | `deny` / `interactive` | how `"ask"` tool decisions behave inside a child run |
 
 Child runs are isolated by construction:
 
@@ -139,6 +141,10 @@ Child runs are isolated by construction:
 - Each child gets a definition-scoped `load_skill` (its own assignment
   only) and a tool set filtered exactly like a parent's (missing MCP
   names omitted; unknown natives fail).
+- Each child resolves its own per-agent run bounds (`max_iterations`,
+  `max_tool_calls`, `max_consecutive_failures`) and context budget from
+  `agents.<child>.*` overlaid onto the runtime's global `agent.*` base,
+  remaining subject to the shared `max_total_child_turns` run budget.
 - The task enters the child as a user message only: parent conversation
   never reaches the child context, and the task text never enters a
   system prompt.
@@ -152,8 +158,10 @@ per-run spawn budget additionally covers every level combined (completed
 children never free budget).
 
 The parent receives a bounded report: honest lifecycle counts (turns,
-tool calls, failures, denials), the child's final answer (size-capped and
-secret-scrubbed), and denial notes. Child statuses are informational —
+tool calls, failures, denials), a `[delegate] child status=<status>`
+header line, the child's final answer (size-capped and secret-scrubbed),
+denial notes, and structured `tools.Result.Metadata` (`agent`, `status`,
+`turns`, `tool_calls`, `denied`). Child statuses are informational —
 the parent's own verification state is computed independently and is
 never upgraded by a child's claim. Parent cancellation joins the child
 first: nothing runs detached, nothing reports after the tool result.
