@@ -220,6 +220,7 @@ func TestStreamChatReportsMissingAPIKeyWithGuidance(t *testing.T) {
 
 func TestProviderSummariesExposeCapabilitiesAndAvailability(t *testing.T) {
 	isolateRuntimeHome(t)
+	t.Setenv("OPENAI_API_KEY", "")
 	writeConfigFile(t,
 		"model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: ornith:9b\n")
 
