@@ -243,3 +243,79 @@ func TestSanitizeScrubsSecretShapes(t *testing.T) {
 		t.Errorf("identifier/counter fields mutated: %+v", e2)
 	}
 }
+
+func TestWriterTruncationMarkerAndPostCapNoOp(t *testing.T) {
+	dir := t.TempDir()
+	w, path := mustWriter(t, dir)
+	defer w.Close()
+
+	// Pre-advance the byte counter to 1 byte below the 4 MiB ceiling so
+	// the next emission crosses maxFileBytes and triggers truncation
+	// without writing 4 MiB of fixtures.
+	w.bytes = maxFileBytes - 1
+	w.Emit(Event{Type: RunStarted, Agent: "general", TaskChars: 12})
+
+	infoAfterCap, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after cap: %v", err)
+	}
+
+	// Subsequent emissions must be pure no-ops: file size and event count
+	// remain bounded after the events_truncated marker.
+	for i := 0; i < 50; i++ {
+		w.Emit(Event{Type: ToolStarted, CallID: "call-x", Tool: "read_file"})
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if w.Err() != "" {
+		t.Errorf("clean truncation must not latch a write error, got %q", w.Err())
+	}
+
+	infoAfterMore, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after extra emits: %v", err)
+	}
+	if infoAfterMore.Size() != infoAfterCap.Size() {
+		t.Errorf("file grew after truncation: %d -> %d bytes", infoAfterCap.Size(), infoAfterMore.Size())
+	}
+
+	events, err := ReadAll(path)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2 (RunStarted + EventsTruncated)", len(events))
+	}
+	if events[0].Type != RunStarted || events[0].Seq != 1 {
+		t.Errorf("events[0] = %+v, want RunStarted seq 1", events[0])
+	}
+	if events[1].Type != EventsTruncated || events[1].Seq != 2 || events[1].RunID != "run-abc" {
+		t.Errorf("events[1] = %+v, want EventsTruncated seq 2 run-abc", events[1])
+	}
+	if !Truncated(events) {
+		t.Error("Truncated(events) = false, want true")
+	}
+	if Truncated(events[:1]) {
+		t.Error("Truncated(complete prefix) = true, want false")
+	}
+}
+
+func TestWriterCloseErrorLatchesIntoErr(t *testing.T) {
+	_, wEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Close the underlying fd directly so Writer.Close() observes an OS close error.
+	if err := wEnd.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w := &Writer{f: wEnd, runID: "run-close-err"}
+	closeErr := w.Close()
+	if closeErr == nil {
+		t.Fatal("expected Close() to return an error on already-closed fd")
+	}
+	if !strings.Contains(w.Err(), "close event log") {
+		t.Errorf("w.Err() = %q, want latched close error", w.Err())
+	}
+}

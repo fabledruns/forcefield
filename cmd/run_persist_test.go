@@ -3,6 +3,9 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +15,7 @@ import (
 
 	"forcefield/internal/orchevents"
 	"forcefield/internal/providers"
+	"forcefield/internal/recovery"
 	"forcefield/internal/runtime"
 	"forcefield/internal/session"
 )
@@ -150,6 +154,7 @@ func TestRunHeadlessSession_PersistsSessionAndEventLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runtime.New: %v", err)
 	}
+	defer func() { _ = rt.Close() }()
 
 	_, _, _, runErr := runHeadlessSession(context.Background(), rt, []providers.Message{{Role: providers.UserRole, Content: "audit note"}})
 	if runErr == nil {
@@ -203,4 +208,216 @@ func TestRunHeadlessSession_PersistsSessionAndEventLog(t *testing.T) {
 	if last.ExitCode == nil || *last.ExitCode != 1 {
 		t.Errorf("exit code stamp = %v, want 1", last.ExitCode)
 	}
+}
+
+// newVerifiedHeadlessRuntime sets up a hermetic home + working directory
+// and an httptest Ollama server that returns a single plain-text verified
+// answer, calling onTurn (when non-nil) during the model turn.
+func newVerifiedHeadlessRuntime(t *testing.T, onTurn func()) *runtime.Runtime {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if onTurn != nil {
+			onTurn()
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintln(w, `{"message":{"role":"assistant","content":"verified answer"},"done":true}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	isolateResumeHome(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".forcefield"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfgYAML := fmt.Sprintf("model:\n  provider: ollama\n  endpoint: %s\n  name: probe-model\nproviders:\n  ollama:\n    base_url: %s\n", srv.URL, srv.URL)
+	if err := os.WriteFile(filepath.Join(home, ".forcefield", "config.yaml"), []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatalf("runtime.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+	return rt
+}
+
+func TestRunHeadlessSession_EventLogFailureModes(t *testing.T) {
+	origWriter := newEventWriter
+	origExit := osExit
+	defer func() {
+		newEventWriter = origWriter
+		osExit = origExit
+	}()
+
+	t.Run("open failure demotes verified status and exits 5", func(t *testing.T) {
+		rt := newVerifiedHeadlessRuntime(t, nil)
+		newEventWriter = func(path, runID string) (*orchevents.Writer, error) {
+			return nil, errors.New("simulated open failure")
+		}
+
+		var status runtime.Status
+		var runErr error
+		stderr := captureStderr(t, func() {
+			_, status, _, runErr = runHeadlessSession(context.Background(), rt, []providers.Message{
+				{Role: providers.UserRole, Content: "hello"},
+			})
+		})
+		if runErr != nil {
+			t.Fatalf("unexpected runErr: %v", runErr)
+		}
+		if status != runtime.StatusPartial {
+			t.Errorf("status = %q, want %q (demoted from verified)", status, runtime.StatusPartial)
+		}
+		if !strings.Contains(stderr, "orchestration event log could not be opened (simulated open failure)") {
+			t.Errorf("missing open failure warning on stderr: %q", stderr)
+		}
+		if !strings.Contains(stderr, "result marked unverified: orchestration event log unusable") {
+			t.Errorf("missing demotion notice on stderr: %q", stderr)
+		}
+
+		exited := -1
+		osExit = func(code int) { exited = code }
+		_ = captureStderr(t, func() {
+			_ = exitForRunStatus(status)
+		})
+		if exited != recovery.ExitUnverified {
+			t.Errorf("exit code = %d, want %d (ExitUnverified)", exited, recovery.ExitUnverified)
+		}
+	})
+
+	t.Run("mid-run write failure demotes verified status and exits 5", func(t *testing.T) {
+		rt := newVerifiedHeadlessRuntime(t, nil)
+		newEventWriter = func(path, runID string) (*orchevents.Writer, error) {
+			rEnd, wEnd, err := os.Pipe()
+			if err != nil {
+				return nil, err
+			}
+			_ = rEnd.Close() // every write fails with EPIPE on RunStarted
+			return orchevents.NewFileWriter(wEnd, "run-mid-fail"), nil
+		}
+
+		var status runtime.Status
+		var runErr error
+		stderr := captureStderr(t, func() {
+			_, status, _, runErr = runHeadlessSession(context.Background(), rt, []providers.Message{
+				{Role: providers.UserRole, Content: "hello"},
+			})
+		})
+		if runErr != nil {
+			t.Fatalf("unexpected runErr: %v", runErr)
+		}
+		if status != runtime.StatusPartial {
+			t.Errorf("status = %q, want %q (demoted on mid-run write failure)", status, runtime.StatusPartial)
+		}
+		if !strings.Contains(stderr, "orchestration event log write failed") {
+			t.Errorf("missing write failure warning on stderr: %q", stderr)
+		}
+		if !strings.Contains(stderr, "result marked unverified: orchestration event log unusable") {
+			t.Errorf("missing demotion notice on stderr: %q", stderr)
+		}
+	})
+
+	t.Run("terminal-event write failure demotes verified status and exits 5", func(t *testing.T) {
+		var rEnd *os.File
+		rt := newVerifiedHeadlessRuntime(t, func() {
+			// RunStarted has already been written into the pipe buffer;
+			// closing rEnd during the model turn causes emit(final) to fail
+			// with EPIPE while openErr == nil and RunStarted succeeded.
+			if rEnd != nil {
+				_ = rEnd.Close()
+			}
+		})
+		newEventWriter = func(path, runID string) (*orchevents.Writer, error) {
+			var wEnd *os.File
+			var err error
+			rEnd, wEnd, err = os.Pipe()
+			if err != nil {
+				return nil, err
+			}
+			return orchevents.NewFileWriter(wEnd, "run-term-fail"), nil
+		}
+
+		var status runtime.Status
+		var runErr error
+		stderr := captureStderr(t, func() {
+			_, status, _, runErr = runHeadlessSession(context.Background(), rt, []providers.Message{
+				{Role: providers.UserRole, Content: "hello"},
+			})
+		})
+		if runErr != nil {
+			t.Fatalf("unexpected runErr: %v", runErr)
+		}
+		if status != runtime.StatusPartial {
+			t.Errorf("status = %q, want %q (demoted on terminal-event write failure)", status, runtime.StatusPartial)
+		}
+		if !strings.Contains(stderr, "orchestration event log write failed (write event 2:") {
+			t.Errorf("expected write failure on event 2 (terminal event), got stderr: %q", stderr)
+		}
+		if !strings.Contains(stderr, "result marked unverified: orchestration event log unusable") {
+			t.Errorf("missing demotion notice on stderr: %q", stderr)
+		}
+	})
+
+	t.Run("close failure helper surfaces closeErr when writer had no prior write error", func(t *testing.T) {
+		dir := t.TempDir()
+		w, err := orchevents.NewWriter(filepath.Join(dir, "ok.events.jsonl"), "run-ok")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer w.Close()
+		w.Emit(orchevents.Event{Type: orchevents.RunStarted})
+		if got := eventLogWriteErr(w, errors.New("flush failed on close")); got != "flush failed on close" {
+			t.Errorf("eventLogWriteErr = %q, want close error", got)
+		}
+	})
+
+	t.Run("healthy event log preserves verified status and stamps exit_code 0", func(t *testing.T) {
+		rt := newVerifiedHeadlessRuntime(t, nil)
+		var capturedPath string
+		newEventWriter = func(path, runID string) (*orchevents.Writer, error) {
+			capturedPath = path
+			return orchevents.NewWriter(path, "run-verified")
+		}
+
+		resp, status, _, runErr := runHeadlessSession(context.Background(), rt, []providers.Message{
+			{Role: providers.UserRole, Content: "hello"},
+		})
+		if runErr != nil {
+			t.Fatalf("unexpected runErr: %v", runErr)
+		}
+		if status != runtime.StatusVerified {
+			t.Errorf("status = %q, want %q", status, runtime.StatusVerified)
+		}
+		if resp.Content != "verified answer" {
+			t.Errorf("resp.Content = %q, want %q", resp.Content, "verified answer")
+		}
+		events, err := orchevents.ReadAll(capturedPath)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if len(events) != 2 {
+			t.Fatalf("got %d events, want 2 (run_started + run_completed)", len(events))
+		}
+		last := events[1]
+		if last.Type != orchevents.RunCompleted || last.Outcome != orchevents.OutcomeDone || last.Status != string(runtime.StatusVerified) {
+			t.Errorf("terminal event = %+v, want run_completed/done/verified", last)
+		}
+		if last.ExitCode == nil || *last.ExitCode != 0 {
+			t.Errorf("terminal exit_code = %v, want 0", last.ExitCode)
+		}
+	})
 }

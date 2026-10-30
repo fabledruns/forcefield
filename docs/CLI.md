@@ -89,8 +89,8 @@ Exit codes reflect verification, not completion:
 | Code | Meaning |
 |---|---|
 | 0 | verified completion (a plain answer that used no tools counts as verified) |
-| 5 | unverified: the model finished without verification, the run was blocked, or a verified answer whose event log was unusable |
-| 1 | errors: provider failure, runtime-enforced stop, or cancellation (SIGINT/SIGTERM) |
+| 5 | unverified: the model finished without verification, the run was blocked (runtime-enforced stop), or a verified answer whose event log was unusable |
+| 1 | errors: provider failure, session persistence failure, or cancellation (SIGINT/SIGTERM) |
 
 Telemetry can never upgrade an outcome. When the event log cannot be opened, written, or
 flushed, `ff run` says so on stderr and a verified completion is demoted to unverified

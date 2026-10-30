@@ -51,10 +51,15 @@ func NewWriter(path, runID string) (*Writer, error) {
 		return nil, err
 	}
 	_ = os.Chmod(path, 0o600)
+	return NewFileWriter(f, runID), nil
+}
+
+// NewFileWriter wraps an already-open file handle as an event Writer.
+func NewFileWriter(f *os.File, runID string) *Writer {
 	if runID == "" {
 		runID = RunUUID()
 	}
-	return &Writer{f: f, runID: runID}, nil
+	return &Writer{f: f, runID: runID}
 }
 
 // Err returns the first write error observed, or "". Sticky: a later
@@ -93,6 +98,9 @@ func (w *Writer) Close() error {
 	}
 	err := w.f.Close()
 	w.f = nil
+	if err != nil {
+		w.latchLocked(fmt.Errorf("close event log: %w", err))
+	}
 	return err
 }
 
@@ -136,9 +144,18 @@ func (w *Writer) Emit(e Event) {
 	w.bytes += int64(len(raw))
 	if w.bytes >= maxFileBytes {
 		w.capped = true
-		end, _ := json.Marshal(Event{Seq: w.seq + 1, Ts: time.Now().UTC().Format(time.RFC3339Nano), RunID: w.runID, Type: "events_truncated"})
+		w.seq++
+		end, err := json.Marshal(Event{Seq: w.seq, Ts: time.Now().UTC().Format(time.RFC3339Nano), RunID: w.runID, Type: EventsTruncated})
+		if err != nil {
+			w.latchLocked(fmt.Errorf("encode event %d: %w", w.seq, err))
+			return
+		}
 		end = append(end, '\n')
-		_, _ = w.f.Write(end)
+		if _, err := w.f.Write(end); err != nil {
+			w.latchLocked(fmt.Errorf("write event %d: %w", w.seq, err))
+			return
+		}
+		w.bytes += int64(len(end))
 	}
 }
 

@@ -39,6 +39,7 @@ const (
 	ToolDenied          Type = "tool_denied"
 	ToolCancelled       Type = "tool_cancelled"
 	BudgetExhausted     Type = "budget_exhausted"
+	EventsTruncated     Type = "events_truncated"
 )
 
 // Budget names which limit produced a DelegationRejected or
@@ -129,7 +130,8 @@ func (e Event) valid() bool {
 	case RunStarted, RunCompleted, RunFailed, RunCancelled, RunBlocked,
 		DelegationRequested, DelegationAccepted, DelegationRejected,
 		AgentSpawned, ChildProgress, ChildCompleted, ToolStarted,
-		ToolCompleted, ToolFailed, ToolDenied, ToolCancelled, BudgetExhausted:
+		ToolCompleted, ToolFailed, ToolDenied, ToolCancelled,
+		BudgetExhausted, EventsTruncated:
 	default:
 		// Unknown: forward compatibility, but still needs a type string.
 	}

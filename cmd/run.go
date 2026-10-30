@@ -36,6 +36,7 @@ var runtimeRun = func(ctx context.Context, msgs []providers.Message) (providers.
 	if err != nil {
 		return providers.Response{}, "", nil, err
 	}
+	defer func() { _ = rt.Close() }()
 	return runHeadlessSession(ctx, rt, msgs)
 }
 
@@ -48,10 +49,12 @@ var runtimeNew = runtime.New
 var resumeSessionID string
 var resumeMaxTurns int
 
-// osExit and resumeRunner are seams so tests can observe exit codes and
-// stub the resume path without spawning processes or providers.
+// osExit, resumeRunner, and newEventWriter are seams so tests can
+// observe exit codes, stub the resume path, and inject event-log faults
+// without spawning processes or external providers.
 var osExit = os.Exit
 var resumeRunner = runResumeSession
+var newEventWriter = orchevents.NewWriter
 
 var runCmd = &cobra.Command{
 	Use:   "run [task]",
@@ -218,12 +221,13 @@ func runHeadlessSession(ctx context.Context, rt *runtime.Runtime, msgs []provide
 		return providers.Response{}, "", warns, fmt.Errorf("ff run: persist session: %w", err)
 	}
 
-	evw, openErr := orchevents.NewWriter(sess.EventLogPath(), "")
+	evw, openErr := newEventWriter(sess.EventLogPath(), "")
 	if openErr != nil {
 		fmt.Fprintf(os.Stderr, "ff run: orchestration event log could not be opened (%v): %s\n", openErr, sess.EventLogPath())
 	} else {
 		defer evw.Close()
 		rt.SetOrchestrationEventSink(evw)
+		defer rt.SetOrchestrationEventSink(nil)
 	}
 	emit := func(e orchevents.Event) {
 		if evw != nil {
@@ -242,11 +246,21 @@ func runHeadlessSession(ctx context.Context, rt *runtime.Runtime, msgs []provide
 	defer cancel()
 	events, err := rt.StreamChat(runCtx, sess.ProviderMessages())
 	if err != nil {
+		exitCode := 1
 		emit(orchevents.Event{
-			Type:    orchevents.RunFailed,
-			Outcome: orchevents.OutcomeError,
-			Error:   err.Error(),
+			Type:       orchevents.RunFailed,
+			Outcome:    orchevents.OutcomeError,
+			Status:     string(runtime.StatusFailed),
+			DurationMS: time.Since(start).Milliseconds(),
+			ExitCode:   &exitCode,
+			Error:      err.Error(),
 		})
+		if evw != nil && openErr == nil {
+			closeErr := evw.Close()
+			if writeErr := eventLogWriteErr(evw, closeErr); writeErr != "" {
+				fmt.Fprintf(os.Stderr, "ff run: orchestration event log write failed (%s); session evidence may be incomplete\n", writeErr)
+			}
+		}
 		return providers.Response{}, "", warns, err
 	}
 	driver := recovery.NewDriver(sess)
@@ -263,11 +277,21 @@ func runHeadlessSession(ctx context.Context, rt *runtime.Runtime, msgs []provide
 	// disk. This is the same gate runResumeSession applies.
 	if driver.PersistFailed() {
 		err := fmt.Errorf("ff run: session save failed (%s)", driver.PersistErr())
+		exitCode := 1
 		emit(orchevents.Event{
-			Type:    orchevents.RunFailed,
-			Outcome: orchevents.OutcomeError,
-			Error:   err.Error(),
+			Type:       orchevents.RunFailed,
+			Outcome:    orchevents.OutcomeError,
+			Status:     string(runtime.StatusFailed),
+			DurationMS: time.Since(start).Milliseconds(),
+			ExitCode:   &exitCode,
+			Error:      err.Error(),
 		})
+		if evw != nil && openErr == nil {
+			closeErr := evw.Close()
+			if writeErr := eventLogWriteErr(evw, closeErr); writeErr != "" {
+				fmt.Fprintf(os.Stderr, "ff run: orchestration event log write failed (%s); session evidence may be incomplete\n", writeErr)
+			}
+		}
 		return providers.Response{}, "", warns, err
 	}
 
@@ -317,12 +341,16 @@ func runHeadlessSession(ctx context.Context, rt *runtime.Runtime, msgs []provide
 	// Telemetry can never upgrade an outcome: a verified completion
 	// whose own evidence could not be written exits unverified instead,
 	// with the reason on stderr. Failed runs keep failing.
+	logWriteWarned := false
+	demotedVerified := false
 	if evw != nil && openErr == nil && evw.Err() != "" {
 		fmt.Fprintf(os.Stderr, "ff run: orchestration event log write failed (%s); session evidence may be incomplete\n", evw.Err())
+		logWriteWarned = true
 	}
 	if (openErr != nil || (evw != nil && evw.Err() != "")) && err == nil && status == runtime.StatusVerified {
 		fmt.Fprintln(os.Stderr, "ff run: result marked unverified: orchestration event log unusable")
 		status = runtime.StatusPartial
+		demotedVerified = true
 	}
 
 	exitCode := recovery.ExitUnverified
@@ -343,11 +371,33 @@ func runHeadlessSession(ctx context.Context, rt *runtime.Runtime, msgs []provide
 		final.Error = termErr.Error()
 	}
 	emit(final)
+	var closeErr error
+	if evw != nil {
+		closeErr = evw.Close()
+	}
+	writeErr := eventLogWriteErr(evw, closeErr)
+	if !logWriteWarned && openErr == nil && writeErr != "" {
+		fmt.Fprintf(os.Stderr, "ff run: orchestration event log write failed (%s); session evidence may be incomplete\n", writeErr)
+	}
+	if !demotedVerified && writeErr != "" && err == nil && status == runtime.StatusVerified {
+		fmt.Fprintln(os.Stderr, "ff run: result marked unverified: orchestration event log unusable")
+		status = runtime.StatusPartial
+	}
 
 	if respOK {
 		return resp, status, warns, err
 	}
 	return providers.Response{}, status, warns, err
+}
+
+func eventLogWriteErr(evw *orchevents.Writer, closeErr error) string {
+	if evw != nil && evw.Err() != "" {
+		return evw.Err()
+	}
+	if closeErr != nil {
+		return closeErr.Error()
+	}
+	return ""
 }
 
 // mapRunEvent translates one runtime event into the orchestration event
@@ -449,6 +499,7 @@ func runResumeSession(ctx context.Context, resumeID string, maxTurns int) (int, 
 	if err != nil {
 		return 1, err
 	}
+	defer func() { _ = rt.Close() }()
 	// MCP servers start with the runtime: surface any startup failures
 	// now, before model output, so a dead server is visible even though
 	// headless runs have no /mcp surface.

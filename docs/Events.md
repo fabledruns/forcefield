@@ -57,7 +57,7 @@ without a `chain`) are dropped by the writer rather than recorded.
 | `run_completed` | `status`, `outcome` (`done`), `duration_ms`, `exit_code` |
 | `run_failed` | `status`, `outcome` (`error`), `duration_ms`, `exit_code`, `error` |
 | `run_cancelled` | `status`, `outcome` (`cancelled`), `duration_ms`, `exit_code`, `error` |
-| `run_blocked` | `status`, `outcome` (`blocked`), `duration_ms`, `exit_code` |
+| `run_blocked` | `status`, `outcome` (`blocked`), `duration_ms`, `exit_code`, `error` |
 | `delegation_requested` | `agent` (target), `chain`, `call_id`, `task_chars` |
 | `delegation_accepted` | `agent`, `chain`, `call_id`, `task_chars` |
 | `delegation_rejected` | `agent`, `chain`, `call_id`, `reason`; budget-driven rejections add `budget`, `budget_limit`, `budget_value` |

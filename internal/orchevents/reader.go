@@ -57,6 +57,13 @@ func Count(events []Event, t Type) int {
 	return n
 }
 
+// Truncated reports whether the event slice contains an EventsTruncated
+// marker (written when the log reaches its 4 MiB byte ceiling and stops
+// recording further events).
+func Truncated(events []Event) bool {
+	return Count(events, EventsTruncated) > 0
+}
+
 // LastByChild returns the final ChildCompleted event for each child run
 // id, in spawn order. Acceptance tests assert on this summary shape.
 func LastByChild(events []Event) map[string]Event {
