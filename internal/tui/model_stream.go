@@ -34,6 +34,10 @@ func (m *model) stopStream(savePartial bool) {
 	m.status = ""
 	m.loadingFrame = 0
 	m.activeTools = make(map[string]int)
+	if m.agents.active() {
+		m.agents.cancelOpen()
+		m.layout()
+	}
 	// A build turn abandoned here (session switch, /clear, agent switch,
 	// quit) never reaches its terminal handler, so settle a building
 	// plan as partial now; the save is best-effort with the failure
@@ -223,6 +227,9 @@ func (m *model) finishAssistantStream() {
 func (m *model) startToolActivity(call *providers.ToolCall) {
 	if call == nil {
 		return
+	}
+	if m.activeTools == nil {
+		m.activeTools = make(map[string]int)
 	}
 	record := &toolRecord{name: call.Name, args: call.Arguments}
 	m.entries = append(m.entries, chatEntry{

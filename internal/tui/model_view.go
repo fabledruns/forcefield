@@ -448,11 +448,19 @@ func (m model) View() string {
 		return m.selectPicker.view(m.width, m.height)
 	}
 
+	if panel := m.renderAgentsPanel(m.width); panel != "" {
+		return lipgloss.JoinVertical(
+			lipgloss.Left,
+			m.renderHeader(),
+			m.viewport.View(),
+			panel,
+			m.renderFooter(),
+		)
+	}
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		m.renderHeader(),
 		m.viewport.View(),
-		m.renderAgentsPanel(m.width),
 		m.renderFooter(),
 	)
 }

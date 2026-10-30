@@ -21,13 +21,28 @@ const agentsPanelNarrowWidth = 48
 // stretch absurdly on ultra-wide terminals.
 const agentsPanelMaxRuleWidth = 72
 
-// agentsPanelRows returns the rows the panel renders: all rows when they
-// fit, otherwise the newest agentsPanelMaxRows (oldest first).
-func (s *agentsState) agentsPanelRows() []*childRow {
-	if len(s.rows) <= agentsPanelMaxRows {
-		return s.rows
+// activeRows returns the non-terminal rows currently queued or running.
+func (s *agentsState) activeRows() []*childRow {
+	if s == nil {
+		return nil
 	}
-	return s.rows[len(s.rows)-agentsPanelMaxRows:]
+	var active []*childRow
+	for _, row := range s.rows {
+		if !row.State.terminal() {
+			active = append(active, row)
+		}
+	}
+	return active
+}
+
+// agentsPanelRows returns the active rows the panel renders: all active
+// rows when they fit, otherwise the newest agentsPanelMaxRows (oldest first).
+func (s *agentsState) agentsPanelRows() []*childRow {
+	active := s.activeRows()
+	if len(active) <= agentsPanelMaxRows {
+		return active
+	}
+	return active[len(active)-agentsPanelMaxRows:]
 }
 
 // agentsPanelHeight is the panel's terminal row count, so layout()
@@ -38,8 +53,10 @@ func (m *model) agentsPanelHeight() int {
 	if !m.agents.active() {
 		return 0
 	}
-	hidden := len(m.agents.rows) - len(m.agents.agentsPanelRows())
-	height := len(m.agents.agentsPanelRows()) + 2
+	active := m.agents.activeRows()
+	rows := m.agents.agentsPanelRows()
+	hidden := len(active) - len(rows)
+	height := len(rows) + 2
 	if hidden > 0 {
 		height++
 	}
@@ -56,8 +73,9 @@ func (m *model) renderAgentsPanel(width int) string {
 		return ""
 	}
 
+	active := m.agents.activeRows()
 	rows := m.agents.agentsPanelRows()
-	hidden := len(m.agents.rows) - len(rows)
+	hidden := len(active) - len(rows)
 	narrow := width < agentsPanelNarrowWidth
 
 	accent := lipgloss.NewStyle().Foreground(colorAccent)

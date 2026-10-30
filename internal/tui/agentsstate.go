@@ -220,6 +220,22 @@ func (s *agentsState) active() bool {
 	return false
 }
 
+// cancelOpen transitions any still-open rows to AgentCancelled when the
+// owning stream is torn down before their terminal events arrive.
+func (s *agentsState) cancelOpen() {
+	if s == nil {
+		return
+	}
+	now := time.Now()
+	for _, row := range s.rows {
+		if !row.State.terminal() {
+			row.State = AgentCancelled
+			row.Detail = "delegation cancelled"
+			row.EndedAt = now
+		}
+	}
+}
+
 // drainCollapsed hands out the bounded transcript summaries for children
 // that reached a terminal state since the last drain, clearing them so
 // each child is reported exactly once. Summaries are sorted for stable
