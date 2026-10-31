@@ -525,9 +525,23 @@ func (m model) chooseProvider(id string) (tea.Model, tea.Cmd) {
 	m.Println("✓ Provider: %s", providers.DisplayName(id))
 
 	models, state := m.runtime.ModelCatalog(id)
+	// Transports without model discovery (Bedrock, Azure) list models
+	// only from configuration. When the entry configures neither a
+	// models list nor a single default model, the picker would silently
+	// reuse whatever model was active before the switch - explain where
+	// a native list comes from instead of doing nothing. A configured
+	// default alone counts: that model is provider-owned content and is
+	// selectable right now. Never invent model IDs here.
+	if state == runtime.ModelsUnsupported &&
+		!m.runtime.HasOwnModelList(id) &&
+		!m.runtime.HasDefaultModel(id) {
+		m.Println("no models listed for %s - add providers.%s.models to config.yaml, then reopen /model.",
+			providers.DisplayName(id), id)
+	}
 	switch {
 	case len(models) == 0 && state == runtime.ModelsUnsupported:
-		// Nothing selectable and nothing to discover; leave the model as-is.
+		// Nothing selectable and nothing to discover; the guidance
+		// above already explains why the list is empty.
 	case len(models) == 1:
 		return m.chooseModel(models[0].ID)
 	default:
