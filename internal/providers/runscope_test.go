@@ -188,7 +188,7 @@ func runScopedAdapters() []runScopeCase {
 			},
 		},
 		{
-			name:         "azure",
+			name: "azure",
 			// The Azure wrapper never exposed reasoning controls (they
 			// ride the inner OpenAI-compatible spec); clones preserve that
 			// exactly rather than inventing new behavior.
@@ -388,7 +388,8 @@ func TestRunScopedAzurePreservesDeploymentBehavior(t *testing.T) {
 	}
 	if c.inner == orig.(*AzureProvider).inner {
 		t.Error("clone shares the inner adapter; want a rebuilt instance")
-	}}
+	}
+}
 
 // TestRunScopedOpenCodePreservesRoutedProtocol pins that router clones
 // carry the resolved inner protocol adapter (a distinct instance of the

@@ -528,7 +528,7 @@ func TestValidationRejectsBaseURLQueryAndFragment(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			isolateHome(t)
 			writeProvidersConfig(t, "model:\n  provider: x\n  name: m\n"+
-				"providers:\n  x:\n    type: openai-compatible\n    base_url: '" + baseURL + "'\n")
+				"providers:\n  x:\n    type: openai-compatible\n    base_url: '"+baseURL+"'\n")
 			_, err := Load()
 			if err == nil {
 				t.Fatalf("Load() accepted base_url %q", baseURL)

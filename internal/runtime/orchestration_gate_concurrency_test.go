@@ -19,19 +19,19 @@ import (
 // family apart from a single shared instance without exotic
 // reflection. All fields are mu-guarded.
 type gateOverlapShared struct {
-	mu         sync.Mutex
-	inflight   int
-	peak       int
-	conflicts  int
-	total      int
-	nextID     int
-	usage      map[int]map[string]bool // instance id -> call identities served
-	reasoning  map[int]int             // instance id -> SetReasoning calls
-	barrierIdents map[string]bool      // identities that must genuinely overlap
-	barrierMu            sync.Mutex
-	barrierArrived       int
-	barrierOpened        bool
-	barrierDone          chan struct{}
+	mu             sync.Mutex
+	inflight       int
+	peak           int
+	conflicts      int
+	total          int
+	nextID         int
+	usage          map[int]map[string]bool // instance id -> call identities served
+	reasoning      map[int]int             // instance id -> SetReasoning calls
+	barrierIdents  map[string]bool         // identities that must genuinely overlap
+	barrierMu      sync.Mutex
+	barrierArrived int
+	barrierOpened  bool
+	barrierDone    chan struct{}
 }
 
 func newGateOverlapShared(barrierIdents ...string) *gateOverlapShared {

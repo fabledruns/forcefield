@@ -77,11 +77,11 @@ func TestProviderAddRejectsEntriesLoadWouldReject(t *testing.T) {
 // paths after base_url, so such an entry would corrupt every request.
 func TestProviderAddRejectsQueryAndFragmentBaseURLs(t *testing.T) {
 	cases := map[string]string{
-		"query":                "https://api.example.com/v1?x=1",
-		"fragment":             "https://api.example.com/v1#f",
-		"query and fragment":   "https://api.example.com/v1?x=1#f",
-		"bare question mark":   "https://api.example.com/v1?",
-		"bare hash":            "https://api.example.com/v1#",
+		"query":                 "https://api.example.com/v1?x=1",
+		"fragment":              "https://api.example.com/v1#f",
+		"query and fragment":    "https://api.example.com/v1?x=1#f",
+		"bare question mark":    "https://api.example.com/v1?",
+		"bare hash":             "https://api.example.com/v1#",
 		"azure-style api query": "https://res.openai.azure.com/?api-version=2024-06-01",
 	}
 	for name, baseURL := range cases {
