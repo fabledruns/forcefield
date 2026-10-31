@@ -220,7 +220,10 @@ type orchestrationScope struct {
 	// first, for attribution in approval surfaces.
 	chain []string
 	// snap is the parent run's fixed snapshot: provider, caps, budget.
-	// The child reads its immutable parts; nothing writes to it.
+	// The pointer target itself stays immutable for the parent's
+	// lifetime; each child copies the snapshot value and swaps in its
+	// own per-run parts (agent, manager, scheduler, run-scoped provider
+	// clone, mode, limits), so sibling runs never share mutable state.
 	snap *runSnapshot
 }
 

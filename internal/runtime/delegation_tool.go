@@ -429,6 +429,22 @@ func (o *Orchestrator) runChild(
 	scheduler.askSerial = o.childAskSerial()
 
 	childSnap := *scope.snap
+	// Run-scoped provider isolation: the child gets its own provider
+	// instance so its single-request gate and reasoning state never
+	// contend with (or are corrupted by) the parent's or a sibling
+	// child's. Built-in adapters clone cheaply here (shared HTTP client
+	// and configuration, fresh per-run state). A built-in that cannot
+	// clone fails the delegation clearly instead of sharing mutable
+	// state; external and test providers keep the legacy shared
+	// contract and run as-is.
+	clone, cloneable, err := providers.CloneForRun(scope.snap.provider)
+	if err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf(
+			"delegation failed: agent %q needs a run-scoped provider and cloning failed: %v", def.Name, err)}, nil
+	}
+	if cloneable {
+		childSnap.provider = clone
+	}
 	childSnap.agent = o.parent.buildAgent(def)
 	childSnap.manager = childMgr
 	childSnap.scheduler = scheduler
