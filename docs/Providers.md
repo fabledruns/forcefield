@@ -305,6 +305,17 @@ provider, err := registry.Create(providers.Spec{Type: "openai-compatible", BaseU
 
 Switching provider or model rebuilds step 1-2 only; the loop, sessions, and tools are untouched.
 
+## Run-Scoped Cloning
+
+Delegated child runs run concurrently with their parent, but a provider instance serializes requests through its single-request gate and carries per-run reasoning state. To keep parent and children independent, built-in adapters implement `RunScopedProvider` (`CloneForRun`): each child run clones the provider before its first turn. A clone
+
+- owns a fresh request gate and zero reasoning state (never shared with the original or other runs),
+- shares only thread-safe objects: the `*http.Client` with its connection pool and the immutable `Spec`-derived configuration,
+- preserves endpoint, model selection, authentication, and protocol selection exactly, and
+- fails with an error rather than returning a shared mutable instance.
+
+Vertex is the exception to value copying: it embeds a mutex-guarded lazy token source, so its clone starts with empty token state and re-resolves credentials lazily. Azure clones its inner OpenAI-compatible transport (keeping the deployment-scoped configuration); the OpenCode routers clone the resolved wire-protocol adapter. External and test providers do not implement the capability and keep the legacy shared-instance contract.
+
 ## Design Notes
 
 - Providers do not execute tools. The runtime executes tools.
