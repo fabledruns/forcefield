@@ -626,6 +626,9 @@ func (c *Config) validate() (ResolvedProvider, error) {
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			return ResolvedProvider{}, fmt.Errorf("model.endpoint %q must be an absolute http:// or https:// URL", c.Model.Endpoint)
 		}
+		if strings.ContainsAny(c.Model.Endpoint, "?#") {
+			return ResolvedProvider{}, fmt.Errorf("model.endpoint %q must not contain a query string or fragment - it is a plain API root and adapters append the documented API paths", c.Model.Endpoint)
+		}
 	}
 
 	for id, entry := range c.Providers {

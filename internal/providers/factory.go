@@ -119,6 +119,9 @@ func (s Spec) Validate() error {
 			if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 				return fmt.Errorf("provider %q base_url %q must be an absolute http:// or https:// URL with a host", s.ID, s.BaseURL)
 			}
+			if err := rejectBaseURLSuffix(s.ID, s.BaseURL); err != nil {
+				return err
+			}
 		}
 	} else {
 		if s.BaseURL == "" {
@@ -133,6 +136,9 @@ func (s Spec) Validate() error {
 		}
 		if u.Host == "" {
 			return fmt.Errorf("provider %q base_url %q has no host", s.ID, s.BaseURL)
+		}
+		if err := rejectBaseURLSuffix(s.ID, s.BaseURL); err != nil {
+			return err
 		}
 	}
 	for name, value := range s.Headers {
@@ -198,6 +204,20 @@ func (s Spec) Validate() error {
 	}
 	if s.TimeoutSeconds < 0 || s.TimeoutSeconds > maxProviderTimeoutSeconds {
 		return fmt.Errorf("provider %q timeout_seconds %d is out of range (0 keeps the default, else 1-%d)", s.ID, s.TimeoutSeconds, maxProviderTimeoutSeconds)
+	}
+	return nil
+}
+
+// rejectBaseURLSuffix fails base URLs that carry a query string or
+// fragment. Every adapter assembles request URLs by plain concatenation
+// (base_url + documented path), so a literal "?" or "#" in base_url
+// silently corrupts the path or drops appended parameters such as Azure's
+// api-version. The raw-string scan also catches bare delimiters the URL
+// parser would otherwise drop ("https://host/v1?" parses with no query,
+// "https://host/v1#" with no fragment).
+func rejectBaseURLSuffix(id, raw string) error {
+	if strings.ContainsAny(raw, "?#") {
+		return fmt.Errorf("provider %q base_url %q must be a plain endpoint URL without query or fragment - base_url is an API root and adapters append the documented API paths", id, raw)
 	}
 	return nil
 }

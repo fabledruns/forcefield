@@ -32,7 +32,10 @@ package config
 
 // nonEmpty constrains strings the runtime requires to be present.
 #nonEmpty: string & != ""
-#httpURL: string & =~ "^https?://.+"
+// #httpURL is any absolute plain http(s) URL: the adapters concatenate
+// the documented API paths onto it, so query strings and fragments are
+// rejected at load (mirrors rejectBaseURLSuffix in the Go validators).
+#httpURL: string & =~ "^https?://[^?#]+$"
 
 // AgentName lists the built-in specialised agents recognised by the registry.
 #AgentName: "coding" | "cyber" | "legal" | "docs" | "research" | "devops" | "general"

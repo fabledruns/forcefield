@@ -511,3 +511,57 @@ func TestLegacyNVIDIAKeyStillResolvesIntoModelField(t *testing.T) {
 		t.Errorf("cfg.Model.APIKey = %q, want the legacy convenience field populated", cfg.Model.APIKey)
 	}
 }
+
+// TestValidationRejectsBaseURLQueryAndFragment pins the load-time half of
+// the base-URL shape rule: providers entries are plain API roots, and a
+// query string or fragment would silently corrupt the request paths the
+// adapters concatenate after them.
+func TestValidationRejectsBaseURLQueryAndFragment(t *testing.T) {
+	cases := map[string]string{
+		"query":              "https://host/v1?env=prod",
+		"fragment":           "https://host/v1#default",
+		"query and fragment": "https://host/v1?a=1#f",
+		"bare question mark": "https://host/v1?",
+		"bare hash":          "https://host/v1#",
+	}
+	for name, baseURL := range cases {
+		t.Run(name, func(t *testing.T) {
+			isolateHome(t)
+			writeProvidersConfig(t, "model:\n  provider: x\n  name: m\n"+
+				"providers:\n  x:\n    type: openai-compatible\n    base_url: '" + baseURL + "'\n")
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("Load() accepted base_url %q", baseURL)
+			}
+			if !strings.Contains(err.Error(), "query string or fragment") {
+				t.Errorf("error = %q, want a query-or-fragment rejection", err)
+			}
+		})
+	}
+}
+
+// TestLoadRejectsQueryAndFragmentInLegacyModelEndpoint covers the legacy
+// single-provider endpoint override: same shape rule, field-named error.
+func TestLoadRejectsQueryAndFragmentInLegacyModelEndpoint(t *testing.T) {
+	cases := map[string]string{
+		"query":              "https://api.example.com/v1?x=1",
+		"fragment":           "https://api.example.com/v1#f",
+		"query and fragment": "https://api.example.com/v1?x=1#f",
+		"bare question mark": "https://api.example.com/v1?",
+		"bare hash":          "https://api.example.com/v1#",
+	}
+	for name, endpoint := range cases {
+		t.Run(name, func(t *testing.T) {
+			isolateHome(t)
+			body := "model:\n  provider: openai\n  name: m\n  endpoint: '" + endpoint + "'\n"
+			writeConfig(t, body)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("Load() accepted model.endpoint %q", endpoint)
+			}
+			if !strings.Contains(err.Error(), "query string or fragment") {
+				t.Errorf("error = %q, want a query-or-fragment rejection", err)
+			}
+		})
+	}
+}

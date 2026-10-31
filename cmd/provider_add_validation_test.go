@@ -71,6 +71,51 @@ func TestProviderAddRejectsEntriesLoadWouldReject(t *testing.T) {
 	}
 }
 
+// TestProviderAddRejectsQueryAndFragmentBaseURLs pins that `ff provider
+// add` refuses base URLs carrying query strings or fragments before any
+// configuration is persisted: the adapters concatenate documented API
+// paths after base_url, so such an entry would corrupt every request.
+func TestProviderAddRejectsQueryAndFragmentBaseURLs(t *testing.T) {
+	cases := map[string]string{
+		"query":                "https://api.example.com/v1?x=1",
+		"fragment":             "https://api.example.com/v1#f",
+		"query and fragment":   "https://api.example.com/v1?x=1#f",
+		"bare question mark":   "https://api.example.com/v1?",
+		"bare hash":            "https://api.example.com/v1#",
+		"azure-style api query": "https://res.openai.azure.com/?api-version=2024-06-01",
+	}
+	for name, baseURL := range cases {
+		t.Run(name, func(t *testing.T) {
+			// Reset every add flag the command reads; package-level flag
+			// state persists across tests and must not leak between cases.
+			providerAddName, providerAddType, providerAddBaseURL = "", "", ""
+			providerAddModel, providerAddModels, providerAddAPIKeyEnv = "", nil, ""
+			providerAddAuthMode, providerAddAuthHdr, providerAddAuthSchm = "", "", ""
+			providerAddAPIPath, providerAddAPIVersion, providerAddTimeout = "", "", 0
+			providerAddProject, providerAddLocation, providerAddCredsFile = "", "", ""
+			providerAddRegion, providerAddProfile, providerAddForce = "", "", false
+
+			providerAddName = "p"
+			providerAddBaseURL = baseURL
+			if _, ok := map[string]bool{"azure-style api query": true}[name]; ok {
+				providerAddType = "azure"
+				providerAddModels = []string{"gpt4o-deploy"}
+			} else {
+				providerAddType = "openai-compatible"
+			}
+
+			isolateProviderHome(t)
+			writeProviderConfig(t, "model:\n  provider: ollama\n  endpoint: http://localhost:11434\n  name: m\n")
+			if err := providerAddCmd.RunE(providerAddCmd, nil); err == nil {
+				t.Fatalf("provider add accepted base_url %q", baseURL)
+			}
+			if _, err := config.Load(); err != nil {
+				t.Fatalf("Load() error = %v - add persisted an unloadable entry", err)
+			}
+		})
+	}
+}
+
 // TestProviderAddAzureValidSavesLoadableConfig guards the other side of
 // the validation gate: a legitimate azure entry (deployment models plus a
 // custom api-version) still saves and loads.

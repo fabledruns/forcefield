@@ -741,5 +741,10 @@ func urlParseRequestURI(raw string) (string, error) {
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "", fmt.Errorf("endpoint %q must be an absolute http:// or https:// URL with a host", raw)
 	}
+	// Mirror the shared base-URL rules: query and fragment in an endpoint
+	// override would corrupt the signed request path the SDK assembles.
+	if strings.ContainsAny(raw, "?#") {
+		return "", fmt.Errorf("endpoint %q must be a plain URL without query or fragment", raw)
+	}
 	return raw, nil
 }

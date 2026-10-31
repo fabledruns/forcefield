@@ -579,6 +579,9 @@ func validateBaseURL(id, raw string) error {
 	if u.Host == "" {
 		return fmt.Errorf("providers.%s.base_url %q has no host", id, raw)
 	}
+	if strings.ContainsAny(raw, "?#") {
+		return fmt.Errorf("providers.%s.base_url %q must not contain a query string or fragment - base_url is a plain API root and adapters append the documented API paths", id, raw)
+	}
 	return nil
 }
 
