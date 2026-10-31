@@ -18,3 +18,17 @@ dc4d2e1e8a11c2870a80dff0243a5bf8e1699873:internal/redact/redact_test.go:gcp-api-
 dc4d2e1e8a11c2870a80dff0243a5bf8e1699873:internal/redact/redact_test.go:curl-auth-header:86
 4a708467038874036aeb6add16cdae20d77c4360:internal/tui/permission_redact_test.go:generic-api-key:46
 4a708467038874036aeb6add16cdae20d77c4360:internal/permissions/stdin_cancel_test.go:generic-api-key:74
+
+# v1.6.0 security-corpus fixtures (intentional fake credentials, not real):
+# - internal/runtime/orchestration_canary_adversarial_test.go: the two ghp_
+#   lines and the PEM block are childShapeCanaries()/errCanary synthetic
+#   redaction shapes; every value embeds the FFSEC canary marker (const at
+#   line 25) and the file states "No real credentials, no network". The
+#   ledger test asserts each shape is scrubbed before persistence.
+# - internal/orchevents/writer_test.go:218: sequential-digit fake from the
+#   documented redaction fixture family (see entries above); asserts
+#   sanitize() scrubs credential-shaped event fields.
+e21955756c57a25e3a8e75c76a0fcc7016d6facf:internal/runtime/orchestration_canary_adversarial_test.go:generic-api-key:36
+e21955756c57a25e3a8e75c76a0fcc7016d6facf:internal/runtime/orchestration_canary_adversarial_test.go:github-pat:37
+e21955756c57a25e3a8e75c76a0fcc7016d6facf:internal/runtime/orchestration_canary_adversarial_test.go:github-pat:312
+cbc9e3782b5afa5fb79daaf820101ea0828e0ead:internal/orchevents/writer_test.go:generic-api-key:218
