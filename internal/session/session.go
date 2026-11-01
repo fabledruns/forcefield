@@ -327,7 +327,7 @@ func runeHeadLen(s string, limit int) int {
 		return 0
 	}
 	cut := cutRuneBoundary(s, limit)
-	if cut > len(s) || (cut < len(s) && !utf8.RuneStart(s[cut])) {
+	if cut >= len(s) || (cut < len(s) && !utf8.RuneStart(s[cut])) {
 		return 0
 	}
 	return cut
