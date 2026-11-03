@@ -1,0 +1,16 @@
+# INVALID: nested chains hold one child slot per depth level at the same
+# time, so an explicit concurrency cap below an explicit depth stalls a
+# full-depth chain on the semaphore until the delegate timeout. Go's
+# validateOrchestration rejects this at load; the schema must mirror it.
+model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ornith:9b
+agent:
+  name: default
+permissions:
+  default: ask
+orchestration:
+  enabled: true
+  max_depth: 3
+  max_concurrent_children: 2

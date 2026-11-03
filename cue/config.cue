@@ -173,8 +173,11 @@ package config
 	// config naming delegate under agents.*.tools is rejected at load
 	// (fail-closed). Ranges mirror Go validation; omitted numeric fields
 	// select their documented defaults, while an explicit 0 is rejected.
-	// One cross-field rule lives in Go validation only:
-	// max_concurrent_children must be >= max_depth.
+	// The cross-field semaphore rule lives below (guarded on both fields
+	// appearing); there is intentionally no max_children_per_run ==
+	// depth relation: a small spawn cap only makes deep chains
+	// unreachable (honest refusals at spawn time), and Go validation
+	// accepts it too.
 	orchestration?: {
 		enabled?:                 bool
 		max_depth?:               int & >= 1 & <= 3
@@ -183,6 +186,18 @@ package config
 		max_task_chars?:          int & >= 256 & <= 65536
 		max_total_child_turns?:   int & >= 1 & <= 8192
 		child_permissions?:       "deny" | "interactive" | ""
+
+		// Cross-field (mirrors the semaphore deadlock rule in
+		// validateOrchestration): a nesting chain holds one child slot
+		// per depth level at the same time, so an explicit concurrency
+		// cap below an explicit depth stalls the chain until the
+		// delegate timeout - Go rejects that at load. The guard keeps
+		// the relation scoped to the case where both fields appear;
+		// omitted values pick the documented defaults (depth <= 3,
+		// concurrency 4) which always satisfy it.
+		if max_depth != _|_ && max_concurrent_children != _|_ {
+			max_concurrent_children: >= max_depth
+		}
 	}
 
 	permissions?: {

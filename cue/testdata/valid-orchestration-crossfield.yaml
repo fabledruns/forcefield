@@ -1,0 +1,18 @@
+# VALID: the cross-field relation holds at its boundary (cap == depth), and
+# max_children_per_run is intentionally NOT related to depth by Go
+# validation: a small spawn cap only makes deep chains unreachable, and
+# every attempt is refused honestly at spawn time. The schema must accept
+# exactly what Go accepts, so both settings in one file must validate.
+model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ornith:9b
+agent:
+  name: default
+permissions:
+  default: ask
+orchestration:
+  enabled: true
+  max_depth: 3
+  max_concurrent_children: 3
+  max_children_per_run: 1
