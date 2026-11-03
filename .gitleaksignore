@@ -32,3 +32,5 @@ e21955756c57a25e3a8e75c76a0fcc7016d6facf:internal/runtime/orchestration_canary_a
 e21955756c57a25e3a8e75c76a0fcc7016d6facf:internal/runtime/orchestration_canary_adversarial_test.go:github-pat:37
 e21955756c57a25e3a8e75c76a0fcc7016d6facf:internal/runtime/orchestration_canary_adversarial_test.go:github-pat:312
 cbc9e3782b5afa5fb79daaf820101ea0828e0ead:internal/orchevents/writer_test.go:generic-api-key:218
+665daaf838fb5672aafd022d0de19fc974f7270b:cmd/provider_security_test.go:generic-api-key:155
+665daaf838fb5672aafd022d0de19fc974f7270b:cmd/provider_security_test.go:generic-api-key:202
