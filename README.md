@@ -324,6 +324,8 @@ Configuration controls the model provider, endpoint, model, and agent instructio
 
 Additional runtime settings are available for context management, permissions, workspace boundaries, and shell execution.
 
+Delegation is off by default; enabling and bounding it (`orchestration:`) is documented in `docs/Config.md`. The JSONL run-evidence log that headless runs append is documented in `docs/Events.md`, and the adversarial test suite covering the orchestration layer in `docs/OrchestrationTesting.md`.
+
 ## How it works
 
 Forcefield owns the agent loop:
@@ -368,11 +370,14 @@ shell
 secret_scan
 load_skill
 memory
+delegate
 ```
 
 Tools receive structured input, perform an operation, and return a result to the runtime.
 
 Tool execution is subject to permission rules and runtime limits.
+
+`delegate` hands a bounded subtask to a specialised child agent run inside a single tool call and returns the child's report to the parent. It is only present in the tool universe when the orchestrator is enabled (`orchestration.enabled: true` in configuration). Depth, concurrency, per-run spawn, task-size, and aggregate child-turn bounds are enforced by the runtime at the call site, not in prompts.
 
 ## Shell execution
 
@@ -504,6 +509,7 @@ forcefield/
 │   ├── agent/
 │   ├── command/
 │   ├── config/
+│   ├── orchevents/
 │   ├── providers/
 │   ├── runtime/
 │   ├── session/
@@ -515,7 +521,7 @@ forcefield/
 └── scripts/
 ```
 
-Package responsibilities are separated by runtime, provider, session, tool, skill, configuration, and terminal-interface concerns.
+Package responsibilities are separated by runtime, provider, session, tool, skill, configuration, and terminal-interface concerns. `internal/orchevents` owns the orchestration event stream recorded beside each session (`.forcefield/sessions/<session-id>.events.jsonl`): event definitions, bounded writing, and honest reading.
 
 ## Development
 

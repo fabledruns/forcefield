@@ -1,7 +1,9 @@
 # Orchestration Adversarial Test Suite
 
-Status: in progress (mission branch `feat/orchestration-adversarial-tests`, cut from
-`feat/secure-agent-orchestration` at `4cf3149`).
+Status: adversarial-suite stages A–E complete on the mission branch
+`feat/orchestration-adversarial-tests` (cut from `feat/secure-agent-orchestration`
+at `4cf3149`); orchestration-completion additions from branch
+`v1.6.0-orchestration-completion` are recorded in §11.
 
 This document is the working threat matrix for the dedicated adversarial test suite
 covering the multi-agent orchestration layer (orchestrator, `delegate` tool, child
@@ -443,3 +445,36 @@ in §7. One fuzz crasher discovered by the suite itself and pinned.
 
 - The `-race` run is the one ladder step that must be executed in CI (item 5);
   everything else is fully verified locally.
+
+---
+
+## 11. Orchestration completion additions (branch `v1.6.0-orchestration-completion`)
+
+A second pass over the remaining adversarial gaps extended the suite beyond
+Stage E. It is recorded here so this document remains the single threat-matrix
+inventory; nothing in §1–§10 was rewritten. Every claim below was verified
+against the current tree. This pass added 7 top-level test functions and
+1 Go fuzz target:
+
+| # | Test / artifact | File | What it pins |
+|---|---|---|---|
+| T-02 | `TestOrchestrationThreeLevelCancelUnblocksInteractiveAsk` | `internal/runtime/orchestration_lifecycle_adversarial_test.go` | At `max_depth = 3`, a sibling parked on the shared interactive-ask scope unblocks cleanly when cancellation tears down the delegation tree, while a grandchild leg exhausts `max_total_child_turns` at the exact crossing (`budget_exhausted` fired exactly once); all ordering established by channels and gates, never sleeps, no goroutine leaks. |
+| T-03 | `TestSchemaOrchestrationCrossField` + fixtures `cue/testdata/valid-orchestration-crossfield.yaml`, `cue/testdata/valid-orchestration-depth-only.yaml`, `cue/testdata/invalid-orchestration-crossfield.yaml` | `cue/schema_test.go`, `cue/config.cue` | Schema parity (defect O2): `config.cue` mirrors Go's `max_concurrent_children >= max_depth` rule behind a presence guard (the relation exists only when both fields are explicit — omitted values resolve to defaults that always satisfy it). The same fixtures are enforced two ways: `cue vet` in the CI `cue` job and the real Go `config.Load` path in the test. |
+| T-04 | `TestOrchestrationConcurrentRetryAtTurnBudgetBoundary` | `internal/runtime/orchestration_total_turns_test.go` | Four concurrent sibling delegations with transient provider failures and per-child provider clones: aggregate turn charges are exactly counted under all interleavings (no lost or invented charges), the crossing charges are the two on-budget-boundary retry attempts fired on contexts the budget already cancelled, `budget_exhausted` fires exactly once, and run-scoped provider ledgers never cross. |
+| T-05 | `FuzzReadEvents` (35 seed corpus entries: 34 inline seeds + one 1 MiB oversized input built at init) | `internal/orchevents/fuzz_test.go` | Coverage-guided fuzzing of the real `ReadAll` reader path: no panic, no hang, deterministic parses, errors are either positioned ("parse event line N of path") or file-scoped ("read path") with the readable prefix retained, no invented records, and the in-package consumers stay consistent. CI runs a bounded smoke (`go test ./internal/orchevents -run '^$' -fuzz '^FuzzReadEvents$' -fuzztime=30s` in `.github/workflows/test.yml`) on all three CI platforms; a bounded run is evidence, not exhaustive coverage. |
+| T-06 | `TestWriterMidRecordShortWriteLatch`, `TestWriterMidRecordShortWriteNoSuccessOnPartialTail` | `internal/orchevents/writer_shortwrite_test.go` | Fault injection at the writer's `*os.File` seam: a broken pipe is the deterministic ENOSPC stand-in (the local filesystem never actually fills). A mid-record write failure latches exactly once, is never counted as a written record, earlier failures win over later ones, and `Close()` stays honest. The partial-tail subtests reconstruct the on-disk short-write shape in real files and pin the reader-recovery contract — the readable prefix comes back with the positioned "parse event line 2" error, while a trailing empty line after a clean final newline is tolerated evidence. |
+| T-06 | `TestRunDemotesOnMidStreamEventWriteFailure` | `cmd/run_test.go` | Headless demotion: a mid-stream event-log write failure keeps `runErr == nil` (telemetry never becomes an execution failure), demotes the verified run to `StatusPartial`, prints the stderr warning and demotion notice, and maps to `recovery.ExitUnverified` (5) — lost evidence is never reported as success. |
+| T-07 | `TestAgentsPanelChurnResizeAndNewSessionLateEvents` | `internal/tui/agentsstate_terminal_test.go` | 12 rapid delegate children driven through the real Bubble Tea `Update` loop with terminal-width oscillation across the 48-column narrow boundary mid-churn; `/new` exercised via `model.NewSession()` — the exact implementation the dispatcher routes the command to, not keyboard dispatch; late events from the retired stream generation must not create, mutate, or terminalize rows, even when a new run reuses an old call ID (attribution = generation + call ID, enforced by the gen gate and backed by `agentsState`'s unattributed-event contract); the panel bound (8 visible rows), label uniqueness, and bounded height are asserted at every step. A state-machine test, not live multi-provider integration coverage. |
+
+Current `internal/orchevents` inventory: 13 top-level test functions
+(11 in `writer_test.go`, 2 in `writer_shortwrite_test.go`) and 1 fuzz target
+(`FuzzReadEvents`). Whole-repo CI (`.github/workflows/test.yml`) runs
+`go test ./...` and `go test -race ./...` on ubuntu/windows/macos plus the
+fuzz smoke above; the `cue` job enforces every `testdata/valid-*.yaml` /
+`testdata/invalid-*.yaml` verdict with `cue vet`; `cmd` carries a ≥30%
+coverage gate.
+
+Race note: Stage E §8/§10 recorded `-race` as unavailable in the local
+toolchain of the mission branch, with a CI command left pending. That local
+limitation no longer applies — race-enabled runs execute locally with CGO and
+a local C toolchain, and CI enforces `go test -race ./...` on every platform.

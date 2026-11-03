@@ -13,6 +13,7 @@ You can find the index of the contents in this file.
 | [Audit](Audit.md)                    | Forensic hardening audit record: scope, confirmed findings and fixes, and intentionally unchanged areas. |
 | [Recovery](Recovery.md)              | Run recovery, supervision, and process-tree lifecycle. |
 | [Benchmarks](Benchmarks.md)        | How to measure Forcefield with the standalone HPOV suite, and where its methodology lives. |
+| [Orchestration Testing](OrchestrationTesting.md) | Adversarial test suite for the multi-agent orchestration layer: invariants, discovered defects, mutation evidence, and the current test inventory. |
 
 ## Packages
 
