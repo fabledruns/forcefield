@@ -70,6 +70,17 @@ jobs:
         # session/config atomic writes) are covered by race-enabled runs.
         run: go test -race ./...
 
+      - name: Fuzz smoke (orchevents reader)
+        # Bounded coverage-guided fuzzing of the headless event-log
+        # reader: a corrupt .events.jsonl evidence file must obey the
+        # honest reading contract (positioned parse error with a usable
+        # prefix, bounded line handling) and can never crash or hang
+        # the reporting tooling. -run '^$' skips the unit tests (run
+        # above, including the fuzz seed corpus) so the whole budget
+        # goes to coverage-guided exploration.
+        shell: bash
+        run: go test ./internal/orchevents -run '^$' -fuzz '^FuzzReadEvents$' -fuzztime=30s
+
       - name: Build Forcefield
         run: go build -v ./...
 
