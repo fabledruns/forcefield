@@ -32,6 +32,7 @@ const (
 	DelegationRejected  Type = "delegation_rejected"
 	AgentSpawned        Type = "agent_spawned"
 	ChildProgress       Type = "child_progress"
+	ChildText           Type = "child_text"
 	ChildCompleted      Type = "child_completed"
 	ToolStarted         Type = "tool_started"
 	ToolCompleted       Type = "tool_completed"
@@ -83,6 +84,10 @@ type Event struct {
 	BudgetLimit int            `json:"budget_limit,omitempty"`
 	BudgetValue int            `json:"budget_value,omitempty"`
 	Meta        map[string]any `json:"meta,omitempty"`
+	// Text carries the actual child output for ChildText events.
+	// Content-scoped and omitempty: transient visibility only, never
+	// persisted task content (see docs/Events.md).
+	Text string `json:"text,omitempty"`
 }
 
 // terminalOutcome validates the Outcome vocabulary; empty is allowed
@@ -129,7 +134,7 @@ func (e Event) valid() bool {
 		return false
 	case RunStarted, RunCompleted, RunFailed, RunCancelled, RunBlocked,
 		DelegationRequested, DelegationAccepted, DelegationRejected,
-		AgentSpawned, ChildProgress, ChildCompleted, ToolStarted,
+		AgentSpawned, ChildProgress, ChildText, ChildCompleted, ToolStarted,
 		ToolCompleted, ToolFailed, ToolDenied, ToolCancelled,
 		BudgetExhausted, EventsTruncated:
 	default:

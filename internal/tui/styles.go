@@ -18,6 +18,15 @@ var (
 	colorWarning   = lipgloss.Color("#C4A35A")
 	colorBorder    = lipgloss.Color("#3A3A40")
 	colorText      = lipgloss.Color("#EAEAEA")
+
+	// Orchestration canvas palette (opening_anim.go / quadrant_view.go),
+	// PLAN §3.3: lighter pink for quadrant headers and the steady
+	// wordmark tint, the gradient wave's highlight and deep stops, and
+	// the crosshair separator rule.
+	colorLabelPink     = lipgloss.Color("#F4729A")
+	colorWordmarkLight = lipgloss.Color("#FFB3C9")
+	colorWordmarkDeep  = lipgloss.Color("#A81343")
+	colorSeparator     = lipgloss.Color("#4A2030")
 )
 
 var (
@@ -214,6 +223,16 @@ var (
 
 	paletteDescStyle = lipgloss.NewStyle().
 				Foreground(colorMuted)
+)
+
+var (
+	// Orchestration canvas chrome (quadrant_view.go): quadrant headers
+	// render in lighter pink, the crosshair rules in the deep red-brown
+	// separator tone, and the center intersection plus the animated
+	// separator tips take the brand accent.
+	quadLabelStyle   = lipgloss.NewStyle().Bold(true).Foreground(colorLabelPink)
+	canvasSepStyle   = lipgloss.NewStyle().Foreground(colorSeparator)
+	canvasCrossStyle = lipgloss.NewStyle().Foreground(colorAccent)
 )
 
 func toolStatusStyle(t *toolRecord) lipgloss.Style {

@@ -14,16 +14,35 @@ The TUI is a presentation layer. It shows the conversation, accepts user input, 
 func Start(sess *session.Session) error
 ```
 
-1. Load configuration for header labels.
-2. Create a Bubble Tea program with the chat model.
-3. Enable the alternate screen and mouse cell motion.
-4. Run until the user exits.
+1. Apply dynamic terminal tab branding (`Forcefield`) and arm restoration cleanup.
+2. Load configuration for header labels.
+3. Create a Bubble Tea program with the chat model.
+4. Enable the alternate screen and mouse cell motion.
+5. Run until the user exits.
+6. Restore previous terminal title on exit (normal quit, error, signal, cancellation).
 
 The CLI starts the TUI from:
 
 - `ff` with no subcommand
 - `ff chat`
 - `ff --resume <session-id>`
+
+## Dynamic Terminal Tab Branding
+
+Forcefield dynamically brands the active terminal tab or window title:
+
+- **Startup**: Sets the active tab title to `Forcefield` via standard OSC 2 sequences (`\x1b]2;Forcefield\x07`) and Windows Console APIs (`SetConsoleTitleW`). On xterm-compatible terminals, it also saves the current title to the title stack via `\x1b[22;0t`.
+- **Shutdown & Restoration**: When Forcefield exits—normally (e.g. `/quit`, `Ctrl+C`), on runtime errors, on cancellation/interrupts (`SIGINT`/`SIGTERM`), or during panic unwinding—it restores the original terminal title captured prior to launch. Terminals supporting the xterm title stack pop the previous title (`\x1b[23;0t`), and Windows hosts restore the captured console title.
+- **Terminal Compatibility Detection**: Escape sequences are emitted only after verifying that output is connected to an interactive terminal (`IsTerminal`). Sequences are withheld when redirected to files/pipes or running under dumb terminals (`TERM=dumb`). Windows Terminal is detected via the `WT_SESSION` environment variable.
+- **Zero TUI Interference**: Branding initialization precedes Bubble Tea's alternate screen transition (`tea.WithAltScreen()`), and restoration executes after Bubble Tea has fully restored the terminal. No title query sequences (which could leak into stdin input) are used, ensuring zero interference with Bubble Tea's input reader, alternate screen, or rendering.
+- **No Persistent Modification**: Forcefield never touches user shell profiles (e.g. `$PROFILE`), registry keys, or Windows Terminal `settings.json`.
+
+### Tab Icon Integration & Platform Boundaries
+
+- **Dynamic In-Band Switching Limitation**: Windows Terminal does **not** support dynamically altering an active tab's icon graphic from within a running process via in-band OSC escape sequences (Microsoft Terminal Issue #1868: *"Suggestion: ability for applications to set their tab icon"*, an open feature request). Standard xterm OSC 0 and OSC 1 sequences only set textual icon labels (the window title when minimized), not graphical icon images. Candidate sequences such as `OSC I`, `OSC 10000`, and vendor extensions are not parsed as tab icons by Windows Terminal's Virtual Terminal engine (`OutputStateMachineEngine.cpp`).
+- **Official JSON Fragment Extension**: Windows Terminal supports native tab icons for applications through its **JSON Fragment Extensions** system (`%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\Forcefield\forcefield.json`).
+- **Profile Icon Packaging**: Forcefield packages and ensures this extension with `assets/logo.png`. When launching Forcefield in Windows Terminal via the tab dropdown (`+ -> Forcefield`) or via `wt -p Forcefield`, Windows Terminal displays `logo.png` directly on the tab header.
+- **Settings Safety**: Like all Forcefield components, this extension is self-contained under the `Fragments` directory and does not edit, rewrite, or corrupt the user's `settings.json` or PowerShell profile.
 
 ## Main UI Parts
 

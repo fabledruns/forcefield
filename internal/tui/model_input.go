@@ -217,6 +217,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.stream = stream
 		m.cancelStream = cancel
 		m.streamGen++
+		// Re-arm orchestration delivery for this run: stopStream
+		// detached the sink so a dying run's teardown stragglers can
+		// never be stamped with a newer generation. The sink instance
+		// never changes, so re-attaching cannot duplicate delivery.
+		m.attachOrchSink()
 		m.loadingFrame = 0
 
 		return m, m.streamPumpCmd()

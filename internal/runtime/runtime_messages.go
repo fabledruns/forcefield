@@ -76,16 +76,43 @@ func estimateMessagesTokens(messages []providers.Message) int {
 }
 
 // buildPromptBase renders the run-fixed part of the system prompt: the
-// agent's base prompt plus the mode overlay (so plan-mode runs keep
-// their constraint on every iteration). The second result is false when
-// there is no agent, in which case refreshSystemPrompt leaves the
-// system message untouched, exactly as before.
+// agent's base prompt, the mode overlay (so plan-mode runs keep their
+// constraint on every iteration), and — when the run has an orchestrator
+// and the mode can actually delegate — the delegation fan-out contract
+// (parents and delegatable children alike; the child snapshot copies the
+// parent's orchestrator and always runs chat mode). The second result is
+// false when there is no agent, in which case refreshSystemPrompt leaves
+// the system message untouched, exactly as before.
+//
+// The delegation overlay is skipped in plan mode: planManager strips
+// delegate from the tool universe there, and prompting the model to fan
+// out calls it cannot make would contradict the read-only planning
+// policy (Phase 6 audit). Children are exempt by construction — they
+// always run chat mode regardless of the parent's mode.
 func buildPromptBase(snap runSnapshot) (string, bool) {
 	if snap.agent == nil {
 		return "", false
 	}
-	return snap.agent.BuildSystemPrompt() + snap.mode.planOverlay(), true
+	prompt := snap.agent.BuildSystemPrompt() + snap.mode.planOverlay()
+	if snap.orch != nil && snap.mode != ModePlan {
+		prompt += orchestrationOverlay
+	}
+	return prompt, true
 }
+
+// orchestrationOverlay carries the fan-out contract the delegate tool
+// schema cannot state fully: independent delegations belong in one
+// response, where the scheduler executes them concurrently. Without it
+// the model defaults to one delegation per response and the runtime's
+// concurrency is never exercised (the Phase 5 sequential-delegation
+// finding).
+const orchestrationOverlay = `
+
+### Delegation
+
+The delegate tool runs child agent runs concurrently. When a request decomposes into independent subtasks, issue the delegate calls for them together in ONE response: they execute in parallel up to the configured child limit, and each child's report arrives as its own tool result. Wait for every result before synthesizing your answer.
+
+Delegate one call per response only when the next task depends on the previous result, or after a rejection — read the rejection reason, which names the budget to respect (depth, per-run count, or concurrency).`
 
 // refreshSystemPrompt adds the current task digest to the system message.
 // base is the run-fixed prompt from buildPromptBase; only the digest

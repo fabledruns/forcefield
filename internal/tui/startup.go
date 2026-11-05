@@ -103,10 +103,14 @@ func newStartingModel(cfg *config.Config, sess *session.Session, asker permissio
 		mouseEnabled: true,
 		status:       "initializing runtime…",
 		startupPhase: startupStarting,
-		initCfg:      cfg,
-		initSess:     sess,
-		initAsker:    asker,
-		initBuilder:  defaultRuntimeBuilder,
+		// Feature gating comes straight from the config the caller
+		// loaded (nil config = disabled): with orchestration off, no
+		// animation starts, no canvas renders, and no sink attaches.
+		orchEnabled: cfg != nil && cfg.Orchestration.Enabled,
+		initCfg:     cfg,
+		initSess:    sess,
+		initAsker:   asker,
+		initBuilder: defaultRuntimeBuilder,
 	}
 }
 
@@ -151,6 +155,11 @@ func (m model) installRuntime(msg runtimeReadyMsg) model {
 		msg.rt.SetPermissionAsker(asker)
 	}
 	m.runtime = msg.rt
+	// Attach the orchestration-event sink to the freshly built runtime,
+	// mirroring the permission asker: the observer exists before any
+	// run starts, so no emission can race a nil sink. attachOrchSink
+	// is a no-op unless the feature is enabled and the sink exists.
+	m.attachOrchSink()
 	m.agentName = msg.rt.AgentDisplayName()
 	m.providerName = msg.rt.CurrentProvider()
 	m.modelName = msg.rt.CurrentModel()

@@ -1,0 +1,10 @@
+{
+  "profiles": [
+    {
+      "guid": "{e3d5a41a-8f19-4827-88d4-5182903bb222}",
+      "name": "Forcefield",
+      "commandline": "ff",
+      "icon": "logo.png"
+    }
+  ]
+}

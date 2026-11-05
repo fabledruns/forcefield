@@ -29,6 +29,14 @@ func (m *model) stopStream(savePartial bool) {
 		m.cancelStream = nil
 	}
 	m.streamGen++
+	// Detach the orchestration sink while no run is in flight: a
+	// cancelled run's teardown stragglers (a child completing just as
+	// its context dies) then land in a nil sink and are dropped at the
+	// source instead of being stamped with a newer generation after a
+	// session reset. Events queued before this detach still deliver —
+	// their stamps predate it and the model's orchGen is unchanged
+	// here.
+	m.detachOrchSink()
 	m.stream = nil
 	m.waiting = false
 	m.status = ""
@@ -38,6 +46,10 @@ func (m *model) stopStream(savePartial bool) {
 		m.agents.cancelOpen()
 		m.layout()
 	}
+	// Every row is terminal after cancelOpen (or was already): no
+	// orchestration work remains, so the quadrant view hands back to
+	// the normal TUI.
+	m.orchActive = false
 	// A build turn abandoned here (session switch, /clear, agent switch,
 	// quit) never reaches its terminal handler, so settle a building
 	// plan as partial now; the save is best-effort with the failure

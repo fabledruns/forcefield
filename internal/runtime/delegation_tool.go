@@ -50,7 +50,13 @@ func (delegateTool) Description() string {
 		"Use for bounded subtasks that benefit from a focused identity (e.g. research, " +
 		"documentation) while you keep coordinating. The child starts with only its own " +
 		"tools and permissions; its result is a report you should verify before acting on. " +
-		"Provide a self-contained task description: the child does not see your conversation."
+		"Provide a self-contained task description: the child does not see your conversation. " +
+		"For independent subtasks, issue multiple delegate calls in the same response: they " +
+		"run concurrently up to the configured child limit, and each result arrives separately. " +
+		"Delegate one call per response only when the next task depends on the previous result. " +
+		"For native batch delegation, pass a tasks array with independent subtasks; the runtime " +
+		"launches each task as its own child run concurrently (subject to child limits). " +
+		"Each task must be self-contained and independent of the others."
 }
 
 func (delegateTool) InputSchema() map[string]any {
@@ -59,14 +65,33 @@ func (delegateTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"agent": map[string]any{
 				"type":        "string",
-				"description": "The child agent's name from the registry (e.g. \"research\", \"docs\", \"coding\").",
+				"description": "The child agent's name from the registry (e.g. \"research\", \"docs\", \"coding\"). Required for single-task mode.",
 			},
 			"task": map[string]any{
 				"type":        "string",
-				"description": "Self-contained description of the subtask for the child agent, including the goal, relevant context, and what a good result looks like.",
+				"description": "Self-contained description of the subtask for the child agent, including the goal, relevant context, and what a good result looks like. Required for single-task mode.",
+			},
+			"tasks": map[string]any{
+				"type": "array",
+				"description": "Native batch delegation: an array of independent subtasks, each with its own agent and task description. All admitted tasks run concurrently; results are returned in declared order. Use this when you have multiple independent subtasks that can run in parallel.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"agent": map[string]any{
+							"type":        "string",
+							"description": "The child agent's name from the registry.",
+						},
+						"task": map[string]any{
+							"type":        "string",
+							"description": "Self-contained description of the subtask.",
+						},
+					},
+					"required": []string{"agent", "task"},
+				},
 			},
 		},
-		"required": []string{"agent", "task"},
+		// Schema validation: either single mode (agent+task) or batch mode (tasks array).
+		// The runtime enforces this defensively in ExecuteStream.
 	}
 }
 
@@ -75,6 +100,9 @@ func (delegateTool) InputSchema() map[string]any {
 // parallel-safe (sibling delegate calls run concurrently under the
 // orchestrator semaphore), cancellable, and never retried (a retried
 // delegation duplicates side effects).
+// For batch mode the SupportsParallel flag signals that this tool may
+// launch multiple child runs from one invocation; the orchestrator
+// respects the same concurrency and depth caps per-task.
 func (delegateTool) Metadata() tools.Metadata {
 	return tools.Metadata{
 		Timeout:              tools.MaxTimeout,
@@ -106,10 +134,17 @@ func (t delegateTool) ExecuteStream(ctx context.Context, args map[string]any, on
 		return tools.Result{IsError: true, Content: "delegation cancelled before it started"}, nil
 	}
 
-	agentName, taskText, verr := delegateArgs(args)
+	agentName, taskText, batchTasks, verr := delegateArgs(args)
 	if verr != "" {
 		return softDelegateResult(verr), nil
 	}
+
+	// Batch mode: multiple independent tasks
+	if len(batchTasks) > 0 {
+		return t.executeBatch(ctx, scope, batchTasks, onChunk)
+	}
+
+	// Single mode: one task
 	agentName = strings.ToLower(strings.TrimSpace(agentName))
 	taskText = strings.TrimSpace(taskText)
 	taskRunes := len([]rune(taskText))
@@ -198,19 +233,60 @@ func (t delegateTool) ExecuteStream(ctx context.Context, args map[string]any, on
 // delegateArgs extracts the schema-validated arguments defensively (the
 // scheduler's strict validation already ran for model-originated calls;
 // direct callers get the same soft failure).
-func delegateArgs(args map[string]any) (agentName, taskText, failure string) {
+// Returns (agentName, taskText, tasksArray, failure). For single mode,
+// agentName and taskText are populated; for batch mode, tasksArray is
+// populated with the parsed tasks.
+func delegateArgs(args map[string]any) (string, string, []batchTask, string) {
 	if args == nil {
-		return "", "", `missing "agent" and "task"`
+		return "", "", nil, `missing "agent" and "task" or "tasks"`
 	}
-	agentName = stringArg(args, "agent")
-	taskText = stringArg(args, "task")
+
+	// Check for batch mode first: tasks array
+	if tasksRaw, ok := args["tasks"]; ok {
+		tasksList, ok := tasksRaw.([]any)
+		if !ok {
+			return "", "", nil, `tasks must be an array`
+		}
+		if len(tasksList) == 0 {
+			return "", "", nil, `tasks array is empty`
+		}
+		var tasks []batchTask
+		for i, item := range tasksList {
+			taskMap, ok := item.(map[string]any)
+			if !ok {
+				return "", "", nil, fmt.Sprintf("tasks[%d] must be an object", i)
+			}
+			agent := stringArg(taskMap, "agent")
+			task := stringArg(taskMap, "task")
+			if strings.TrimSpace(agent) == "" {
+				return "", "", nil, fmt.Sprintf("tasks[%d] missing agent", i)
+			}
+			if strings.TrimSpace(task) == "" {
+				return "", "", nil, fmt.Sprintf("tasks[%d] missing task", i)
+			}
+			tasks = append(tasks, batchTask{
+				Agent: strings.ToLower(strings.TrimSpace(agent)),
+				Task:  strings.TrimSpace(task),
+			})
+		}
+		return "", "", tasks, ""
+	}
+
+	// Single mode: agent + task
+	agentName := stringArg(args, "agent")
+	taskText := stringArg(args, "task")
 	if strings.TrimSpace(agentName) == "" {
-		return "", "", `missing "agent"`
+		return "", "", nil, `missing "agent"`
 	}
 	if strings.TrimSpace(taskText) == "" {
-		return "", "", `missing "task"`
+		return "", "", nil, `missing "task"`
 	}
-	return agentName, taskText, ""
+	return strings.ToLower(strings.TrimSpace(agentName)), strings.TrimSpace(taskText), nil, ""
+}
+
+type batchTask struct {
+	Agent string
+	Task  string
 }
 
 // stringArg reads one string field. Only strings pass; anything else is

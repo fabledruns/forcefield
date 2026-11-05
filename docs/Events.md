@@ -101,6 +101,55 @@ Use these fields to stitch lines together:
 - `chain` — delegation path, `"general > coding"` style.
 - `depth` — delegation depth at spawn.
 
+### Lifecycle guarantees (Phase 4 audit)
+
+The Phase 4 adversarial lifecycle audit returned a **conditionally safe**
+verdict. Its findings are preserved here verbatim; they remain accurate
+after Phase 5.
+
+**Generation stamping is delivery gating, not attribution truth.** The
+TUI's sink stamps every event with the current orchestration generation
+at Emit time, and the model drops batches whose stamp no longer matches
+(`internal/tui/tui.go`, `tuiOrchSink`). A reset (`/clear`, `/new`,
+session switch) detaches the sink and bumps the generation — but the
+runtime is not awaited: the next submit re-attaches the sink
+(`internal/tui/model_input.go`, submit path) without waiting for a
+still-unwinding old run to return, and the emitters
+(`internal/runtime/orchestration.go` `emitDelegation` / `emitChildRun`,
+`internal/runtime/delegation_tool.go` `emitChildCompleted`) deliberately
+do not gate on `ctx` — the unconditional `child_completed` event is
+intentional and carries cancellation information to the parent. Within
+that post-reset re-attachment window, an old execution's remaining
+emissions can be stamped with the newer generation and deliver into the
+new session.
+
+**Containment comes from correlation maps, not the stamp.** An old
+event only mutates state it can correlate: `internal/tui/agentsstate.go`
+`orchAnchor` resolves rows by `child_run` id, `call_id` + `chain`, or
+(for nested events) a parent chain row, and never fabricates unrelated
+rows. A mis-stamped old event therefore cannot invent children in the
+new session's view; at worst it can touch a row it legitimately
+correlates to.
+
+**Provider call-ID reuse is an assumption, with a narrow cross-run
+collision risk.** Correlation keys on provider tool-call ids. The
+guarantee holds only if a provider never reuses a call id across runs.
+A provider that reused one could let an old unwind event anchor into a
+new delegation's row (same `call_id`, same chain shape). Mainstream
+providers generate unique call ids, so the risk is documented rather
+than defended.
+
+**Eight adversarial scenarios still lack dedicated tests.** The audit
+identified eight lifecycle scenarios around the window above — the
+re-attach racing an unwinding run end to end, cross-run call-id reuse,
+cross-feed first-terminal-wins under concurrent feeds, `cancelOpen`
+racing late structured events, transcript collapse dedup across resets,
+bounded-queue drop accounting under mixed lifecycle/progress pressure,
+generation mismatch through the headless writer, and nested-event
+anchoring after a reset. The conditional verdict rests on the
+correlation-map containment argument, not on test coverage of these
+paths.
+
 ## File semantics
 
 The writer in `internal/orchevents/writer.go`:
