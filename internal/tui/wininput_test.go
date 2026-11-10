@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf16"
@@ -501,6 +502,168 @@ func TestWindowsInputPump_MouseHandling(t *testing.T) {
 	}
 }
 
+type testMsgRecorderModel struct {
+	mu   sync.Mutex
+	msgs []tea.Msg
+}
+
+func (m *testMsgRecorderModel) Init() tea.Cmd { return nil }
+func (m *testMsgRecorderModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.mu.Lock()
+	m.msgs = append(m.msgs, msg)
+	m.mu.Unlock()
+	return m, nil
+}
+func (m *testMsgRecorderModel) View() string { return "" }
+
+// TestWindowsInputPump_ConcurrentSendAndAssign tests that windowsInputPump.send
+// and background early message draining do not race with concurrent program assignment,
+// and that early messages are neither lost nor duplicated nor reordered.
+func TestWindowsInputPump_ConcurrentSendAndAssign(t *testing.T) {
+	var program atomic.Pointer[tea.Program]
+	pump := &windowsInputPump{
+		programRef: &program,
+		done:       make(chan struct{}),
+		parser:     newInputParser(),
+	}
+
+	recorder := &testMsgRecorderModel{}
+	prog := tea.NewProgram(recorder, tea.WithInput(nil))
+	go func() {
+		_, _ = prog.Run()
+	}()
+	defer prog.Quit()
+
+	// 1. Send 10 early messages BEFORE program is stored.
+	const numEarly = 10
+	for i := 0; i < numEarly; i++ {
+		pump.send(tea.WindowSizeMsg{Width: 80 + i, Height: 24})
+	}
+
+	// Launch background drain goroutine mirroring setupPlatformInput
+	pump.wg.Add(1)
+	go func() {
+		defer pump.wg.Done()
+		for {
+			select {
+			case <-pump.done:
+				pump.drainEarlyMsgs()
+				return
+			case <-time.After(1 * time.Millisecond):
+			}
+			if pump.programRef != nil && pump.programRef.Load() != nil {
+				pump.drainEarlyMsgs()
+				return
+			}
+		}
+	}()
+
+	// 2. Concurrently store program while sending messages across multiple goroutines
+	const numConcurrent = 50
+	const numGoroutines = 4
+	var wg sync.WaitGroup
+
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < numConcurrent; i++ {
+				pump.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+			}
+		}()
+	}
+
+	// Concurrently publish the program
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		program.Store(prog)
+	}()
+
+	wg.Wait()
+
+	// Wait for all messages to be delivered to the model
+	expectedTotal := numEarly + (numConcurrent * numGoroutines)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		recorder.mu.Lock()
+		count := len(recorder.msgs)
+		recorder.mu.Unlock()
+		if count >= expectedTotal {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	pump.stop()
+
+	recorder.mu.Lock()
+	received := make([]tea.Msg, len(recorder.msgs))
+	copy(received, recorder.msgs)
+	recorder.mu.Unlock()
+
+	if len(received) != expectedTotal {
+		t.Fatalf("message count mismatch: got %d, want %d", len(received), expectedTotal)
+	}
+
+	// Verify that the first numEarly messages are the early WindowSizeMsg in exact sequential order
+	for i := 0; i < numEarly; i++ {
+		ws, ok := received[i].(tea.WindowSizeMsg)
+		if !ok {
+			t.Fatalf("expected early message %d to be WindowSizeMsg, got %T: %+v", i, received[i], received[i])
+		}
+		if ws.Width != 80+i {
+			t.Errorf("early message %d width mismatch: got %d, want %d", i, ws.Width, 80+i)
+		}
+	}
+}
+
+// TestWindowsInputPump_ShutdownBeforeProgramPublication ensures pump.stop()
+// cleans up safely without deadlocks when no program was ever stored.
+func TestWindowsInputPump_ShutdownBeforeProgramPublication(t *testing.T) {
+	var program atomic.Pointer[tea.Program]
+	pump := &windowsInputPump{
+		programRef: &program,
+		done:       make(chan struct{}),
+		parser:     newInputParser(),
+	}
+
+	// Queue some early messages
+	pump.send(tea.WindowSizeMsg{Width: 100, Height: 40})
+	pump.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+
+	pump.wg.Add(1)
+	go func() {
+		defer pump.wg.Done()
+		for {
+			select {
+			case <-pump.done:
+				pump.drainEarlyMsgs()
+				return
+			case <-time.After(1 * time.Millisecond):
+			}
+			if pump.programRef != nil && pump.programRef.Load() != nil {
+				pump.drainEarlyMsgs()
+				return
+			}
+		}
+	}()
+
+	// Stop pump immediately without storing a program
+	done := make(chan struct{})
+	go func() {
+		pump.stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// success: stopped cleanly without deadlock
+	case <-time.After(2 * time.Second):
+		t.Fatal("pump.stop() deadlocked when called before program publication")
+	}
+}
+
 func TestInputParser_SGRMouseClick(t *testing.T) {
 	// Left press at x=25, y=15 (0-indexed: x=24, y=14)
 	msgs := collectParserMessages(func(p *inputParser) {
@@ -796,7 +959,7 @@ func TestWinInputConPTY_ChildProcess(t *testing.T) {
 	windows.CloseHandle(conin)
 
 	// We are inside ConPTY!
-	var program *tea.Program
+	var program atomic.Pointer[tea.Program]
 	opts := []tea.ProgramOption{}
 
 	cleanup, err := setupPlatformInput(&opts, &program)
@@ -808,10 +971,11 @@ func TestWinInputConPTY_ChildProcess(t *testing.T) {
 	model := &testComprehensiveConPTYModel{
 		events: make(chan string, 10),
 	}
-	program = tea.NewProgram(model, opts...)
+	prog := tea.NewProgram(model, opts...)
+	program.Store(prog)
 
 	go func() {
-		_, _ = program.Run()
+		_, _ = prog.Run()
 	}()
 
 	var receivedTyped, receivedBackspace, receivedCtrlC, receivedPaste, receivedResize, receivedMouse bool
@@ -849,7 +1013,7 @@ loop:
 		}
 	}
 
-	program.Quit()
+	prog.Quit()
 	cleanup()
 
 	// Verify mode restoration

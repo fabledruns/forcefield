@@ -2,6 +2,7 @@ package tui
 
 import (
 	"sync"
+	"sync/atomic"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -43,10 +44,10 @@ func Start(sess *session.Session) error {
 	// running event loop. The program variable is captured by reference
 	// and assigned before Run starts, so Send is never called on a nil
 	// program from work triggered after startup.
-	var program *tea.Program
+	var program atomic.Pointer[tea.Program]
 	m.notify = func(msg tea.Msg) {
-		if program != nil {
-			program.Send(msg)
+		if p := program.Load(); p != nil {
+			p.Send(msg)
 		}
 	}
 
@@ -77,8 +78,9 @@ func Start(sess *session.Session) error {
 		defer cleanupInput()
 	}
 
-	program = tea.NewProgram(m, opts...)
-	asker.program = program
+	prog := tea.NewProgram(m, opts...)
+	program.Store(prog)
+	asker.program = prog
 
 	defer func() {
 		if m.sinkHolder != nil {
@@ -88,7 +90,7 @@ func Start(sess *session.Session) error {
 		}
 	}()
 
-	_, err = runProgram(program)
+	_, err = runProgram(prog)
 	return err
 }
 

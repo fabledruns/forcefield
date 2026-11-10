@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 
@@ -35,7 +36,7 @@ func setConsoleCtrlHandler(handler uintptr, add bool) error {
 // It opens CONIN$, applies ENABLE_VIRTUAL_TERMINAL_INPUT and ENABLE_WINDOW_INPUT,
 // sets tea.WithInput(nil) so Bubble Tea does not spawn a competing console reader,
 // and feeds tea.Msg directly to programRef via Program.Send.
-func setupPlatformInput(opts *[]tea.ProgramOption, programRef **tea.Program) (func(), error) {
+func setupPlatformInput(opts *[]tea.ProgramOption, programRef *atomic.Pointer[tea.Program]) (func(), error) {
 	conin, err := windows.CreateFile(
 		windows.StringToUTF16Ptr("CONIN$"),
 		windows.GENERIC_READ|windows.GENERIC_WRITE,
@@ -115,20 +116,14 @@ func setupPlatformInput(opts *[]tea.ProgramOption, programRef **tea.Program) (fu
 		for {
 			select {
 			case <-pump.done:
+				pump.drainEarlyMsgs()
 				return
 			case <-time.After(5 * time.Millisecond):
 			}
-			pump.mu.Lock()
-			if pump.programRef != nil && *pump.programRef != nil {
-				prog := *pump.programRef
-				for _, m := range pump.earlyMsgs {
-					prog.Send(m)
-				}
-				pump.earlyMsgs = nil
-				pump.mu.Unlock()
+			if pump.programRef != nil && pump.programRef.Load() != nil {
+				pump.drainEarlyMsgs()
 				return
 			}
-			pump.mu.Unlock()
 		}
 	}()
 
@@ -145,10 +140,11 @@ type windowsInputPump struct {
 	conin        windows.Handle
 	origMode     uint32
 	origCP       uint32
-	programRef   **tea.Program
+	programRef   *atomic.Pointer[tea.Program]
 	done         chan struct{}
 	wg           sync.WaitGroup
 	mu           sync.Mutex
+	dispatchMu   sync.Mutex
 	stopped      bool
 	earlyMsgs    []tea.Msg
 	parser       *inputParser
@@ -157,30 +153,64 @@ type windowsInputPump struct {
 	sendMsg      func(tea.Msg)
 }
 
-func (p *windowsInputPump) send(msg tea.Msg) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *windowsInputPump) drainEarlyMsgs() {
+	p.dispatchMu.Lock()
+	defer p.dispatchMu.Unlock()
 
+	p.mu.Lock()
+	var prog *tea.Program
+	if p.programRef != nil {
+		prog = p.programRef.Load()
+	}
+	if prog == nil || len(p.earlyMsgs) == 0 {
+		p.mu.Unlock()
+		return
+	}
+	msgs := p.earlyMsgs
+	p.earlyMsgs = nil
+	p.mu.Unlock()
+
+	for _, m := range msgs {
+		prog.Send(m)
+	}
+}
+
+func (p *windowsInputPump) send(msg tea.Msg) {
+	p.dispatchMu.Lock()
+	defer p.dispatchMu.Unlock()
+
+	p.mu.Lock()
 	if p.sendMsg != nil {
-		p.sendMsg(msg)
+		send := p.sendMsg
+		p.mu.Unlock()
+		send(msg)
 		return
 	}
 
 	if p.stopped {
+		p.mu.Unlock()
 		return
 	}
 
-	if p.programRef == nil || *p.programRef == nil {
+	var prog *tea.Program
+	if p.programRef != nil {
+		prog = p.programRef.Load()
+	}
+	if prog == nil {
 		p.earlyMsgs = append(p.earlyMsgs, msg)
+		p.mu.Unlock()
 		return
 	}
 
-	prog := *p.programRef
+	var msgs []tea.Msg
 	if len(p.earlyMsgs) > 0 {
-		for _, m := range p.earlyMsgs {
-			prog.Send(m)
-		}
+		msgs = p.earlyMsgs
 		p.earlyMsgs = nil
+	}
+	p.mu.Unlock()
+
+	for _, m := range msgs {
+		prog.Send(m)
 	}
 	prog.Send(msg)
 }
