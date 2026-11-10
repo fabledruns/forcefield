@@ -287,12 +287,12 @@ func (e *linuxExecutor) Prepare(ctx context.Context, req Request) (*Prepared, er
 // inherited host environment variables and caller-supplied Request.ExtraEnv.
 // Neither host inheritance nor explicit ExtraEnv can override or duplicate
 // these variables:
-// - TMPDIR: always points to the isolated private temporary directory.
-// - GIT_CONFIG_GLOBAL: pinned to /dev/null to ensure git commands do not
-//   attempt to read $HOME/.gitconfig. Under Landlock confinement, $HOME is
-//   intentionally excluded from the sandbox's read-only corpus; unhandled
-//   reads fail with EACCES and cause git to exit with fatal error code 128.
-// - GIT_CONFIG_NOSYSTEM: pinned to 1 so git does not probe /etc/gitconfig.
+//   - TMPDIR: always points to the isolated private temporary directory.
+//   - GIT_CONFIG_GLOBAL: pinned to /dev/null to ensure git commands do not
+//     attempt to read $HOME/.gitconfig. Under Landlock confinement, $HOME is
+//     intentionally excluded from the sandbox's read-only corpus; unhandled
+//     reads fail with EACCES and cause git to exit with fatal error code 128.
+//   - GIT_CONFIG_NOSYSTEM: pinned to 1 so git does not probe /etc/gitconfig.
 var isolatedSecurityEnvVars = []string{
 	"TMPDIR",
 	"GIT_CONFIG_GLOBAL",

@@ -738,13 +738,13 @@ func TestOrchLifecycle_UnanchoredCallIDCrossRunCollision(t *testing.T) {
 
 	// 2. Deliver a late Run 1 event before Run 2's AgentSpawned event.
 	s.applyOrchEvent(orchevents.Event{
-		Type:       orchevents.DelegationRejected,
-		RunID:      "run-1",
-		Agent:      "coder",
-		Chain:      "root > coder",
-		Depth:      1,
-		CallID:     "call-reused",
-		Reason:     "late rejection from run 1",
+		Type:   orchevents.DelegationRejected,
+		RunID:  "run-1",
+		Agent:  "coder",
+		Chain:  "root > coder",
+		Depth:  1,
+		CallID: "call-reused",
+		Reason: "late rejection from run 1",
 	})
 
 	// 3. Verify Run 1 cannot claim or mutate Run 2's row.
@@ -1132,13 +1132,13 @@ func TestF3_LateOldRunEventBeforeNewRunAgentSpawned(t *testing.T) {
 
 	// Late event from Run 1 arrives BEFORE Run 2's AgentSpawned:
 	s.applyOrchEvent(orchevents.Event{
-		Type:       orchevents.DelegationRejected,
-		RunID:      "old-run-4",
-		Agent:      "reviewer",
-		Chain:      "root > reviewer",
-		Depth:      1,
-		CallID:     "call-alpha",
-		Reason:     "late rejection from run 1",
+		Type:   orchevents.DelegationRejected,
+		RunID:  "old-run-4",
+		Agent:  "reviewer",
+		Chain:  "root > reviewer",
+		Depth:  1,
+		CallID: "call-alpha",
+		Reason: "late rejection from run 1",
 	})
 
 	// rowB must NOT be claimed or rejected by Run 1's event
@@ -1205,12 +1205,12 @@ func TestF3_NestedChildEvents(t *testing.T) {
 
 	// Depth 2 child arrives with matching parent chain
 	s.applyOrchEvent(orchevents.Event{
-		Type:       orchevents.DelegationRequested,
-		RunID:      runID,
-		Agent:      "worker",
-		Chain:      "root > manager > worker",
-		Depth:      2,
-		CallID:     "call-wrk",
+		Type:   orchevents.DelegationRequested,
+		RunID:  runID,
+		Agent:  "worker",
+		Chain:  "root > manager > worker",
+		Depth:  2,
+		CallID: "call-wrk",
 	})
 	s.applyOrchEvent(orchevents.Event{
 		Type:       orchevents.AgentSpawned,
@@ -1459,12 +1459,12 @@ func TestIntegration_F3_F4_Interaction(t *testing.T) {
 
 	// 4. Nested child spawned by parent-agent
 	s.applyOrchEvent(orchevents.Event{
-		Type:       orchevents.DelegationRequested,
-		RunID:      exec1,
-		Agent:      "sub-worker",
-		Chain:      "root > parent-agent > sub-worker",
-		Depth:      2,
-		CallID:     "call-nested-w",
+		Type:   orchevents.DelegationRequested,
+		RunID:  exec1,
+		Agent:  "sub-worker",
+		Chain:  "root > parent-agent > sub-worker",
+		Depth:  2,
+		CallID: "call-nested-w",
 	})
 	s.applyOrchEvent(orchevents.Event{
 		Type:       orchevents.AgentSpawned,
@@ -1535,13 +1535,13 @@ func TestIntegration_F3_F4_Interaction(t *testing.T) {
 
 	// 3. Delayed old-run event from exec1 arrives BEFORE new-run AgentSpawned
 	s.applyOrchEvent(orchevents.Event{
-		Type:       orchevents.DelegationRejected,
-		RunID:      exec1,
-		Agent:      "parent-agent",
-		Chain:      "root > parent-agent",
-		Depth:      1,
-		CallID:     "call-shared-1",
-		Reason:     "stale reject from exec 1",
+		Type:   orchevents.DelegationRejected,
+		RunID:  exec1,
+		Agent:  "parent-agent",
+		Chain:  "root > parent-agent",
+		Depth:  1,
+		CallID: "call-shared-1",
+		Reason: "stale reject from exec 1",
 	})
 
 	// rowRun2 must NOT be claimed or mutated by the delayed old-run event

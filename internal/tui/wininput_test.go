@@ -1157,7 +1157,7 @@ func TestInputParser_CtrlAtoZ(t *testing.T) {
 		10: tea.KeyCtrlJ,     // 0x0a is newline/Line Feed
 		11: tea.KeyCtrlK,
 		12: tea.KeyCtrlL,
-		13: tea.KeyEnter,     // 0x0d is Enter
+		13: tea.KeyEnter, // 0x0d is Enter
 		14: tea.KeyCtrlN,
 		15: tea.KeyCtrlO,
 		16: tea.KeyCtrlP,

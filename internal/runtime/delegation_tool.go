@@ -92,7 +92,7 @@ func (delegateTool) InputSchema() map[string]any {
 				"description": "Self-contained description of the subtask for the child agent, including the goal, relevant context, and what a good result looks like. Required for single-task mode.",
 			},
 			"tasks": map[string]any{
-				"type": "array",
+				"type":        "array",
 				"description": "Native batch delegation: an array of independent subtasks, each with its own agent and task description. All admitted tasks run concurrently; results are returned in declared order. Use this when you have multiple independent subtasks that can run in parallel.",
 				"items": map[string]any{
 					"type": "object",

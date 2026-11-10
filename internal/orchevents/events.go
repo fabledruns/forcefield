@@ -65,15 +65,15 @@ type Event struct {
 	Depth int    `json:"depth,omitempty"`
 	// ChildRunID is the fresh UUID of one child run; Chain carries the
 	// delegation path ("root > child > ...") that correlates it.
-	ChildRunID  string         `json:"child_run,omitempty"`
-	CallID      string         `json:"call_id,omitempty"`
+	ChildRunID string `json:"child_run,omitempty"`
+	CallID     string `json:"call_id,omitempty"`
 	// BatchIndex is the 1-based position of a child inside a native
 	// batch delegation (one delegate call carrying a tasks array).
 	// Zero for every event outside batch delegation. It identifies
 	// which declared task an event belongs to, so two children of the
 	// same batch never share an identity.
-	BatchIndex int    `json:"batch_index,omitempty"`
-	Tool       string `json:"tool,omitempty"`
+	BatchIndex  int            `json:"batch_index,omitempty"`
+	Tool        string         `json:"tool,omitempty"`
 	Status      string         `json:"status,omitempty"`
 	Outcome     string         `json:"outcome,omitempty"` // done|error|blocked|cancelled
 	Turns       int            `json:"turns,omitempty"`

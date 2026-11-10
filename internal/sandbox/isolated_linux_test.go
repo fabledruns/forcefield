@@ -318,11 +318,11 @@ func TestIsolatedRulesExplicitOverrides(t *testing.T) {
 
 // TestIsolatedGitWorkflowWithHostGitConfig proves production-level sterile
 // Git execution under Landlock confinement:
-// 1. Git operations succeed in the workspace even when the host has a non-empty
-//    ~/.gitconfig outside the workspace.
-// 2. The host ~/.gitconfig remains strictly inaccessible under Landlock ($HOME is denied).
-// 3. GIT_CONFIG_GLOBAL=/dev/null and GIT_CONFIG_NOSYSTEM=1 reach the actual spawned process.
-// 4. Per-command ExtraEnv cannot override or weaken these security defaults.
+//  1. Git operations succeed in the workspace even when the host has a non-empty
+//     ~/.gitconfig outside the workspace.
+//  2. The host ~/.gitconfig remains strictly inaccessible under Landlock ($HOME is denied).
+//  3. GIT_CONFIG_GLOBAL=/dev/null and GIT_CONFIG_NOSYSTEM=1 reach the actual spawned process.
+//  4. Per-command ExtraEnv cannot override or weaken these security defaults.
 func TestIsolatedGitWorkflowWithHostGitConfig(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found in PATH")
@@ -376,9 +376,9 @@ echo GIT-WORKFLOW-SUCCESS`
 		Command: "printenv GIT_CONFIG_GLOBAL && printenv GIT_CONFIG_NOSYSTEM && printenv USER_CUSTOM_VAR",
 		ExtraEnv: []string{
 			"GIT_CONFIG_GLOBAL=" + hostGitConfig, // attempt to point git to host config
-			"GIT_CONFIG_NOSYSTEM=0",             // attempt to unpin system config
-			"TMPDIR=/tmp/evil",                  // attempt to break private temp dir
-			"USER_CUSTOM_VAR=allowed_value",     // legitimate user variable
+			"GIT_CONFIG_NOSYSTEM=0",              // attempt to unpin system config
+			"TMPDIR=/tmp/evil",                   // attempt to break private temp dir
+			"USER_CUSTOM_VAR=allowed_value",      // legitimate user variable
 		},
 	}
 	code, out := runIsolatedReq(t, ex, overrideReq)

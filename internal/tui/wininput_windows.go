@@ -427,11 +427,11 @@ func (p *inputParser) feedKeyRecord(e coninput.KeyEventRecord) {
 
 	// Ignore modifier-only key events
 	switch e.VirtualKeyCode {
-	case coninput.VK_SHIFT, 0x11 /* VK_CONTROL */, 0x12 /* VK_MENU */, 0x14 /* VK_CAPITAL */,
-		0x5B /* VK_LWIN */, 0x5C /* VK_RWIN */,
-		0xA0 /* VK_LSHIFT */, 0xA1 /* VK_RSHIFT */,
-		0xA2 /* VK_LCONTROL */, 0xA3 /* VK_RCONTROL */,
-		0xA4 /* VK_LMENU */, 0xA5 /* VK_RMENU */:
+	case coninput.VK_SHIFT, 0x11 /* VK_CONTROL */, 0x12 /* VK_MENU */, 0x14, /* VK_CAPITAL */
+		0x5B /* VK_LWIN */, 0x5C, /* VK_RWIN */
+		0xA0 /* VK_LSHIFT */, 0xA1, /* VK_RSHIFT */
+		0xA2 /* VK_LCONTROL */, 0xA3, /* VK_RCONTROL */
+		0xA4 /* VK_LMENU */, 0xA5 /* VK_RMENU */ :
 		return
 	}
 

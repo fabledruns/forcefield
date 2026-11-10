@@ -120,6 +120,7 @@ func TestBatchDelegationRunsEveryTaskConcurrently(t *testing.T) {
 		t.Fatalf("batch header does not report the honest counts: %.300q", result.Content)
 	}
 }
+
 // TestBatchDelegationReportsEveryChildInDeclaredOrder pins the report
 // shape: the parent reads the tasks in the order it declared them, so
 // the report never depends on which child happened to finish first.
