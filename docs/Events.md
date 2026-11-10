@@ -47,7 +47,9 @@ Base fields stamped by the writer on every line (`internal/orchevents/writer.go`
 
 Free-text fields (`error`, `reason`, `status`) are scrubbed defensively via
 `redact.Scrub` before persistence; invalid events (unknown type, child event
-without a `chain`) are dropped by the writer rather than recorded.
+without a `chain`) are dropped by the writer rather than recorded. `child_text`
+events are dropped by the writer too — they carry response content, which the
+log never holds.
 
 ### Event table
 
@@ -61,9 +63,10 @@ without a `chain`) are dropped by the writer rather than recorded.
 | `delegation_requested` | `agent` (target), `chain`, `call_id`, `task_chars` |
 | `delegation_accepted` | `agent`, `chain`, `call_id`, `task_chars` |
 | `delegation_rejected` | `agent`, `chain`, `call_id`, `reason`; budget-driven rejections add `budget`, `budget_limit`, `budget_value` |
-| `agent_spawned` | `agent`, `chain`, `depth`, `child_run`, `call_id` |
-| `child_progress` | `agent`, `chain`, `depth`, `child_run`, `call_id`, `turns` |
-| `child_completed` | `agent`, `chain`, `depth`, `child_run`, `call_id`, `outcome`, `turns`, `tool_calls`, `failed`, `denied`, `duration_ms`, `error` (when the child failed or was cancelled) |
+| `agent_spawned` | `agent`, `chain`, `depth`, `child_run`, `call_id`; batch children add `batch_index` |
+| `child_progress` | `agent`, `chain`, `depth`, `child_run`, `call_id`, `turns`; batch children add `batch_index` |
+| `child_text` | `agent`, `chain`, `depth`, `child_run`, `call_id`, `text`; batch children add `batch_index`. Never persisted (see below) |
+| `child_completed` | `agent`, `chain`, `depth`, `child_run`, `call_id`, `outcome`, `turns`, `tool_calls`, `failed`, `denied`, `duration_ms`, `error` (when the child failed or was cancelled); batch children add `batch_index` |
 | `tool_started` | `call_id`, `tool` |
 | `tool_completed` | `call_id`, `tool`, `duration_ms`, `attempt`; adds `error` when the result itself was an error outcome |
 | `tool_failed` | `call_id`, `tool`, `duration_ms`, `attempt`, `error` |
@@ -77,6 +80,34 @@ fields; `internal/runtime/delegation_tool.go` for delegation and child fields.
 All four tool terminal events share one shape — `tool_completed` with `IsError`
 promotion to `tool_failed` included — and a shell-shaped exit code rides
 `meta.exit_code` (`cmd/run.go:mapToolTerminal`).
+
+### Child events and native batch delegation
+
+A **native batch delegation** is one `delegate` call that carries a `tasks`
+array. The runtime launches every declared task as its own child run, and each
+task's events carry `batch_index`: the 1-based position of the task in the
+declared array. Two tasks of the same batch never share an index, a `child_run`
+id, or a chain — a batch child's chain leaf is the agent name plus its index
+(`coding#1`, `coding#2`), so two tasks targeting the same agent stay distinct
+correlation keys.
+
+Child tool activity is published through the same sink: a child's own tool
+calls appear as `tool_started` / `tool_completed` / `tool_failed` /
+`tool_denied` / `tool_cancelled` events carrying the child's `child_run` and
+`chain`. Only the tool's name, duration, and outcome travel — never its
+arguments, never its output. The parent run's own tool events come from
+`cmd/run.go` and carry no `child_run`; the two sets are told apart by that
+field.
+
+### Live child text is never persisted
+
+`child_text` carries the child's own streamed text so a live view can show it.
+The headless writer **drops every `child_text` event**: the log's privacy
+contract excludes response content, and the live view installs its own sink
+(the TUI's), so nothing is lost by keeping the text out of the file. The
+runtime scrubs the text before it is published, so even the live view never
+sees a registered secret.
+
 
 ### Outcome vocabulary
 
@@ -98,8 +129,58 @@ Use these fields to stitch lines together:
   lifecycle links `tool_started` with its terminal event.
 - `agent` — the target agent of a delegation; on tool events the tool name rides
   `tool` instead.
-- `chain` — delegation path, `"general > coding"` style.
+- `chain` — delegation path, `"general > coding"` style. A native batch
+  delegation's children carry a distinct leaf per task (`general > coding#1`,
+  `general > coding#2`).
 - `depth` — delegation depth at spawn.
+- `batch_index` — 1-based position of a child inside a native batch delegation.
+  Absent (zero) for every event outside batch delegation.
+
+### Lifecycle guarantees (Phase 4 audit)
+
+The Phase 4 adversarial lifecycle audit returned a **conditionally safe**
+verdict. Its findings are preserved here verbatim; they remain accurate
+after Phase 5.
+
+**Execution identity and sink lifecycle isolation (v1.6.x hardening).**
+Every orchestration execution is bound to an immutable execution context:
+the runtime's root scope captures the active sink snapshot and generates a
+unique `run` execution ID at `StreamChat` entry. Spawned children inherit
+both the captured sink and execution ID. Emissions flow exclusively through
+the scope's captured sink, preventing in-flight children of an old run from
+ever emitting into a newer run's sink after sink re-attachment.
+
+**Sink invalidation on reset.** Each TUI sink instance (`internal/tui/tui.go`,
+`tuiOrchSink`) has an immutable orchestration generation frozen at creation.
+When a reset (`/clear`, `/new`, session switch) occurs, `bumpOrchGen` closes
+the previous sink instance (rendering future emissions silent no-ops and
+draining residue with the old stamp) and instantiates a brand-new sink for the
+incremented `orchGen`. The model's `Update` gate drops any batch whose generation
+does not match the active `orchGen`.
+
+**Correlation isolation with execution identity.** `internal/tui/agentsstate.go`
+`orchAnchor` gates on execution ID (`RunID`): an event can only anchor to a
+row if their run IDs match. Provider call-ID reuse is structurally defended:
+reused tool-call IDs across runs produce distinct rows isolated by `RunID`.
+Nested delegations verify that a candidate parent row shares the event's `RunID`,
+preventing old nested children from anchoring to unrelated parent rows in a new session.
+
+**Terminal state immutability.** The first terminal outcome observed for a row
+(whether via the stream feed or the structured orch feed, or via `cancelOpen`)
+is immutable. Late progress, live child text, or completion events never reverse,
+reopen, or rewrite terminal status or output.
+
+**Dedicated adversarial lifecycle test suite.** All eight lifecycle scenarios
+identified during audit now have dedicated, deterministic tests using channel
+barriers without timing heuristics:
+1. *Re-attach racing an unwinding run end to end:* `TestOrchLifecycle_ReattachRacingUnwind` (`internal/tui`), `TestOrchestrationScopeSinkIsolation` (`internal/runtime`).
+2. *Cross-run call-ID reuse collision:* `TestOrchLifecycle_CallIDReuseCollision` (`internal/tui`).
+3. *Cross-feed first-terminal-wins under concurrent feeds:* `TestOrchLifecycle_CrossFeedFirstTerminalWins` (`internal/tui`).
+4. *`cancelOpen` racing late structured events:* `TestOrchLifecycle_CancelOpenRacingLateEvents` (`internal/tui`).
+5. *Transcript collapse dedup across resets:* `TestOrchLifecycle_DrainCollapsedDedupAcrossResets` (`internal/tui`).
+6. *Bounded-queue drop accounting under mixed pressure:* `TestOrchLifecycle_BoundedQueueDropAccounting` (`internal/tui`).
+7. *Generation mismatch through the headless writer:* `TestOrchLifecycle_HeadlessWriterRunAttribution` (`internal/orchevents`).
+8. *Nested-event anchoring after a reset:* `TestOrchLifecycle_NestedEventAnchoringAfterReset` (`internal/tui`).
 
 ## File semantics
 
@@ -129,6 +210,7 @@ quote it (`internal/runtime/delegation_tool.go` counts runes via
 `len([]rune(taskText))`). `seq`, `ts`, `run`, `child_run`, `call_id`, `agent`,
 `chain`, `tool`, counters, durations, statuses, and reasons carry the story;
 `redact.Scrub` defends the three free-text fields even against producer bugs.
+Live child text (`child_text`) is never written to the log at all.
 
 ## Exit codes on the final event
 

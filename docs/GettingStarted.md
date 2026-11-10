@@ -162,7 +162,7 @@ providers:
     type: llama-cpp
 ```
 
-The `llama-cpp` preset points at `http://localhost:8080/v1` (the `/v1` prefix is required) and needs no API key. Serve a model first (e.g. `llama-server -m model.gguf --alias my-model --port 8080`), then check `GET /v1/models` or open `/model` discovery to see the served model ID for `model.name`.
+The `llama-cpp` preset points at `http://localhost:9931/v1` (the `/v1` prefix is required) and needs no API key. Serve a model first (e.g. `llama-server -m model.gguf --alias my-model --port 9931`), then check `GET /v1/models` or open `/model` discovery to see the served model ID for `model.name`.
 
 API keys come from environment variables or `.env` files - never from config.yaml:
 

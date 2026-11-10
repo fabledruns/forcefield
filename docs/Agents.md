@@ -166,6 +166,55 @@ the parent's own verification state is computed independently and is
 never upgraded by a child's claim. Parent cancellation joins the child
 first: nothing runs detached, nothing reports after the tool result.
 
+### Native batch delegation
+
+One `delegate` call may carry a `tasks` array instead of a single
+`agent`/`task` pair. Each task names its own agent and task description,
+and the runtime launches every admitted task as its own child run:
+
+```json
+{"tasks": [
+  {"agent": "research", "task": "summarise the release notes"},
+  {"agent": "docs",    "task": "draft the migration guide"}
+]}
+```
+
+The batch form is native to the runtime: it does not depend on the model
+emitting several parallel tool calls, and it does not change any bound.
+Each task is admitted, scheduled, isolated, and permissioned exactly
+like a single-task delegation:
+
+- The whole batch is validated before anything is admitted. One unknown
+  agent, one oversized task, or one malformed item rejects the entire
+  batch, so a bad batch never spends spawn budget and never starts a
+  child.
+- Admission is deterministic and per task: the depth limit and the
+  cumulative per-run spawn budget are applied in declared order. A
+  partial admission is explicit — the tasks that fit run, the rest are
+  reported as not admitted with the budget that refused them, and the
+  admitted siblings are unaffected.
+- The process-wide child semaphore still caps how many children run at
+  once, across the whole batch and every other delegate call.
+- Each task gets its own child scope, snapshot copy, scheduler,
+  provider clone, and permission surface. Two tasks of one batch never
+  share mutable state, and a task's chain leaf carries its index
+  (`coding#1`) so the two stay distinct correlation keys even when they
+  target the same agent.
+- One failing child fails only its own section. It never cancels its
+  siblings; only the parent's own cancellation propagates into every
+  task.
+
+The parent receives one aggregate report: a `[delegate:batch]` header
+naming how many tasks completed, failed, and were not admitted, then one
+bounded section per task in declared order, each carrying that child's
+own delegate report. The aggregate is size-capped and every section gets
+a fair share of the budget, so one verbose child cannot crowd out the
+others. A batch with any failure or non-admission reports as an error so
+the parent reads the counts rather than assuming success.
+
+A batch carries at most 16 tasks per call; the per-run spawn budget is
+the real ceiling.
+
 ## Configuration
 
 ```yaml
