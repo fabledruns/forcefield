@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 150" width="100%" height="150" fill="none">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@400;500;600;700&amp;family=Google+Sans+Flex:wght@400;500&amp;display=swap');
+      :root {
+        --brand-field-color: #FFFFFF;
+        --brand-desc-color: #A5AABF;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --brand-field-color: #0C0D12;
+          --brand-desc-color: #555869;
+        }
+      }
+      .brand-title {
+        font-family: 'Unbounded', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-size: 42px;
+        font-weight: 500;
+        letter-spacing: -0.05em;
+      }
+      .force-text {
+        fill: #ED2663;
+      }
+      .field-text {
+        fill: var(--brand-field-color);
+      }
+      .brand-desc {
+        font-family: 'Google Sans Flex', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-size: 18px;
+        font-weight: 400;
+        fill: var(--brand-desc-color);
+        letter-spacing: 0.2px;
+      }
+    </style>
+  </defs>
+
+  <!-- Open, borderless lockup (Centered within 960 width) -->
+  <g transform="translate(195, 28)">
+    <!-- Authentic Forcefield Symbol -->
+    <g transform="scale(0.23)">
+      <polygon points="451,0 815,0 769,71 549,71 502,146 716,146 670,219 467,219 366,403 235,403" fill="#ED2663" />
+      <polygon points="144,21 398,21 377,48 120,48" fill="#ED2663" opacity="0.9" />
+      <polygon points="28,78 358,78 340,107 0,107" fill="#ED2663" opacity="0.75" />
+      <polygon points="186,137 325,137 309,165 163,165" fill="#ED2663" opacity="0.6" />
+    </g>
+
+    <!-- Typography -->
+    <g transform="translate(222, 0)">
+      <text class="brand-title" x="0" y="46"><tspan class="force-text">FORCE</tspan><tspan class="field-text">FIELD</tspan></text>
+      <text class="brand-desc" x="0" y="84">A local-first runtime for AI agents.</text>
+    </g>
+  </g>
+</svg>
