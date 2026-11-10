@@ -137,10 +137,11 @@ func (r *Runtime) StreamChatWithMode(ctx context.Context, messages []providers.M
 			MessageCount: len(messages),
 		})
 	}
-	// One terminal event can remain buffered after an interactive consumer
-	// has detached on Ctrl+C. That lets the run goroutine finish cleanup
-	// instead of blocking forever trying to report cancellation.
-	events := make(chan Event, 1)
+	// Buffer allows in-flight tool events and the terminal cancellation
+	// event to land without blocking if an interactive consumer detached
+	// on Ctrl+C, while ensuring active consumers never lose EventCancelled
+	// due to a transiently full channel.
+	events := make(chan Event, 64)
 	go func() {
 		defer close(events)
 		if tr != nil {
@@ -151,13 +152,20 @@ func (r *Runtime) StreamChatWithMode(ctx context.Context, messages []providers.M
 		r.run(ctx, initial, func(event Event) bool {
 			if event.Type == EventCancelled {
 				// Cancellation is terminal and should not block teardown if the
-				// TUI retired this stream already. Normal events retain strict
-				// backpressure so consumers observe them in order.
+				// TUI retired this stream already. Give an active draining consumer
+				// a brief window before dropping so teardown never wedges if the
+				// consumer detached.
 				select {
 				case events <- event:
 					traceEvent(tr, event)
 					return true
 				default:
+				}
+				select {
+				case events <- event:
+					traceEvent(tr, event)
+					return true
+				case <-time.After(50 * time.Millisecond):
 					return false
 				}
 			}
