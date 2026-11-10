@@ -20,7 +20,9 @@ import (
 // FuzzDelegateArgs: arbitrary bytes shaped as a JSON object must never
 // panic, must classify failures deterministically with a fixed message
 // language that never echoes model-controlled content, and on success
-// must extract the mapped strings verbatim (trimmed only).
+// must extract the mapped strings verbatim (trimmed only). A batch call
+// (a "tasks" array) is the second accepted shape: it populates the task
+// list and leaves the single-task fields empty.
 func FuzzDelegateArgs(f *testing.F) {
 	seeds := []string{
 		`{"agent":"a","task":"t"}`,
@@ -40,6 +42,16 @@ func FuzzDelegateArgs(f *testing.F) {
 		`[]`,
 		`{"agent":"中文","task":"café"}`,
 		`{"agent":"a\u0000hidden","task":"t\u007fctl"}`,
+		`{"tasks":[{"agent":"a","task":"t"}]}`,
+		`{"tasks":[]}`,
+		`{"tasks":"nope"}`,
+		`{"tasks":null}`,
+		`{"tasks":[1]}`,
+		`{"tasks":[{"agent":"a"}]}`,
+		`{"tasks":[{"task":"t"}]}`,
+		`{"tasks":[{"agent":"","task":"t"}]}`,
+		`{"tasks":[{"agent":"a","task":""}]}`,
+		`{"tasks":[{"agent":"a","task":"t"},{"agent":"b","task":"u"}]}`,
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
@@ -51,15 +63,40 @@ func FuzzDelegateArgs(f *testing.F) {
 			// strict validation rejects them before args are built); skip.
 			return
 		}
-		a1, tk1, fail1 := delegateArgs(args)
-		a2, tk2, fail2 := delegateArgs(args)
-		if a1 != a2 || tk1 != tk2 || fail1 != fail2 {
-			t.Fatalf("delegateArgs nondeterministic on %q: (%q,%q,%q) then (%q,%q,%q)", data, a1, tk1, fail1, a2, tk2, fail2)
+		a1, tk1, batch1, fail1 := delegateArgs(args)
+		a2, tk2, batch2, fail2 := delegateArgs(args)
+		if a1 != a2 || tk1 != tk2 || fail1 != fail2 || !sameBatchTasks(batch1, batch2) {
+			t.Fatalf("delegateArgs nondeterministic on %q: (%q,%q,%d,%q) then (%q,%q,%d,%q)",
+				data, a1, tk1, len(batch1), fail1, a2, tk2, len(batch2), fail2)
 		}
 		if fail1 == "" {
-			// Success is exactly a full valid pair. The contract returns
-			// the raw mapped strings (the caller trims/lowercases); the
-			// classification only checks emptiness after trimming.
+			if len(batch1) > 0 {
+				// Batch shape: the single-task fields stay empty and every
+				// declared task is extracted verbatim, in order.
+				if a1 != "" || tk1 != "" {
+					t.Fatalf("batch success also populated the single-task fields: %q/%q", a1, tk1)
+				}
+				list, ok := args["tasks"].([]any)
+				if !ok || len(list) != len(batch1) {
+					t.Fatalf("batch extraction changed the task count: got %d want %d", len(batch1), len(list))
+				}
+				for i, bt := range batch1 {
+					item, ok := list[i].(map[string]any)
+					if !ok {
+						t.Fatalf("tasks[%d] is not an object: %q", i, data)
+					}
+					wantAgent, wantTask := stringArg(item, "agent"), stringArg(item, "task")
+					if bt.Agent != wantAgent || bt.Task != wantTask {
+						t.Fatalf("batch extraction mutated the arguments at %d: got %q/%q, want %q/%q",
+							i, bt.Agent, bt.Task, wantAgent, wantTask)
+					}
+				}
+				return
+			}
+			// Single shape: success is exactly a full valid pair. The
+			// contract returns the raw mapped strings (the caller
+			// trims/lowercases); the classification only checks emptiness
+			// after trimming.
 			if a1 == "" || tk1 == "" {
 				t.Fatalf("empty result with no failure classification: %q/%q", a1, tk1)
 			}
@@ -72,13 +109,13 @@ func FuzzDelegateArgs(f *testing.F) {
 			}
 			return
 		}
-		// A failure clears both fields and speaks a fixed language; the
+		// A failure clears every field and speaks a fixed language; the
 		// contents of the object must never leak into the message.
-		if a1 != "" || tk1 != "" {
-			t.Fatalf("failure did not clear the result: (%q, %q, %q)", a1, tk1, fail1)
+		if a1 != "" || tk1 != "" || len(batch1) != 0 {
+			t.Fatalf("failure did not clear the result: (%q, %q, %d, %q)", a1, tk1, len(batch1), fail1)
 		}
 		switch fail1 {
-		case `missing "agent" and "task"`:
+		case `missing "agent" and "task" or "tasks"`:
 			if args != nil {
 				t.Fatalf("double-missing classification is wrong for %q (args present)", data)
 			}
@@ -90,10 +127,48 @@ func FuzzDelegateArgs(f *testing.F) {
 			if missingStringArg(args, "agent") || !missingStringArg(args, "task") {
 				t.Fatalf("task-missing classification is wrong for %q", data)
 			}
+		case `tasks must be an array`:
+			if _, ok := args["tasks"].([]any); ok {
+				t.Fatalf("tasks-array classification is wrong for %q", data)
+			}
+		case `tasks array is empty`:
+			list, ok := args["tasks"].([]any)
+			if !ok || len(list) != 0 {
+				t.Fatalf("tasks-empty classification is wrong for %q", data)
+			}
 		default:
-			t.Fatalf("failure wording is not one of the fixed messages: %q (input %q)", fail1, data)
+			if !batchItemFailure(fail1) {
+				t.Fatalf("failure wording is not one of the fixed messages: %q (input %q)", fail1, data)
+			}
 		}
 	})
+}
+
+// sameBatchTasks reports whether two extracted task lists are identical.
+func sameBatchTasks(a, b []batchTask) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// batchItemFailure reports whether a failure message is one of the
+// fixed per-item task messages.
+func batchItemFailure(msg string) bool {
+	if !strings.HasPrefix(msg, "tasks[") {
+		return false
+	}
+	for _, suffix := range []string{" must be an object", " missing agent", " missing task"} {
+		if strings.HasSuffix(msg, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // missingStringArg reports whether the argument reads empty for that

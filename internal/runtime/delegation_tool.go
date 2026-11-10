@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"forcefield/internal/config"
 	"forcefield/internal/orchevents"
 	"forcefield/internal/providers"
+	"forcefield/internal/redact"
 	"forcefield/internal/session"
 	"forcefield/internal/task"
 	"forcefield/internal/tools"
@@ -27,9 +29,27 @@ import (
 // here.
 const delegateReportMaxBytes = 5000
 
+// delegateBatchReportMaxBytes caps the aggregate report one native
+// batch delegation returns to the parent. The per-task budget is this
+// bound split across the declared tasks, so one verbose child cannot
+// crowd out its siblings.
+const delegateBatchReportMaxBytes = 20000
+
+// maxBatchTasks caps how many subtasks one native batch delegation may
+// carry. The per-run spawn budget (max_children_per_run) is the real
+// ceiling; this bound keeps one call's argument array, its admission
+// pass, and its aggregate report finite before any child is admitted.
+const maxBatchTasks = 16
+
 // maxChildProgressLines bounds parent-visible child progress lines so a
 // long child run cannot flood the transcript through the progress path.
 const maxChildProgressLines = 32
+
+// maxChildTextChunkBytes bounds one live child-text chunk. Child text
+// is coalesced up to a line boundary (or this size) before it is
+// published, so a token-by-token stream does not turn into one event
+// per token.
+const maxChildTextChunkBytes = 512
 
 // delegateTool runs a child agent run inside one tool call. It is the
 // only delegation entry point: every caller-visible capability flows
@@ -50,7 +70,13 @@ func (delegateTool) Description() string {
 		"Use for bounded subtasks that benefit from a focused identity (e.g. research, " +
 		"documentation) while you keep coordinating. The child starts with only its own " +
 		"tools and permissions; its result is a report you should verify before acting on. " +
-		"Provide a self-contained task description: the child does not see your conversation."
+		"Provide a self-contained task description: the child does not see your conversation. " +
+		"For independent subtasks, issue multiple delegate calls in the same response: they " +
+		"run concurrently up to the configured child limit, and each result arrives separately. " +
+		"Delegate one call per response only when the next task depends on the previous result. " +
+		"For native batch delegation, pass a tasks array with independent subtasks; the runtime " +
+		"launches each task as its own child run concurrently (subject to child limits). " +
+		"Each task must be self-contained and independent of the others."
 }
 
 func (delegateTool) InputSchema() map[string]any {
@@ -59,14 +85,33 @@ func (delegateTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"agent": map[string]any{
 				"type":        "string",
-				"description": "The child agent's name from the registry (e.g. \"research\", \"docs\", \"coding\").",
+				"description": "The child agent's name from the registry (e.g. \"research\", \"docs\", \"coding\"). Required for single-task mode.",
 			},
 			"task": map[string]any{
 				"type":        "string",
-				"description": "Self-contained description of the subtask for the child agent, including the goal, relevant context, and what a good result looks like.",
+				"description": "Self-contained description of the subtask for the child agent, including the goal, relevant context, and what a good result looks like. Required for single-task mode.",
+			},
+			"tasks": map[string]any{
+				"type": "array",
+				"description": "Native batch delegation: an array of independent subtasks, each with its own agent and task description. All admitted tasks run concurrently; results are returned in declared order. Use this when you have multiple independent subtasks that can run in parallel.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"agent": map[string]any{
+							"type":        "string",
+							"description": "The child agent's name from the registry.",
+						},
+						"task": map[string]any{
+							"type":        "string",
+							"description": "Self-contained description of the subtask.",
+						},
+					},
+					"required": []string{"agent", "task"},
+				},
 			},
 		},
-		"required": []string{"agent", "task"},
+		// Schema validation: either single mode (agent+task) or batch mode (tasks array).
+		// The runtime enforces this defensively in ExecuteStream.
 	}
 }
 
@@ -106,10 +151,19 @@ func (t delegateTool) ExecuteStream(ctx context.Context, args map[string]any, on
 		return tools.Result{IsError: true, Content: "delegation cancelled before it started"}, nil
 	}
 
-	agentName, taskText, verr := delegateArgs(args)
+	agentName, taskText, batchTasks, verr := delegateArgs(args)
 	if verr != "" {
 		return softDelegateResult(verr), nil
 	}
+
+	// Batch mode: one invocation, several independent child runs. The
+	// batch path owns its own admission, concurrency, and report
+	// composition; it never falls back to the single-task path.
+	if len(batchTasks) > 0 {
+		return t.executeBatch(ctx, scope, batchTasks, onChunk)
+	}
+
+	// Single mode: one task
 	agentName = strings.ToLower(strings.TrimSpace(agentName))
 	taskText = strings.TrimSpace(taskText)
 	taskRunes := len([]rune(taskText))
@@ -192,25 +246,307 @@ func (t delegateTool) ExecuteStream(ctx context.Context, args map[string]any, on
 		TaskChars: taskRunes,
 	})
 
-	return scope.orch.runChild(toolCtx, scope, def, newDepth, taskText, onChunk)
+	childScope := scope.childScope(def.Name)
+	return scope.orch.runChild(toolCtx, scope, childScope, def, newDepth, taskText, onChunk)
+}
+
+// batchTask is one declared subtask of a native batch delegation. The
+// values are the raw argument strings; trimming and lower-casing happen
+// once, in the batch path, exactly like the single-task path does.
+type batchTask struct {
+	Agent string
+	Task  string
+}
+
+// preparedBatchTask is one validated subtask: the registry definition
+// resolved once, the canonical agent name, and the trimmed task text.
+type preparedBatchTask struct {
+	agent string
+	task  string
+	def   agent.Definition
+}
+
+// batchTaskLabel is the chain leaf a batch child carries. The agent
+// name plus its 1-based position keeps two tasks of the same batch
+// distinct even when they target the same agent, so the chain stays a
+// unique correlation key for the whole batch.
+func batchTaskLabel(agentName string, index int) string {
+	return agentName + "#" + strconv.Itoa(index+1)
+}
+
+// executeBatch launches every admitted task of a native batch
+// delegation as its own child run, concurrently, and returns one
+// aggregate report to the parent.
+//
+// The batch path preserves every control the single-task path has:
+//   - the same depth bound and the same cumulative per-run spawn budget,
+//     applied per task (a task that does not fit is rejected, the
+//     admitted siblings still run);
+//   - the same process-wide child semaphore, so a batch cannot exceed
+//     max_concurrent_children;
+//   - the same per-child snapshot isolation (each task gets its own
+//     child scope, scheduler, provider clone, and permission surface);
+//   - the same fail-closed permission and sandbox paths.
+//
+// Two failure rules differ from a plain fan-out of separate delegate
+// calls, and both are deliberate:
+//   - a task that is not admitted never cancels its siblings; it is
+//     reported as not admitted;
+//   - one child failing never cancels its siblings; only the parent's
+//     own cancellation propagates into every task.
+func (t delegateTool) executeBatch(ctx context.Context, scope *orchestrationScope, batchTasks []batchTask, onChunk func(tools.StreamChunk)) (tools.Result, error) {
+	if len(batchTasks) == 0 {
+		return softDelegateResult("batch delegation: no tasks provided"), nil
+	}
+	if len(batchTasks) > maxBatchTasks {
+		return softDelegateResult(fmt.Sprintf(
+			"batch delegation carries %d tasks, exceeding the limit of %d - split the work into smaller delegate calls",
+			len(batchTasks), maxBatchTasks)), nil
+	}
+
+	resolved := scope.orch.resolved
+
+	// Phase 1: validate every task before anything is admitted. One
+	// invalid task rejects the whole batch, so a malformed batch never
+	// spends spawn budget and never starts a child.
+	prepared := make([]preparedBatchTask, len(batchTasks))
+	for i, bt := range batchTasks {
+		name := strings.ToLower(strings.TrimSpace(bt.Agent))
+		text := strings.TrimSpace(bt.Task)
+		if name == "" || text == "" {
+			return softDelegateResult(fmt.Sprintf(
+				"batch task %d: an agent and a task description are both required", i+1)), nil
+		}
+		def, err := scope.orch.registry.Get(name)
+		if err != nil {
+			return softDelegateResult(fmt.Sprintf(
+				"unknown agent %q in batch task %d", name, i+1)), nil
+		}
+		if runes := len([]rune(text)); runes > resolved.maxTaskChars {
+			return softDelegateResult(fmt.Sprintf(
+				"batch task %d is %d characters, exceeding the limit of %d - delegate a smaller, more focused task",
+				i+1, runes, resolved.maxTaskChars)), nil
+		}
+		prepared[i] = preparedBatchTask{agent: name, task: text, def: def}
+	}
+
+	// Phase 2: admit the tasks in declared order. Admission is
+	// deterministic: the first tasks that fit the depth and per-run
+	// budgets run, the rest are reported as not admitted. A partial
+	// admission never cancels the admitted siblings.
+	admitted := make([]bool, len(prepared))
+	rejected := make([]string, len(prepared))
+	admittedCount := 0
+	for i := range prepared {
+		newDepth, ok := scope.admitSpawn()
+		if ok {
+			admitted[i] = true
+			admittedCount++
+			continue
+		}
+		if newDepth > resolved.maxDepth {
+			rejected[i] = fmt.Sprintf(
+				"delegation depth limit reached (depth %d with limit %d) - handle this task yourself or revise the plan",
+				newDepth, resolved.maxDepth)
+			continue
+		}
+		rejected[i] = fmt.Sprintf(
+			"delegation limit reached (%d child runs in this session, limit %d)",
+			scope.spawnedTotal(), resolved.maxPerRun)
+	}
+
+	// Phase 3: publish the delegation lifecycle for every task, in
+	// declared order. The events carry the batch index, so a consumer
+	// can tell the tasks apart and anchor each one to its own child.
+	for i := range prepared {
+		label := batchTaskLabel(prepared[i].def.Name, i)
+		ev := orchevents.Event{Agent: prepared[i].agent, BatchIndex: i + 1}
+		if !admitted[i] {
+			ev.Type = orchevents.DelegationRejected
+			ev.Reason = rejected[i]
+			if scope.depth+1 > resolved.maxDepth {
+				ev.Budget = orchevents.BudgetDepth
+				ev.BudgetLimit = resolved.maxDepth
+				ev.BudgetValue = scope.depth + 1
+			} else {
+				ev.Budget = orchevents.BudgetSpawn
+				ev.BudgetLimit = resolved.maxPerRun
+				ev.BudgetValue = scope.spawnedTotal()
+			}
+			scope.orch.emitDelegation(ctx, scope, label, ev)
+			continue
+		}
+		ev.Type = orchevents.DelegationRequested
+		ev.TaskChars = len([]rune(prepared[i].task))
+		scope.orch.emitDelegation(ctx, scope, label, ev)
+		ev.Type = orchevents.DelegationAccepted
+		scope.orch.emitDelegation(ctx, scope, label, ev)
+	}
+
+	// Phase 4: run the admitted tasks concurrently. Each task takes its
+	// own child scope (own chain leaf, own snapshot copy, own provider
+	// clone) and its own slot of the process-wide child semaphore.
+	childDepth := scope.depth + 1
+	results := make([]tools.Result, len(prepared))
+	var wg sync.WaitGroup
+	for i := range prepared {
+		if !admitted[i] {
+			results[i] = tools.Result{IsError: true, Content: rejected[i]}
+			continue
+		}
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			taskCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			// Process-wide child concurrency: one slot per running
+			// child, exactly like the single-task path. A task that
+			// cannot get a slot before the parent is cancelled reports
+			// an honest cancellation instead of running detached.
+			select {
+			case scope.orch.sem <- struct{}{}:
+				defer func() { <-scope.orch.sem }()
+			case <-taskCtx.Done():
+				results[idx] = tools.Result{IsError: true, Content: "delegation cancelled before it started"}
+				return
+			}
+
+			def := prepared[idx].def
+			childScope := scope.childScopeLabeled(def.Name, batchTaskLabel(def.Name, idx))
+			childScope.batchIndex = idx + 1
+			result, err := scope.orch.runChild(taskCtx, scope, childScope, def, childDepth, prepared[idx].task, onChunk)
+			if err != nil {
+				result = tools.Result{IsError: true, Content: "delegation failed: " + scrubbedContent(err.Error())}
+			}
+			results[idx] = result
+		}(i)
+	}
+	wg.Wait()
+
+	return composeBatchResult(prepared, admitted, rejected, results), nil
+}
+
+// composeBatchResult renders the parent-visible report of a batch: one
+// bounded section per declared task, in declared order, with an honest
+// header naming how many tasks completed, failed, and were not
+// admitted. Every section carries that child's own delegate report, so
+// the parent reads exactly what it would have read from separate
+// delegate calls.
+func composeBatchResult(prepared []preparedBatchTask, admitted []bool, rejected []string, results []tools.Result) tools.Result {
+	n := len(prepared)
+	completed, failed, notAdmitted := 0, 0, 0
+	for i := range prepared {
+		switch {
+		case !admitted[i]:
+			notAdmitted++
+		case results[i].IsError:
+			failed++
+		default:
+			completed++
+		}
+	}
+
+	// Per-task body budget: the aggregate bound split across the tasks,
+	// minus a small allowance for the section headers. The floor keeps
+	// a very large batch from starving every task of its report.
+	perTask := (delegateBatchReportMaxBytes - n*64) / n
+	if perTask < 512 {
+		perTask = 512
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "[delegate:batch] tasks=%d completed=%d failed=%d not_admitted=%d",
+		n, completed, failed, notAdmitted)
+	for i := range prepared {
+		fmt.Fprintf(&b, "\n\n[batch %d/%d agent=%q]", i+1, n, prepared[i].agent)
+		if !admitted[i] {
+			b.WriteString("\n")
+			b.WriteString(rejected[i])
+			continue
+		}
+		b.WriteString("\n")
+		b.WriteString(truncateDelegateBody(results[i].Content, perTask))
+	}
+	content := truncateDelegateBody(b.String(), delegateBatchReportMaxBytes)
+
+	meta := map[string]any{
+		"batch_size":   n,
+		"completed":    completed,
+		"failed":       failed,
+		"not_admitted": notAdmitted,
+	}
+	return tools.Result{
+		Content:  content,
+		IsError:  failed > 0 || notAdmitted > 0,
+		Metadata: meta,
+	}
 }
 
 // delegateArgs extracts the schema-validated arguments defensively (the
 // scheduler's strict validation already ran for model-originated calls;
 // direct callers get the same soft failure).
-func delegateArgs(args map[string]any) (agentName, taskText, failure string) {
+//
+// Returns (agentName, taskText, tasks, failure). The strings are the
+// raw mapped values: the caller trims and lower-cases them, exactly as
+// the single-task path always has. A batch call (a "tasks" array)
+// populates tasks and leaves the single-task fields empty; a single-task
+// call populates the two strings and leaves tasks empty. The failure
+// wording is fixed and never echoes model-controlled content.
+func delegateArgs(args map[string]any) (string, string, []batchTask, string) {
 	if args == nil {
-		return "", "", `missing "agent" and "task"`
+		return "", "", nil, `missing "agent" and "task" or "tasks"`
 	}
-	agentName = stringArg(args, "agent")
-	taskText = stringArg(args, "task")
+
+	if raw, ok := args["tasks"]; ok {
+		tasks, failure := parseBatchTasks(raw)
+		if failure != "" {
+			return "", "", nil, failure
+		}
+		return "", "", tasks, ""
+	}
+
+	agentName := stringArg(args, "agent")
+	taskText := stringArg(args, "task")
 	if strings.TrimSpace(agentName) == "" {
-		return "", "", `missing "agent"`
+		return "", "", nil, `missing "agent"`
 	}
 	if strings.TrimSpace(taskText) == "" {
-		return "", "", `missing "task"`
+		return "", "", nil, `missing "task"`
 	}
-	return agentName, taskText, ""
+	return agentName, taskText, nil, ""
+}
+
+// parseBatchTasks validates one "tasks" array defensively. The schema
+// layer checks top-level types only, so the nested item objects are
+// validated here: every item must be an object with a non-empty agent
+// and task string. The values are returned raw; the caller trims them.
+func parseBatchTasks(raw any) ([]batchTask, string) {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, `tasks must be an array`
+	}
+	if len(list) == 0 {
+		return nil, `tasks array is empty`
+	}
+	tasks := make([]batchTask, 0, len(list))
+	for i, item := range list {
+		taskMap, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Sprintf("tasks[%d] must be an object", i)
+		}
+		agentName := stringArg(taskMap, "agent")
+		taskText := stringArg(taskMap, "task")
+		if strings.TrimSpace(agentName) == "" {
+			return nil, fmt.Sprintf("tasks[%d] missing agent", i)
+		}
+		if strings.TrimSpace(taskText) == "" {
+			return nil, fmt.Sprintf("tasks[%d] missing task", i)
+		}
+		tasks = append(tasks, batchTask{Agent: agentName, Task: taskText})
+	}
+	return tasks, ""
 }
 
 // stringArg reads one string field. Only strings pass; anything else is
@@ -249,6 +585,12 @@ type childRunRecorder struct {
 	onChunk   func(tools.StreamChunk)
 	agentName string
 
+	// pendingText holds the child's streamed text until it is worth
+	// publishing: a chunk is released at a line boundary, at the byte
+	// cap, or when the child's turn ends. The buffer is bounded by the
+	// same cap, so a runaway stream cannot grow it without limit.
+	pendingText strings.Builder
+
 	// Run-level evidence hooks. Emissions are best-effort
 	// observability and never touch the child outcome.
 	orch       *Orchestrator
@@ -259,7 +601,7 @@ type childRunRecorder struct {
 	// Aggregate budget hooks (Contract: orchestration.max_total_child_
 	// turns): the shared pool, this limit, and the child context cancel
 	// so the offending child stops honestly. overBudget marks that this
-	// child's own cancellation came from the budget, for the report.
+	// child's own cancellation came from
 	shared       *orchestrationShared
 	turnLimit    int
 	budgetCancel func()
@@ -280,6 +622,8 @@ func (r *childRunRecorder) On(e Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch e.Type {
+	case EventText:
+		r.onChildText(e.Text)
 	case EventThinking:
 		// A reasoning delta is not a model turn: deltas stream within
 		// one inference, and charging them as turns let verbose models
@@ -291,6 +635,9 @@ func (r *childRunRecorder) On(e Event) {
 		if e.Thinking != "" {
 			return
 		}
+		// The marker opens a new turn, so the previous turn's text is
+		// complete: release whatever is still buffered.
+		r.flushChildText()
 		r.turns++
 		// One throttled lifecycle line per child turn. The scheduler
 		// redacts chunks before they reach the transcript.
@@ -335,6 +682,8 @@ func (r *childRunRecorder) On(e Event) {
 				}
 			}
 		}
+	case EventToolStart:
+		r.emitChildToolStarted(e)
 	case EventToolFinish, EventToolFailed, EventToolCancelled, EventToolDenied:
 		if e.ToolResult == nil {
 			return
@@ -350,7 +699,11 @@ func (r *childRunRecorder) On(e Event) {
 		case EventToolFailed:
 			r.failed++
 		}
+		r.emitChildToolFinished(e)
 	case EventDone, EventError, EventBlocked, EventCancelled:
+		// The child's last words are still worth showing: release the
+		// buffered text before the terminal outcome is recorded.
+		r.flushChildText()
 		if r.seen {
 			return // exactly one terminal record: the first wins
 		}
@@ -363,6 +716,87 @@ func (r *childRunRecorder) On(e Event) {
 			errText:   eventErrText(e),
 		}
 	}
+}
+
+// onChildText buffers one streamed text delta and publishes it once it
+// reaches a line boundary or the byte cap. Coalescing keeps a
+// token-by-token stream from turning into one event per token, while
+// the line boundary keeps the published chunk useful to a reader.
+func (r *childRunRecorder) onChildText(text string) {
+	if text == "" || r.orch == nil {
+		return
+	}
+	r.pendingText.WriteString(text)
+	if strings.Contains(text, "\n") || r.pendingText.Len() >= maxChildTextChunkBytes {
+		r.flushChildText()
+	}
+}
+
+// flushChildText publishes the buffered child text as one live-text
+// event. The text is scrubbed before it leaves the runtime: the live
+// view is downstream of the redaction boundary, and the headless writer
+// never persists child text at all.
+func (r *childRunRecorder) flushChildText() {
+	if r.orch == nil || r.pendingText.Len() == 0 {
+		return
+	}
+	text := r.pendingText.String()
+	r.pendingText.Reset()
+	r.orch.emitChildRun(r.childCtx, r.childScope, orchevents.Event{
+		Type:       orchevents.ChildText,
+		Agent:      r.agentName,
+		ChildRunID: r.childRunID,
+		Text:       redact.Scrub(text),
+	})
+}
+
+// emitChildToolStarted publishes the child's tool start, so a live
+// consumer can name the tool the child is running right now.
+func (r *childRunRecorder) emitChildToolStarted(e Event) {
+	if r.orch == nil || e.ToolCall == nil || e.ToolCall.Name == "" {
+		return
+	}
+	r.orch.emitChildRun(r.childCtx, r.childScope, orchevents.Event{
+		Type:       orchevents.ToolStarted,
+		Agent:      r.agentName,
+		ChildRunID: r.childRunID,
+		CallID:     e.ToolCall.ID,
+		Tool:       e.ToolCall.Name,
+	})
+}
+
+// emitChildToolFinished publishes the child's tool terminal. Only the
+// tool's name, duration, and outcome travel: never its arguments and
+// never its output.
+func (r *childRunRecorder) emitChildToolFinished(e Event) {
+	if r.orch == nil || e.ToolResult == nil {
+		return
+	}
+	typ := orchevents.ToolCompleted
+	switch e.Type {
+	case EventToolFailed:
+		typ = orchevents.ToolFailed
+	case EventToolDenied:
+		typ = orchevents.ToolDenied
+	case EventToolCancelled:
+		typ = orchevents.ToolCancelled
+	}
+	if e.Type == EventToolFinish && e.ToolResult.IsError {
+		typ = orchevents.ToolFailed
+	}
+	ev := orchevents.Event{
+		Type:       typ,
+		Agent:      r.agentName,
+		ChildRunID: r.childRunID,
+		CallID:     e.ToolResult.ToolCallID,
+		Tool:       e.ToolResult.Name,
+		DurationMS: e.ToolResult.Duration.Milliseconds(),
+		Attempt:    e.ToolResult.Attempt,
+	}
+	if typ == orchevents.ToolFailed && e.ToolResult.Err != nil {
+		ev.Error = redact.Scrub(e.ToolResult.Err.Error())
+	}
+	r.orch.emitChildRun(r.childCtx, r.childScope, ev)
 }
 
 func eventErrText(e Event) string {
@@ -392,9 +826,14 @@ func (r *childRunRecorder) deniedTotal() (total int, names []string) {
 // runChild builds and drives the child run and joins it before
 // returning. There is no detached mode: every exit path waits for the
 // child to terminate, and nothing completes after the tool result.
+//
+// childScope is the scope the child runs under: one level deeper than
+// the delegating scope, carrying the child's own chain leaf. The caller
+// builds it so a batch delegation can give each task a distinct leaf.
 func (o *Orchestrator) runChild(
 	ctx context.Context,
 	scope *orchestrationScope,
+	childScope *orchestrationScope,
 	def agent.Definition,
 	newDepth int,
 	taskText string,
@@ -423,7 +862,6 @@ func (o *Orchestrator) runChild(
 	childCfg.MaxConcurrency = 2
 	// The child's chain includes its own name (root first), so approval
 	// surfaces attribute the ask to the full delegation path.
-	childScope := scope.childScope(def.Name)
 	asker := o.childAsker(def, childScope.chain)
 	scheduler := newScheduler(childMgr, scope.snap.scheduler.permissions, asker, childCfg)
 	scheduler.askSerial = o.childAskSerial()

@@ -119,7 +119,7 @@ func (r *Runtime) StreamChatWithMode(ctx context.Context, messages []providers.M
 	// active agent's registry name for attribution. With orchestration
 	// disabled the context is untouched and no delegate tool exists.
 	if snap.orch != nil {
-		ctx = withOrchestrationScope(ctx, snap.orch.rootScope(&snap))
+		ctx = withOrchestrationScope(ctx, snap.orch.rootScope(ctx, &snap))
 	}
 	if overlay := mode.planOverlay(); overlay != "" &&
 		len(initial) > 0 && initial[0].Role == providers.SystemRole {

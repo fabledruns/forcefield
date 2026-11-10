@@ -244,6 +244,9 @@ func runHeadlessSession(ctx context.Context, rt *runtime.Runtime, msgs []provide
 	start := time.Now()
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if evw != nil && evw.RunID() != "" {
+		runCtx = runtime.WithExecutionID(runCtx, evw.RunID())
+	}
 	events, err := rt.StreamChat(runCtx, sess.ProviderMessages())
 	if err != nil {
 		exitCode := 1

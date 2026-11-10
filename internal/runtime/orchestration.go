@@ -12,6 +12,8 @@ import (
 	"forcefield/internal/permissions"
 	"forcefield/internal/skills"
 	"forcefield/internal/tools"
+
+	"github.com/google/uuid"
 )
 
 // Orchestration bounds resolved from config. Omitted values keep the
@@ -130,18 +132,12 @@ func (o *Orchestrator) setSink(s orchevents.Sink) {
 
 // emitDelegation records a pre-spawn delegation event (requested,
 // accepted, or rejected), attributed to the requested child's path.
-// The sink is read under the mutex but never held across the emission
-// itself, and a nil sink disables the whole path.
+// The sink is bound to the scope's execution lifetime, and a nil sink disables.
 func (o *Orchestrator) emitDelegation(ctx context.Context, scope *orchestrationScope, target string, ev orchevents.Event) {
-	if o == nil || ctx == nil || scope == nil {
+	if o == nil || ctx == nil || scope == nil || scope.sink == nil || scope.execID == "" {
 		return
 	}
-	o.sinkMu.Lock()
-	s := o.sink
-	o.sinkMu.Unlock()
-	if s == nil {
-		return
-	}
+	s := scope.sink
 	chain := scope.chain
 	if target != "" {
 		extended := make([]string, len(chain), len(chain)+1)
@@ -153,6 +149,9 @@ func (o *Orchestrator) emitDelegation(ctx context.Context, scope *orchestrationS
 	if ev.CallID == "" {
 		ev.CallID = tools.ToolCallIDFromContext(ctx)
 	}
+	if ev.RunID == "" {
+		ev.RunID = scope.execID
+	}
 	s.Emit(ev)
 }
 
@@ -160,19 +159,20 @@ func (o *Orchestrator) emitDelegation(ctx context.Context, scope *orchestrationS
 // completed) with the child's own path attribution; childScope already
 // carries the full chain including the child name.
 func (o *Orchestrator) emitChildRun(ctx context.Context, childScope *orchestrationScope, ev orchevents.Event) {
-	if o == nil || ctx == nil || childScope == nil {
+	if o == nil || ctx == nil || childScope == nil || childScope.sink == nil || childScope.execID == "" {
 		return
 	}
-	o.sinkMu.Lock()
-	s := o.sink
-	o.sinkMu.Unlock()
-	if s == nil {
-		return
-	}
+	s := childScope.sink
 	ev.Chain = strings.Join(childScope.chain, " > ")
 	ev.Depth = childScope.depth
+	if ev.BatchIndex == 0 {
+		ev.BatchIndex = childScope.batchIndex
+	}
 	if ev.CallID == "" {
 		ev.CallID = tools.ToolCallIDFromContext(ctx)
+	}
+	if ev.RunID == "" {
+		ev.RunID = childScope.execID
 	}
 	s.Emit(ev)
 }
@@ -214,11 +214,23 @@ func (sh *orchestrationShared) consumeTurn(limit int) (total int, over, fire boo
 type orchestrationScope struct {
 	orch   *Orchestrator
 	shared *orchestrationShared
+	// execID is the unique execution / run ID for this scope's run,
+	// stamping every event emitted by this execution.
+	execID string
+	// sink is the immutable sink captured when the run entered rootScope.
+	// In-flight children emit only to this sink, preventing old runs from
+	// polluting later sessions or runs after sink re-attachment.
+	sink orchevents.Sink
 	// depth is this scope's nesting level: 0 for the top-level run.
 	depth int
 	// chain records the agent names along the delegation path, root
 	// first, for attribution in approval surfaces.
 	chain []string
+	// batchIndex is the 1-based position of this scope inside a native
+	// batch delegation (one delegate call carrying a tasks array).
+	// Zero for every scope outside batch delegation. It rides on the
+	// scope's events so a consumer can tell the declared tasks apart.
+	batchIndex int
 	// snap is the parent run's fixed snapshot: provider, caps, budget.
 	// The pointer target itself stays immutable for the parent's
 	// lifetime; each child copies the snapshot value and swaps in its
@@ -245,12 +257,34 @@ func orchestrationScopeFrom(ctx context.Context) *orchestrationScope {
 }
 
 // rootScope builds the scope for a top-level run: depth 0, chain seeded
-// with the active agent's registry name.
-func (o *Orchestrator) rootScope(snap *runSnapshot) *orchestrationScope {
+// with the active agent's registry name, and capturing the active sink
+// and run execution identity. The execution identity is run-scoped: it is
+// extracted from ctx (via WithExecutionID), then the sink (if implementing
+// RunScopedSink or exposing RunID), or generated uniquely per run.
+func (o *Orchestrator) rootScope(ctx context.Context, snap *runSnapshot) *orchestrationScope {
 	root := agentNameFromSnapshot(o, snap)
+	var s orchevents.Sink
+	if o != nil {
+		o.sinkMu.Lock()
+		s = o.sink
+		o.sinkMu.Unlock()
+	}
+	execID := ExecutionIDFrom(ctx)
+	if execID == "" && s != nil {
+		if runScoped, ok := s.(orchevents.RunScopedSink); ok && runScoped.RunID() != "" {
+			execID = runScoped.RunID()
+		} else if runScoped, ok := s.(interface{ RunID() string }); ok && runScoped.RunID() != "" {
+			execID = runScoped.RunID()
+		}
+	}
+	if execID == "" {
+		execID = uuid.NewString()
+	}
 	return &orchestrationScope{
 		orch:   o,
 		shared: &orchestrationShared{},
+		execID: execID,
+		sink:   s,
 		depth:  0,
 		chain:  []string{root},
 		snap:   snap,
@@ -280,15 +314,28 @@ func agentNameFromSnapshot(o *Orchestrator, snap *runSnapshot) string {
 // copies the parent snapshot pointer reference; child overrides are
 // applied to a separate copy inside spawnChild.
 func (sc *orchestrationScope) childScope(childAgent string) *orchestrationScope {
+	return sc.childScopeLabeled(childAgent, childAgent)
+}
+
+// childScopeLabeled derives a child scope whose chain leaf is label
+// instead of the agent's registry name. Batch delegation uses it so two
+// tasks of the same batch that target the same agent still get distinct
+// chains: the chain is a correlation key, and two children sharing one
+// would let a nested grandchild anchor to the wrong parent. The label
+// is registry-controlled plus a numeric suffix, so it stays unambiguous.
+func (sc *orchestrationScope) childScopeLabeled(childAgent, label string) *orchestrationScope {
 	chain := make([]string, len(sc.chain), len(sc.chain)+1)
 	copy(chain, sc.chain)
-	chain = append(chain, childAgent)
+	chain = append(chain, label)
 	return &orchestrationScope{
-		orch:   sc.orch,
-		shared: sc.shared,
-		depth:  sc.depth + 1,
-		chain:  chain,
-		snap:   sc.snap,
+		orch:       sc.orch,
+		shared:     sc.shared,
+		execID:     sc.execID,
+		sink:       sc.sink,
+		depth:      sc.depth + 1,
+		chain:      chain,
+		batchIndex: sc.batchIndex,
+		snap:       sc.snap,
 	}
 }
 
