@@ -6,6 +6,16 @@
 ▀      ▀▀▀▀  ▀    ▀  ▀▀▀▀ ▀▀▀▀▀ ▀     ▀ ▀▀▀▀▀ ▀▀▀▀▀ ▀▀▀▀▀ 
 ```
 
+<p align="center">
+  <a href="https://peerlist.io/jehoshuam/project/forcefield" target="_blank" rel="noreferrer">
+    <img
+      src="https://peerlist.io/api/v1/projects/embed/PRJH6A7OMP7DM9JK9CODMPQQKQQAJB?showUpvote=false&theme=light"
+      alt="Forcefield on Peerlist"
+      height="72"
+    />
+  </a>
+</p>
+
 Forcefield is a local-first command line tool for running AI agents.
 
 It provides the runtime around a model: tools, skills, sessions, memory, permissions, shell execution, and provider communication. Forcefield runs as a single binary.
