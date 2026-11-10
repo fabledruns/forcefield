@@ -66,7 +66,7 @@ func TestSpecValidationAllowsPlainBaseURLs(t *testing.T) {
 		{"trailing slash", "https://api.example.com/v1/", "openai-compatible"},
 		{"deep path", "https://host/api/v2/openai", "openai-compatible"},
 		{"ipv6 literal", "http://[::1]:11434", "ollama"},
-		{"ipv6 loopback with path", "http://[::1]:8080/v1", "openai-compatible"},
+		{"ipv6 loopback with path", "http://[::1]:9931/v1", "openai-compatible"},
 		{"anthropic root", "https://api.anthropic.com", "anthropic"},
 		{"gemini root", "https://generativelanguage.googleapis.com", "gemini"},
 		{"vertex regional", "https://us-central1-aiplatform.googleapis.com", "vertex"},

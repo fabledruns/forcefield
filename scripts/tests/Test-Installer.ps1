@@ -79,6 +79,8 @@ function Test-LibOnlyImportExposesHelpers {
   Assert-True "Get-Arch is available" ((Get-Command Get-Arch -ErrorAction SilentlyContinue) -ne $null)
   Assert-True "Test-VersionFormat is available" ((Get-Command Test-VersionFormat -ErrorAction SilentlyContinue) -ne $null)
   Assert-True "Get-LatestVersion is available" ((Get-Command Get-LatestVersion -ErrorAction SilentlyContinue) -ne $null)
+  $cmd = Get-Command $installerPath
+  Assert-True "SkipChecksum parameter is available" ($cmd.Parameters.ContainsKey('SkipChecksum'))
 }
 
 # ---------- version behavior ----------

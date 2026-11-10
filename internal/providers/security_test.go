@@ -45,14 +45,82 @@ func TestSpecRejectsBadAPIKeyWithoutLeak(t *testing.T) {
 func TestSpecMetadataBlockedByDefault(t *testing.T) {
 	for _, raw := range []string{
 		"http://169.254.169.254/v1",
-		"http://169.254.169.254:8080/v1",
+		"http://169.254.169.254:9931/v1",
 		"http://metadata.google.internal/v1",
+		"http://[::ffff:169.254.169.254]/v1",
+		"http://[::ffff:169.254.169.254]:9931/v1",
+		"http://[::ffff:a9fe:a9fe]/v1",
 	} {
 		spec := Spec{ID: "x", Type: "openai-compatible", BaseURL: raw}
 		if err := spec.Validate(); err == nil {
 			t.Errorf("Validate(%q) succeeded, want metadata refusal", raw)
 		} else if !strings.Contains(strings.ToLower(err.Error()), "metadata") {
 			t.Errorf("Validate(%q) error = %q, want metadata mention", raw, err)
+		}
+	}
+}
+
+func TestIPv4MappedIPv6SecurityChecks(t *testing.T) {
+	// Metadata checks
+	metaCases := []string{
+		"169.254.169.254",
+		"::ffff:169.254.169.254",
+		"[::ffff:169.254.169.254]",
+		"[::ffff:169.254.169.254]:80",
+		"::ffff:a9fe:a9fe",
+		"0:0:0:0:0:ffff:169.254.169.254",
+	}
+	for _, host := range metaCases {
+		if !IsMetadataHost(host) {
+			t.Errorf("IsMetadataHost(%q) = false, want true", host)
+		}
+	}
+
+	// Private endpoint checks
+	privateCases := []struct {
+		host string
+		want bool
+	}{
+		{"::ffff:127.0.0.1", true},
+		{"[::ffff:127.0.0.1]:8080", true},
+		{"::ffff:192.168.1.1", true},
+		{"[::ffff:192.168.1.1]:11434", true},
+		{"::ffff:10.0.0.1", true},
+		{"::ffff:172.16.0.1", true},
+		{"::ffff:169.254.1.1", true},
+		{"127.0.0.1", true},
+		{"192.168.1.1", true},
+		{"::1", true},
+		{"[::1]:8080", true},
+		{"localhost", true},
+		{"::ffff:8.8.8.8", false},
+		{"8.8.8.8", false},
+		{"example.com", false},
+	}
+	for _, tc := range privateCases {
+		if got := IsPrivateEndpointHost(tc.host); got != tc.want {
+			t.Errorf("IsPrivateEndpointHost(%q) = %v, want %v", tc.host, got, tc.want)
+		}
+	}
+
+	// Loopback checks
+	loopbackCases := []struct {
+		host string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"127.0.0.1:8080", true},
+		{"::1", true},
+		{"[::1]:8080", true},
+		{"localhost", true},
+		{"::ffff:127.0.0.1", true},
+		{"[::ffff:127.0.0.1]:8080", true},
+		{"::ffff:192.168.1.1", false},
+		{"8.8.8.8", false},
+	}
+	for _, tc := range loopbackCases {
+		if got := isLoopbackHostname(tc.host); got != tc.want {
+			t.Errorf("isLoopbackHostname(%q) = %v, want %v", tc.host, got, tc.want)
 		}
 	}
 }

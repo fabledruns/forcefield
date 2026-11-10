@@ -17,15 +17,15 @@ import (
 	"forcefield/internal/sandbox/landlock"
 )
 
-// runIsolated executes one command through the isolated executor and
+// runIsolatedReq executes one request through the isolated executor and
 // returns its exit code and combined output. Cleanup runs on return.
-func runIsolated(t *testing.T, ex Executor, command string) (int, string) {
+func runIsolatedReq(t *testing.T, ex Executor, req Request) (int, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	prepared, err := ex.Prepare(ctx, Request{Command: command})
+	prepared, err := ex.Prepare(ctx, req)
 	if err != nil {
-		t.Fatalf("Prepare(%q): %v", command, err)
+		t.Fatalf("Prepare(%+v): %v", req, err)
 	}
 	if prepared.Cleanup != nil {
 		defer prepared.Cleanup()
@@ -36,10 +36,17 @@ func runIsolated(t *testing.T, ex Executor, command string) (int, string) {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			code = exitErr.ExitCode()
 		} else {
-			t.Fatalf("run %q: %v", command, err)
+			t.Fatalf("run %+v: %v", req, err)
 		}
 	}
 	return code, string(out)
+}
+
+// runIsolated executes one command through the isolated executor and
+// returns its exit code and combined output. Cleanup runs on return.
+func runIsolated(t *testing.T, ex Executor, command string) (int, string) {
+	t.Helper()
+	return runIsolatedReq(t, ex, Request{Command: command})
 }
 
 // requireLandlockBackend returns an isolated executor over a throwaway
@@ -306,5 +313,107 @@ func TestIsolatedRulesExplicitOverrides(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("tmp appears %d times in rules, want exactly once: %+v", count, rules)
+	}
+}
+
+// TestIsolatedGitWorkflowWithHostGitConfig proves production-level sterile
+// Git execution under Landlock confinement:
+// 1. Git operations succeed in the workspace even when the host has a non-empty
+//    ~/.gitconfig outside the workspace.
+// 2. The host ~/.gitconfig remains strictly inaccessible under Landlock ($HOME is denied).
+// 3. GIT_CONFIG_GLOBAL=/dev/null and GIT_CONFIG_NOSYSTEM=1 reach the actual spawned process.
+// 4. Per-command ExtraEnv cannot override or weaken these security defaults.
+func TestIsolatedGitWorkflowWithHostGitConfig(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+
+	ws := t.TempDir()
+	outsideHome := t.TempDir()
+	hostGitConfig := filepath.Join(outsideHome, ".gitconfig")
+	if err := os.WriteFile(hostGitConfig, []byte("[user]\n\tname = Host User\n\temail = host@example.com\n[core]\n\tautocrlf = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set host HOME to outsideHome so any unconfined process would find hostGitConfig.
+	t.Setenv("HOME", outsideHome)
+
+	ex := requireLandlockBackend(t, ws, nil)
+
+	// Step 1: Prove Landlock genuinely denies access to host ~/.gitconfig (Requirement 6).
+	if code, out := runIsolated(t, ex, "cat "+hostGitConfig); code == 0 {
+		t.Errorf("reading host ~/.gitconfig succeeded under Landlock; want denial (out=%q)", out)
+	}
+
+	// Step 2: Prove sterile git variables reached the spawned process (Requirement 5).
+	if code, out := runIsolated(t, ex, "printenv GIT_CONFIG_GLOBAL"); code != 0 || strings.TrimSpace(out) != "/dev/null" {
+		t.Errorf("printenv GIT_CONFIG_GLOBAL: exit=%d, got %q, want /dev/null", code, strings.TrimSpace(out))
+	}
+	if code, out := runIsolated(t, ex, "printenv GIT_CONFIG_NOSYSTEM"); code != 0 || strings.TrimSpace(out) != "1" {
+		t.Errorf("printenv GIT_CONFIG_NOSYSTEM: exit=%d, got %q, want 1", code, strings.TrimSpace(out))
+	}
+
+	// Step 3: Run full git workflow in the workspace (Requirement 4).
+	gitScript := `set -e
+git init -q
+git config user.name "Sandboxed User"
+git config user.email "sandboxed@example.com"
+echo "tracked content" > tracked.txt
+git add tracked.txt
+git commit -qm "initial commit"
+git status --short
+git log --oneline | grep -q "initial commit"
+echo "modified content" >> tracked.txt
+git diff -- tracked.txt | grep -q "modified content"
+echo GIT-WORKFLOW-SUCCESS`
+
+	if code, out := runIsolated(t, ex, gitScript); code != 0 || !strings.Contains(out, "GIT-WORKFLOW-SUCCESS") {
+		t.Fatalf("git workflow in isolated mode failed: exit=%d, out:\n%s", code, out)
+	}
+
+	// Step 4: Prove Request.ExtraEnv cannot override or weaken security defaults (Requirement 2).
+	overrideReq := Request{
+		Command: "printenv GIT_CONFIG_GLOBAL && printenv GIT_CONFIG_NOSYSTEM && printenv USER_CUSTOM_VAR",
+		ExtraEnv: []string{
+			"GIT_CONFIG_GLOBAL=" + hostGitConfig, // attempt to point git to host config
+			"GIT_CONFIG_NOSYSTEM=0",             // attempt to unpin system config
+			"TMPDIR=/tmp/evil",                  // attempt to break private temp dir
+			"USER_CUSTOM_VAR=allowed_value",     // legitimate user variable
+		},
+	}
+	code, out := runIsolatedReq(t, ex, overrideReq)
+	if code != 0 {
+		t.Fatalf("runIsolatedReq with ExtraEnv failed: exit=%d, out:\n%s", code, out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("unexpected output lines: %q", out)
+	}
+	if got := strings.TrimSpace(lines[0]); got != "/dev/null" {
+		t.Errorf("GIT_CONFIG_GLOBAL overridden by ExtraEnv: got %q, want /dev/null", got)
+	}
+	if got := strings.TrimSpace(lines[1]); got != "1" {
+		t.Errorf("GIT_CONFIG_NOSYSTEM overridden by ExtraEnv: got %q, want 1", got)
+	}
+	if got := strings.TrimSpace(lines[2]); got != "allowed_value" {
+		t.Errorf("USER_CUSTOM_VAR lost from ExtraEnv: got %q, want allowed_value", got)
+	}
+}
+
+// TestIsolatedExtraEnvPrecedence verifies that stripIsolatedExtras and Prepare
+// enforce strict precedence of sandbox security defaults over host environment
+// and per-command ExtraEnv without duplicate keys.
+func TestIsolatedExtraEnvPrecedence(t *testing.T) {
+	extras := []string{
+		"GIT_CONFIG_GLOBAL=/custom/gitconfig",
+		"git_config_global=/lowercase/gitconfig",
+		"GIT_CONFIG_NOSYSTEM=0",
+		"TMPDIR=/custom/tmp",
+		"tmpdir=/lowercase/tmp",
+		"SAFE_VAR=123",
+	}
+	stripped := stripIsolatedExtras(extras)
+	if len(stripped) != 1 || stripped[0] != "SAFE_VAR=123" {
+		t.Errorf("stripIsolatedExtras(%v) = %v, want [SAFE_VAR=123]", extras, stripped)
 	}
 }

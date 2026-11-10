@@ -44,6 +44,9 @@
   checksum verification, version/platform validation, path safety, or
   atomic replacement.
 
+.PARAMETER SkipChecksum
+  Skip SHA256 checksum verification (not recommended).
+
 .PARAMETER Help
   Show help.
 #>
@@ -53,6 +56,7 @@ param(
   [string]$InstallDir = "",
   [switch]$NoModifyPath,
   [switch]$Force,
+  [switch]$SkipChecksum,
   [switch]$Help
 )
 
@@ -718,58 +722,60 @@ try {
   Write-Done "Download complete"
 
   # Verify checksum
-  Write-Step "Verifying checksum"
-  $checksumFile = Join-Path $tmp "checksums.txt"
-  $checksumOk = $false
-  $foundChecksumUrl = $null
-  foreach ($url in @($ChecksumUrl, "https://github.com/$Repo/releases/download/$Version/SHA256SUMS", "https://github.com/$Repo/releases/download/$Version/checksums.sha256")) {
-    try {
-      Invoke-WebRequest -Uri $url -OutFile $checksumFile -UseBasicParsing -Headers @{"User-Agent"="forcefield-installer"} -ErrorAction Stop
-      if ((Test-Path $checksumFile) -and (Get-Item $checksumFile).Length -gt 0) {
-        $foundChecksumUrl = $url
-        Write-Verbose "checksum source: $url"
+  if ($SkipChecksum -or ($env:FORCEFIELD_SKIP_CHECKSUM -eq '1')) {
+    Write-WarnUi "skipping checksum verification (-SkipChecksum is set)"
+  } else {
+    Write-Step "Verifying checksum"
+    $checksumFile = Join-Path $tmp "checksums.txt"
+    $checksumOk = $false
+    $foundChecksumUrl = $null
+    foreach ($url in @($ChecksumUrl, "https://github.com/$Repo/releases/download/$Version/SHA256SUMS", "https://github.com/$Repo/releases/download/$Version/checksums.sha256")) {
+      try {
+        Invoke-WebRequest -Uri $url -OutFile $checksumFile -UseBasicParsing -Headers @{"User-Agent"="forcefield-installer"} -ErrorAction Stop
+        if ((Test-Path $checksumFile) -and (Get-Item $checksumFile).Length -gt 0) {
+          $foundChecksumUrl = $url
+          Write-Verbose "checksum source: $url"
+          break
+        }
+      } catch {
+        # try next URL on 404
+        try { $s = $_.Exception.Response.StatusCode.value__ } catch { $s = $null }
+        if ($s -eq 404) { continue }
+        # ignore other errors for checksum (will warn)
+        Remove-Item $checksumFile -Force -ErrorAction SilentlyContinue
+        continue
+      }
+      Remove-Item $checksumFile -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($foundChecksumUrl -and (Test-Path $checksumFile)) {
+      $lines = Get-Content $checksumFile -ErrorAction SilentlyContinue
+      $expected = $null
+      foreach ($line in $lines) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed) { continue }
+        $parts = $trimmed -split '\s+'
+        if ($parts.Count -lt 2) { continue }
+        $hash = $parts[0].Trim().ToLower()
+        if ($hash -notmatch '^[a-f0-9]{64}$') { continue }
+        $file = $parts[1].Trim().TrimStart('*').TrimEnd("`r")
+        if ($file -ne $Artifact) { continue }
+        $expected = $hash
         break
       }
-    } catch {
-      # try next URL on 404
-      try { $s = $_.Exception.Response.StatusCode.value__ } catch { $s = $null }
-      if ($s -eq 404) { continue }
-      # ignore other errors for checksum (will warn)
-      Remove-Item $checksumFile -Force -ErrorAction SilentlyContinue
-      continue
-    }
-    Remove-Item $checksumFile -Force -ErrorAction SilentlyContinue
-  }
-
-  if ($foundChecksumUrl -and (Test-Path $checksumFile)) {
-    $lines = Get-Content $checksumFile -ErrorAction SilentlyContinue
-    $expected = $null
-    foreach ($line in $lines) {
-      $trimmed = $line.Trim()
-      if (-not $trimmed) { continue }
-      $parts = $trimmed -split '\s+'
-      if ($parts.Count -lt 2) { continue }
-      $hash = $parts[0].Trim().ToLower()
-      if ($hash -notmatch '^[a-f0-9]{64}$') { continue }
-      $file = $parts[1].Trim().TrimStart('*').TrimEnd("`r")
-      if ($file -ne $Artifact) { continue }
-      $expected = $hash
-      break
-    }
-    if (-not $expected) {
-      Write-WarnUi "checksums.txt does not contain $Artifact; skipping verification (this should not happen for new releases)"
-    } else {
-      $actualHash = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
-      if ($expected -ne $actualHash) {
-        Fail "Checksum mismatch for $Artifact`n  expected: $expected`n  actual:   $actualHash`nRefusing to install. The download may be corrupted or tampered with."
+      if (-not $expected) {
+        Fail "checksums.txt does not contain $Artifact. Refusing to install unverified binary. Pass -SkipChecksum to override."
+      } else {
+        $actualHash = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
+        if ($expected -ne $actualHash) {
+          Fail "Checksum mismatch for $Artifact`n  expected: $expected`n  actual:   $actualHash`nRefusing to install. The download may be corrupted or tampered with."
+        }
+        Write-Done "Checksum verified"
+        $checksumOk = $true
       }
-      Write-Done "Checksum verified"
-      $checksumOk = $true
+    } else {
+      Fail "No checksums file found at $ChecksumUrl. Refusing to install unverified binary. Pass -SkipChecksum (or set `$env:FORCEFIELD_SKIP_CHECKSUM='1') to override if you trust this download."
     }
-  } else {
-    Write-WarnUi "no checksums file; skipping verification (old releases may not have checksums)"
-    Write-Detail "For security, prefer a release with checksums.txt."
-    Write-Verbose "No checksums file at $ChecksumUrl (old releases may not have checksums)"
   }
 
   # Install

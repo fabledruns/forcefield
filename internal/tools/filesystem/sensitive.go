@@ -13,10 +13,33 @@ func IsSensitivePath(path string) bool {
 	if strings.TrimSpace(path) == "" {
 		return false
 	}
-	// Normalize slashes for Windows + Unix
-	slashPath := filepath.ToSlash(path)
-	lowerPath := strings.ToLower(slashPath)
-	base := filepath.Base(slashPath)
+	// Always normalize backslashes to forward slashes for cross-platform
+	// consistency (filepath.ToSlash is a no-op on Unix, but paths containing
+	// Windows backslashes can still be passed on Unix or in tests).
+	slashPath := strings.ReplaceAll(path, "\\", "/")
+
+	// Strip volume name (e.g. C:) if present before inspecting streams.
+	// On Unix, filepath.VolumeName returns "" for Windows drive letters, so
+	// we explicitly detect Windows drive letters (e.g. "C:") here.
+	vol := ""
+	if len(slashPath) >= 2 && slashPath[1] == ':' && ((slashPath[0] >= 'a' && slashPath[0] <= 'z') || (slashPath[0] >= 'A' && slashPath[0] <= 'Z')) {
+		vol = slashPath[:2]
+	} else {
+		vol = filepath.VolumeName(slashPath)
+	}
+	noVol := slashPath[len(vol):]
+
+	// Strip NTFS alternate data stream specifiers (e.g. :$DATA, :stream_name, :stream:$DATA).
+	// Since the volume prefix has been stripped, any colon in noVol is an NTFS stream delimiter.
+	if idx := strings.IndexByte(noVol, ':'); idx >= 0 {
+		noVol = noVol[:idx]
+	}
+
+	lowerPath := strings.ToLower(vol + noVol)
+	base := noVol
+	if idx := strings.LastIndexByte(noVol, '/'); idx >= 0 {
+		base = noVol[idx+1:]
+	}
 	lowerBase := strings.ToLower(base)
 
 	// .env, .env.*, .env.local etc (any file starting with .env)
@@ -31,7 +54,7 @@ func IsSensitivePath(path string) bool {
 		return true
 	}
 	// SSH directory or files
-	if strings.Contains(lowerPath, "/.ssh/") || strings.HasSuffix(lowerPath, "/.ssh") {
+	if lowerBase == ".ssh" || strings.Contains(lowerPath, "/.ssh/") || strings.HasSuffix(lowerPath, "/.ssh") || lowerPath == ".ssh" {
 		return true
 	}
 	// Common SSH key filenames (even outside .ssh folder)
