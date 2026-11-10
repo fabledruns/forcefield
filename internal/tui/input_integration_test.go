@@ -18,8 +18,7 @@ import (
 // directly on the input state.
 
 // driveProgram starts the TUI with piped input, writes each chunk after
-// delay (simulating human-paced keys when delay > pasteBurstWindow), then
-// quits with Ctrl+C and returns the final model.
+// delay, then quits with Ctrl+C and returns the final model.
 func driveProgram(t *testing.T, delay time.Duration, chunks ...string) model {
 	t.Helper()
 
@@ -116,30 +115,29 @@ func TestIntegrationBracketedPastePreservesNewlines(t *testing.T) {
 	pasted := "line one\nline two\nline three"
 	m := driveProgram(t, 120*time.Millisecond, "\x1b[200~"+pasted+"\x1b[201~")
 
+	// The paste collapses to its placeholder token; the real newlines
+	// live in the stored original, byte-for-byte.
 	got := m.input.Value()
-	if got != pasted {
-		t.Errorf("input.Value() = %q, want pasted text with real newlines", got)
+	if !strings.Contains(got, "[pasted text 3 lines #") || !strings.HasSuffix(got, "]") {
+		t.Errorf("input.Value() = %q, want a placeholder token for the paste", got)
 	}
 	if strings.Contains(got, "\\n") {
 		t.Errorf("input contains literal backslash-n: %q", got)
 	}
+	if stored := m.pastes[got]; stored != pasted {
+		t.Errorf("stored paste = %q, want pasted text with real newlines %q", stored, pasted)
+	}
 }
 
-func TestIntegrationKeystrokeBurstPasteKeepsNewlines(t *testing.T) {
-	// Console-driver paste simulation: no bracketed-paste markers, the
-	// embedded CR arrives as a plain Enter keystroke inside a rapid burst.
-	//
-	// The burst window is measured between key events as the model
-	// processes them, so the bytes must arrive in one write: separate
-	// writes can be scheduled more than pasteBurstWindow apart on a
-	// loaded machine (CI included), which would turn this test into a
-	// real submission instead of a paste.
-	m := driveProgram(t, time.Second, "line one\rline two")
+func TestIntegrationUnbracketedEnterSubmitsImmediately(t *testing.T) {
+	// Without bracketed paste markers, an embedded CR is a plain Enter
+	// keystroke and submits immediately without relying on timing heuristics.
+	m := driveProgram(t, 100*time.Millisecond, "line one\rline two")
 
-	if got := m.input.Value(); got != "line one\nline two" {
-		t.Errorf("input.Value() = %q, want %q (burst Enter must insert a newline)", got, "line one\nline two")
+	if len(m.entries) == 0 || m.entries[0].Content != "line one" {
+		t.Errorf("entries = %+v, want 'line one' submitted", m.entries)
 	}
-	if len(m.entries) != 0 {
-		t.Errorf("burst paste submitted mid-way: %d entries", len(m.entries))
+	if got := m.input.Value(); got != "line two" {
+		t.Errorf("input.Value() = %q, want 'line two'", got)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -47,10 +46,7 @@ func newInput() textarea.Model {
 	// Pasted text is unaffected by any of this: bracketed-paste content
 	// arrives as one KeyRunes message with Paste set (never as
 	// KeyEnter/KeyCtrlJ), and the textarea's sanitizer normalizes \r and
-	// \r\n to real \n, so multi-line pastes keep actual newlines. On the
-	// Windows console driver (no bracketed paste), a paste arrives as a
-	// keystroke burst and handleKey's burst detection converts its Enter
-	// events to newlines instead of submitting mid-paste.
+	// \r\n to real \n, so multi-line pastes keep actual newlines.
 	input.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 
 	// The default bubbles theme renders the active line's typed text in
@@ -82,12 +78,11 @@ func newInput() textarea.Model {
 // handleKey processes keyboard input: global shortcuts first, then
 // message submission, then falls back to normal text-input editing.
 // newlineEnter reports whether an Enter key event should insert a newline
-// rather than submit: modified chords always (Alt+Enter is the reliably
+// rather than submit: modified chords (Alt+Enter is the reliably
 // distinguishable one on every input driver; "shift+enter" only exists on
-// input stacks that report it), and a plain Enter when it arrives inside a
-// paste keystroke burst, where it carries a pasted newline.
-func newlineEnter(msg tea.KeyMsg, inPasteBurst bool) bool {
-	return msg.Alt || msg.String() == "shift+enter" || inPasteBurst
+// input stacks that report it).
+func newlineEnter(msg tea.KeyMsg) bool {
+	return msg.Alt || msg.String() == "shift+enter"
 }
 
 // normalizeNewlines converts CRLF and lone CR to LF. The textarea's rune
@@ -100,24 +95,19 @@ func normalizeNewlines(s string) string {
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Bracketed paste arrives as one KeyRunes message with Paste set.
-	// Insert it verbatim (modulo newline normalization) so multi-line
-	// clipboard content keeps real newline characters, and so it can never
-	// match a key binding. Being atomic, a paste also never arms the
-	// paste-burst window below: an Enter following it is always the
-	// user's, never a pasted newline.
+	// A short single-line paste joins the input verbatim (modulo newline
+	// normalization); everything else collapses into a compact
+	// placeholder token backed by the paste store, so a large clipboard
+	// drop renders in one cheap insert instead of being streamed into
+	// the textarea character by character, and the original content is
+	// reconstructed verbatim at submission (expandPastes in
+	// acceptInput).
 	if msg.Type == tea.KeyRunes && msg.Paste {
-		m.input.InsertString(normalizeNewlines(string(msg.Runes)))
+		m.insertPaste(normalizeNewlines(string(msg.Runes)))
 		m.updateSuggestions()
 		m.layout()
 		return m, nil
 	}
-
-	// Track inter-key timing for paste-burst detection (see
-	// pasteBurstWindow): on drivers without bracketed paste (the Windows
-	// console API), a paste arrives as a rapid keystroke burst whose
-	// embedded newlines are plain Enter events.
-	inPasteBurst := time.Since(m.lastKeyAt) <= pasteBurstWindow
-	m.lastKeyAt = time.Now()
 
 	switch msg.Type {
 
@@ -133,7 +123,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// quitting only when there's nothing else it could mean. Ctrl+C
 		// remains the unconditional quit.
 		if m.input.Value() != "" {
-			m.input.Reset()
+			m.resetInput()
 			m.suggestions = nil
 			m.suggestionCursor = 0
 			m.layout()
@@ -163,10 +153,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		// Enter-with-modifier inserts a real newline instead of
 		// submitting; see newInput for which chords can actually reach
-		// here per platform. An unmodified Enter arriving inside a
-		// keystroke burst is a pasted newline (no bracketed paste on the
-		// Windows console driver), not a deliberate submit.
-		if newlineEnter(msg, inPasteBurst) {
+		// here per platform.
+		if newlineEnter(msg) {
 			m.input.InsertString("\n")
 			m.updateSuggestions()
 			m.layout()
@@ -200,6 +188,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Re-arm orchestration delivery before stream creation so
+		// the run snapshot's root scope captures the active sink.
+		m.attachOrchSink()
+
 		streamCtx, cancel := context.WithCancel(context.Background())
 		stream, err := m.runtime.Stream(
 			streamCtx,
@@ -207,6 +199,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		)
 		if err != nil {
 			cancel()
+			m.detachOrchSink()
 			m.waiting = false
 			m.entries = append(m.entries, chatEntry{Role: roleError, Content: fmt.Sprintf("stream failed: %v", err)})
 			m.setNotice(statusError, fmt.Sprintf("stream failed: %v", err))
@@ -235,10 +228,27 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.movePalette(1)
 			return m, nil
 		}
+
+	case tea.KeyBackspace:
+		if m.deletePlaceholderAroundCursor(false) {
+			m.prunePastes()
+			m.updateSuggestions()
+			m.layout()
+			return m, nil
+		}
+
+	case tea.KeyDelete:
+		if m.deletePlaceholderAroundCursor(true) {
+			m.prunePastes()
+			m.updateSuggestions()
+			m.layout()
+			return m, nil
+		}
 	}
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.prunePastes()
 	m.updateSuggestions()
 	// A paste (or any edit) may have changed the input's line count or
 	// the suggestion list, either of which changes how tall the footer
@@ -258,11 +268,16 @@ func isNewCommand(value string) bool {
 // Split from handleKey so the submission pipeline is testable without a
 // live runtime; the newline characters in task are stored verbatim.
 func (m *model) acceptInput() (startedStream bool, quit bool) {
-	task := strings.TrimSpace(m.input.Value())
+	// Placeholder tokens are reconstructed into their original pasted
+	// content before anything downstream sees the text — before the
+	// empty check, command dispatch, session persistence, and
+	// streaming — so a submitted prompt is exactly what the user
+	// pasted, never the compact token.
+	task := strings.TrimSpace(expandPastes(m.input.Value(), m.pastes))
 	if task == "" {
 		return false, false
 	}
-	m.input.Reset()
+	m.resetInput()
 	m.suggestions = nil
 	m.suggestionCursor = 0
 	m.layout() // the input box just shrank back to one line

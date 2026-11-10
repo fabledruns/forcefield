@@ -173,6 +173,52 @@ type model struct {
 	// simply skipped.
 	notify func(tea.Msg)
 
+	// orchSink bridges the runtime's structured orchestration events
+	// into the event loop (see tuiOrchSink). Constructed alongside
+	// notify in Start — only when the feature is enabled — attached to
+	// the freshly built runtime by installRuntime, and re-armed per run
+	// by the submit path; nil in test models and whenever orchestration
+	// is disabled, in which case orchestration events simply never
+	// arrive. The pointer is shared across model copies.
+	orchSink   *tuiOrchSink
+	sinkHolder *orchSinkHolder
+
+	// orchEnabled mirrors cfg.Orchestration.Enabled (default false,
+	// mirrored in newStartingModel). It gates the opening animation,
+	// the quadrant canvas, and sink attach/detach. Feature state is
+	// never inferred from unrelated UI flags.
+	orchEnabled bool
+
+	// orchGen tags the current orchestration session generation. It is
+	// bumped only at the sites that reset m.agents wholesale (/clear,
+	// /new, session switch) — never at turn end. The sink stamps it
+	// onto events at emission time and Update drops orchDeliverMsg
+	// whose gen no longer matches; streamGen is deliberately not
+	// reused because stopStream bumps it on every turn end, which
+	// would deafen the panel after the first turn.
+	orchGen uint64
+
+	// orchActive is the live orchestration-session flag: true only while
+	// child agents are queued or running. The normal TUI is the default
+	// surface; the quadrant canvas takes over when a delegation is
+	// actually accepted and a child starts executing (the orch feed's
+	// AgentSpawned — never on configuration, tool availability, or
+	// rejected delegations), and hands back when agentsState has no
+	// non-terminal row left. Reset wherever orchGen is reset.
+	orchActive bool
+
+	// orchHardDrops is the last observed cumulative count of hard
+	// queue drops (lifecycle events lost). The transcript reports new
+	// loss exactly once per increase; see observeOrchDrops.
+	orchHardDrops int
+
+	// anim owns the opening animation's state machine (see
+	// opening_anim.go). It is started once per process at the
+	// orchestration opening transition (the first WindowSizeMsg, when
+	// the canvas first renders) and is never reset by /clear, /new, or
+	// session switches (PLAN §5.3).
+	anim openingAnimState
+
 	// permissionPrompt is non-nil while a tool's "ask" permission
 	// decision is awaiting an answer. See permission.go and asker.go.
 	permissionPrompt *permissionPrompt
@@ -232,14 +278,16 @@ type model struct {
 	// collapsible Thinking blocks, not here.
 	showActivity bool
 
-	// lastKeyAt timestamps the most recent key event, for paste-burst
-	// detection: input drivers without bracketed paste (the Windows
-	// console API) deliver a paste as a rapid keystroke burst whose
-	// newlines are plain Enter events. A KeyEnter arriving within
-	// pasteBurstWindow of the previous key is treated as a pasted newline,
-	// not a submit. The window sits well under keyboard auto-repeat
-	// (~33ms at the default Windows rate), which never bursts.
-	lastKeyAt time.Time
+	// pastes backs the input's paste placeholders: the token text in
+	// the input box maps to the original pasted content, which is
+	// reconstructed verbatim at submission. Entries live exactly as
+	// long as their tokens are in the input (see paste_placeholder.go
+	// and prunePastes).
+	pastes map[string]string
+	// pasteSeq issues the unique id each placeholder token carries, so
+	// two pastes in one message can never share a token even when they
+	// have the same line count.
+	pasteSeq int
 
 	// mouseEnabled mirrors whether Bubble Tea's mouse tracking is on.
 	// It is always enabled so cursor/mouse interactions (clicks, wheel,
@@ -270,7 +318,3 @@ type model struct {
 	tcacheContent string
 	tcacheSpans   []contentSpan
 }
-
-// pasteBurstWindow is the maximum gap between keystrokes for the run to
-// count as one paste burst; see model.lastKeyAt.
-const pasteBurstWindow = 25 * time.Millisecond

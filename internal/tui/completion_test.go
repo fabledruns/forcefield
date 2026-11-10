@@ -3,17 +3,14 @@ package tui
 import (
 	"strings"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 )
 
-// keyPress resets the paste-burst clock so a synthetic key is read as a
-// deliberate press, never as a Windows-console paste burst.
+// keyPress sends a synthetic key to handleKey.
 func keyPress(m model, typ tea.KeyType) (model, tea.Cmd) {
-	m.lastKeyAt = time.Time{}
 	next, cmd := m.handleKey(tea.KeyMsg{Type: typ})
 	return next.(model), cmd
 }

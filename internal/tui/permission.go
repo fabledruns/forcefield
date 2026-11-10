@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -222,7 +223,7 @@ func (p *permissionPrompt) formatToolBlock() string {
 			truncated := false
 			// Truncate very long strings (e.g. write_file content) but make the truncation explicit
 			if len(s) > 300 {
-				s = s[:300] + fmt.Sprintf("… (%d bytes total, truncated)", origLen)
+				s = truncateBytes(s, 300) + fmt.Sprintf("… (%d bytes total, truncated)", origLen)
 				truncated = true
 			}
 			// Quote the string for clarity, but keep it readable
@@ -230,7 +231,7 @@ func (p *permissionPrompt) formatToolBlock() string {
 				// Multi-line: show first line only in the block, full is in details on expand
 				first := strings.SplitN(s, "\n", 2)[0]
 				if len(first) > 80 {
-					first = first[:80] + "…"
+					first = truncateBytes(first, 80) + "…"
 				}
 				if truncated {
 					val = fmt.Sprintf("%q… (%d bytes total, truncated)", first, origLen)
@@ -255,13 +256,28 @@ func (p *permissionPrompt) formatToolBlock() string {
 			// unaffected.
 			val = redact.Scrub(string(raw))
 			if len(val) > 200 {
-				val = val[:200] + "…"
+				val = truncateBytes(val, 200) + "…"
 			}
 		}
 		b.WriteString("\n")
 		b.WriteString(permissionHelpStyle.Render(fmt.Sprintf("  %s: %s", k, val)))
 	}
 	return b.String()
+}
+
+// truncateBytes cuts s to at most max bytes without splitting a UTF-8
+// character: the cut is moved back to the nearest character boundary, so
+// the rendered text stays valid UTF-8. The byte budget is preserved, so
+// an ASCII string is cut exactly where a plain byte slice cut it.
+func truncateBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // actionDescription describes what the tool wants to do in words a human

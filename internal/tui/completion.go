@@ -82,6 +82,9 @@ func (m *model) selectPalette(idx int) {
 	}
 	m.input.SetValue("/" + m.suggestions[idx].Name())
 	m.input.CursorEnd()
+	// Palette completion replaces whatever the input held, including
+	// any paste placeholder tokens; their store entries are dead now.
+	m.prunePastes()
 	m.updateSuggestions()
 	m.layout()
 }

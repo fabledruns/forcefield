@@ -127,10 +127,7 @@ func TestStartupFirstFrameBeforeReady(t *testing.T) {
 func TestStartupSubmitBlockedWhileStarting(t *testing.T) {
 	m := newStartingModel(&config.Config{}, session.New(), &tuiAsker{})
 	m.registry = newRegistry()
-	// SetValue (not keystroke typing) keeps the test independent of
-	// paste-burst timing: the zero lastKeyAt reads as a deliberate submit.
 	m.input.SetValue("hello")
-	m.lastKeyAt = time.Now().Add(-time.Second)
 	next, _ := m.Update(enterMsg())
 	got := next.(model)
 	if got.waiting {
@@ -150,7 +147,6 @@ func TestStartupQuitAllowedWhileStarting(t *testing.T) {
 	m := newStartingModel(&config.Config{}, session.New(), &tuiAsker{})
 	m.registry = newRegistry()
 	m.input.SetValue("/quit")
-	m.lastKeyAt = time.Now().Add(-time.Second)
 	next, cmd := m.Update(enterMsg())
 	got := next.(model)
 	if !got.quitting || cmd == nil {
@@ -187,7 +183,6 @@ func TestStartupFailureBlocksSubmit(t *testing.T) {
 	next, _ := m.Update(runtimeReadyMsg{err: errStartupTestSentinel})
 	got := next.(model)
 	got.input.SetValue("hello")
-	got.lastKeyAt = time.Now().Add(-time.Second)
 	after, _ := got.Update(enterMsg())
 	if after.(model).waiting {
 		t.Fatal("stream started after failed init")

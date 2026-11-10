@@ -90,10 +90,12 @@ func (m *model) beginTurn(task string, kind turnKind) error {
 	if kind == turnPlan {
 		mode = runtime.ModePlan
 	}
+	m.attachOrchSink()
 	streamCtx, cancel := context.WithCancel(context.Background())
 	stream, err := m.runtime.StreamChatWithMode(streamCtx, m.session.ProviderMessages(), mode)
 	if err != nil {
 		cancel()
+		m.detachOrchSink()
 		m.waiting = false
 		m.entries = append(m.entries, chatEntry{Role: roleError, Content: fmt.Sprintf("stream failed: %v", err)})
 		m.setNotice(statusError, fmt.Sprintf("stream failed: %v", err))

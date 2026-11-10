@@ -47,6 +47,12 @@ func (m model) switchToSession(id string) (tea.Model, tea.Cmd) {
 	// The agents panel describes the active session's children; stale
 	// rows have no future events to retire them.
 	m.agents = agentsState{}
+	m.bumpOrchGen()
+	m.orchActive = false
+	// A new orchestration session re-runs the opening animation once
+	// (see Clear): the reset zeroes the animation state so this
+	// session's first activation latches a fresh timeline.
+	m.anim = openingAnimState{}
 
 	// Switch runtime agent to the new session's agent, if any.
 	desired := strings.TrimSpace(sess.Agent)
@@ -446,6 +452,17 @@ func (m model) View() string {
 	}
 	if m.selectPicker != nil {
 		return m.selectPicker.view(m.width, m.height)
+	}
+
+	// Orchestration mode is on-demand (Phase 5): the normal TUI is the
+	// default surface, and the quadrant canvas replaces the
+	// transcript+panel body only while child agents are queued or
+	// running (m.orchActive). Header, footer, pickers, and overlays
+	// above are untouched. With the feature off — or before the first
+	// accepted delegation, or after the last child finishes — this line
+	// never runs and the classic rendering below is byte-identical.
+	if m.orchEnabled && m.orchActive {
+		return m.renderOrchestrationScreen()
 	}
 
 	if panel := m.renderAgentsPanel(m.width); panel != "" {
