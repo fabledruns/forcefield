@@ -205,6 +205,12 @@ only as far as stated here — nothing beyond this list is claimed.
   (`SIGKILL`, `SIGHUP` on terminal close) bypasses all teardown —
   long sessions belong under `tmux`/`nohup`. See
   [Recovery](Recovery.md).
+- **WSL2 subprocess lifecycle limitation:**
+  - On Windows hosts executing commands via WSL (`sandbox.mode: wsl` or native relay), Forcefield assigns the host `wsl.exe` process to a Windows Job Object configured with `KillOnJobClose`.
+  - When a command is cancelled or times out, the Job Object terminates the host-side `wsl.exe` relay process tree immediately.
+  - **Ordinary foreground cancellation remains fully supported:** terminating the `wsl.exe` relay stops foreground command pipelines and returns an interrupted/cancelled result to Forcefield.
+  - **Detached Linux processes may survive relay termination:** processes explicitly detached from the session inside Linux—such as those started using `nohup`, backgrounding (`&`), `disown`, or daemon double-forking—reparent to the Linux `init` process (`systemd` or `/init`) inside the WSL2 Hyper-V utility VM and may continue executing after the Windows relay exits. Killing `wsl.exe` does not guarantee termination of every process inside the WSL2 VM.
+  - **Workload guidance:** Forcefield does not inject unsafe guest-level process sweeps. Long-running or background workloads executed under WSL should employ explicit lifecycle management, such as writing PID files and issuing deliberate cleanup commands.
 - **WSL Windows-side networking is not isolated,** and large
   commands stage to a `%TEMP%` script visible via `/mnt` (leaked if
   the process is SIGKILLed before cleanup).

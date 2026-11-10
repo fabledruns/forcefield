@@ -305,16 +305,83 @@ provider, err := registry.Create(providers.Spec{Type: "openai-compatible", BaseU
 
 Switching provider or model rebuilds step 1-2 only; the loop, sessions, and tools are untouched.
 
-## Run-Scoped Cloning
+## Run-Scoped Cloning and Multi-Agent Concurrency
 
-Delegated child runs run concurrently with their parent, but a provider instance serializes requests through its single-request gate and carries per-run reasoning state. To keep parent and children independent, built-in adapters implement `RunScopedProvider` (`CloneForRun`): each child run clones the provider before its first turn. A clone
+When agent orchestration delegates subtasks, multiple child agents run concurrently with each other and alongside the parent agent. However, Forcefield providers maintain mutable per-run state—most critically a single-slot request gate (`requestGate`, a `chan struct{}` of capacity 1) designed to prevent accidental duplicate requests and protect upstream providers against rate-limit bursts.
 
-- owns a fresh request gate and zero reasoning state (never shared with the original or other runs),
-- shares only thread-safe objects: the `*http.Client` with its connection pool and the immutable `Spec`-derived configuration,
-- preserves endpoint, model selection, authentication, and protocol selection exactly, and
-- fails with an error rather than returning a shared mutable instance.
+If concurrent agent runs were to share a single provider instance, the second agent invoking `StreamChat` would collide with the first at `requestGate.acquire()`, immediately failing with `ErrInFlight` (`"another inference request is already in flight for this provider"`). Furthermore, per-run reasoning selections and protocol stream states would collide.
 
-Vertex is the exception to value copying: it embeds a mutex-guarded lazy token source, so its clone starts with empty token state and re-resolves credentials lazily. Azure clones its inner OpenAI-compatible transport (keeping the deployment-scoped configuration); the OpenCode routers clone the resolved wire-protocol adapter. External and test providers do not implement the capability and keep the legacy shared-instance contract.
+To decouple concurrent agents while maintaining shared resources, Forcefield defines the `RunScopedProvider` interface:
+
+```go
+type RunScopedProvider interface {
+    CloneForRun() (ModelProvider, error)
+}
+```
+
+### How Built-in Providers Implement Run-Scoped Cloning
+
+Every built-in production adapter implements `RunScopedProvider`:
+- `OpenAICompatible`
+- `AnthropicProvider`
+- `GeminiProvider`
+- `VertexProvider`
+- `BedrockProvider`
+- `OllamaProvider`
+- `OpenAIResponses`
+- `AzureProvider` (clones its inner `OpenAICompatible` transport)
+- `OpenCodeRouter` (clones the resolved wire-protocol adapter)
+
+A compile-time assertion in `internal/providers/runscope.go` (`var _ RunScopedProvider = (*AnthropicProvider)(nil)`, etc.) guarantees that no built-in adapter can omit cloning.
+
+When delegation launches a child agent in `internal/runtime/delegation_tool.go`, the runtime invokes `providers.CloneForRun(scope.snap.provider)`. The helper inspects the provider:
+- If the provider implements `RunScopedProvider`, `CloneForRun()` is invoked. The runtime verifies that the clone is non-nil and is a distinct instance pointer (`got != p`). A clone that cannot be created cleanly returns an error, failing the delegation closed rather than risking mutable state sharing.
+- If the provider does not implement `RunScopedProvider`, `CloneForRun` reports `cloneable = false` and returns the existing provider under the legacy shared-instance contract.
+
+### Shared Resources vs. Isolated Mutable State
+
+Run-scoped cloning cleanly separates thread-safe infrastructure from per-run mutable state:
+
+1. **Shared Thread-Safe Objects:**
+   - **`*http.Client` and TCP Connection Pools:** HTTP transports, TLS sessions, and persistent keep-alive connection pools are shared across all clones. This avoids socket churn, redundant handshakes, and resource exhaustion during fan-out delegation.
+   - **Immutable Configuration:** `Spec` fields, base URLs, model identifiers, API keys, and custom headers are reused directly without re-parsing or memory duplication.
+
+2. **Isolated Mutable Per-Run State:**
+   - **Request Gate:** Each clone allocates a fresh `requestGate` (`newRequestGate()`) with its own single-capacity channel. Sibling child runs and parent turns never compete for the same gate.
+   - **Reasoning State:** Each clone maintains independent reasoning effort parameters.
+   - **Authentication State:** While static keys share configuration, dynamic credentials initialize safely. For example, `VertexProvider` starts its clone with fresh mutex-guarded ADC token resolution so OAuth refresh cycles never race across runs.
+
+### Third-Party Provider Implementation Guide
+
+Third-party or custom provider authors who wish to support concurrent multi-agent delegation must implement `RunScopedProvider`:
+
+1. **Implement `RunScopedProvider`:**
+   ```go
+   func (p *CustomProvider) CloneForRun() (providers.ModelProvider, error) {
+       return &CustomProvider{
+           client: p.client,        // reuse thread-safe HTTP client
+           spec:   p.spec,          // reuse immutable spec/config
+           gate:   newRequestGate(),// allocate fresh request synchronization
+       }, nil
+   }
+   ```
+2. **Contract Requirements:**
+   - **Distinct Instance:** Return a newly allocated pointer. Returning `nil` or `p` directly causes `CloneForRun` to reject the clone with an error.
+   - **Independence:** Never share mutable synchronization primitives (channels, mutexes guarding active requests, reasoning buffers) with the parent or sibling clones.
+   - **Fail Closed:** If a clone cannot be initialized, return a clear error wrapping the cause. Never fall back to returning a shared instance.
+
+### Behavior for Providers Without `RunScopedProvider`
+
+Third-party providers that do not implement `RunScopedProvider` do **not** automatically receive the same concurrency guarantees as built-in providers:
+- The runtime falls back to the legacy shared-instance contract.
+- If the agent loop runs sequentially (single-turn chat without subagent delegation), the provider functions normally.
+- If concurrent delegation is invoked, child agents share the parent's single provider instance. If the custom provider enforces concurrency gating or serial locking, concurrent turns will block or fail with in-flight errors.
+- Forcefield does not attempt to heuristically deep-copy unknown structs via reflection, as external providers may contain non-copyable state or mutexes.
+
+### Cancellation, Cleanup, and Concurrency Behavior
+
+- **Cancellation:** When a child agent run completes, times out, or is cancelled, its `context.Context` is cancelled. Providers must release their request gate immediately on return or stream termination via `defer gate.release()`.
+- **Draining & Gate Race Recovery:** When a child run is terminated mid-stream, its network drain may take a few milliseconds to unwind. If the parent or a sibling agent initiates a turn before the cancelled child's gate release finishes draining, the runtime's turn loop (`internal/runtime/runtime_turn.go`) recognizes `providers.IsInFlight(err)` via `canRetryTurn` (when no tokens have been emitted yet) and executes a bounded backoff retry, cleanly recovering without aborting the run.
 
 ## Design Notes
 

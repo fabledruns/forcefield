@@ -12,6 +12,7 @@ func TestParseMode(t *testing.T) {
 	for in, want := range map[string]Mode{
 		"":         ModeNative,
 		"native":   ModeNative,
+		"standard": ModeNative,
 		"wsl":      ModeWSL,
 		"isolated": ModeIsolated,
 	} {

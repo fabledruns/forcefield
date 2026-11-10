@@ -65,6 +65,22 @@ func (e *linuxExecutor) support() (int, error) {
 	return e.supportABI, e.supportErr
 }
 
+// landlockDiagnostic formats an actionable error when Landlock is unavailable
+// or unsupported on the running Linux kernel. It preserves ErrBackendUnavailable
+// wrapping and fail-closed behavior while explaining how to verify kernel
+// support and how to configure standard execution when isolation is unavailable.
+func landlockDiagnostic(err error, abi int) error {
+	var detail string
+	if err != nil {
+		detail = fmt.Sprintf("landlock unavailable: %v", err)
+	} else if abi < 1 {
+		detail = fmt.Sprintf("landlock reported unsupported ABI %d", abi)
+	} else {
+		detail = "landlock unsupported"
+	}
+	return fmt.Errorf("%w: %s (sandbox.mode = \"isolated\" requires a Landlock-capable Linux kernel [Linux 5.13+ with CONFIG_SECURITY_LANDLOCK=y and 'landlock' in lsm]; verify support via 'cat /sys/kernel/security/lsm' or 'grep LANDLOCK /boot/config-$(uname -r)'; if kernel-level isolation is unavailable, configure sandbox.mode = \"standard\")", ErrBackendUnavailable, detail)
+}
+
 // Probe verifies the isolated backend is usable right now: Bash
 // present, Landlock available, and every configured extra path
 // resolvable. Anything else refuses to run.
@@ -72,10 +88,8 @@ func (e *linuxExecutor) Probe(ctx context.Context) error {
 	if _, err := bashLookPath("bash"); err != nil {
 		return fmt.Errorf("bash was not found on PATH; Forcefield requires Bash for shell commands")
 	}
-	if abi, err := e.support(); err != nil {
-		return fmt.Errorf("%w: landlock unavailable: %v (sandbox.mode = \"isolated\" requires a Landlock-capable Linux kernel)", ErrBackendUnavailable, err)
-	} else if abi < 1 {
-		return fmt.Errorf("%w: landlock reported impossible ABI %d", ErrBackendUnavailable, abi)
+	if abi, err := e.support(); err != nil || abi < 1 {
+		return landlockDiagnostic(err, abi)
 	}
 	// Misconfigured extras fail here (startup/doctor) rather than
 	// per-command inside the helper.
@@ -172,8 +186,8 @@ func (e *linuxExecutor) Prepare(ctx context.Context, req Request) (*Prepared, er
 	if err := e.policy.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBackendUnavailable, err)
 	}
-	if _, err := e.support(); err != nil {
-		return nil, fmt.Errorf("%w: landlock unavailable: %v (commands refuse to run rather than run unconfined)", ErrBackendUnavailable, err)
+	if abi, err := e.support(); err != nil || abi < 1 {
+		return nil, landlockDiagnostic(err, abi)
 	}
 	dir, err := resolveWithinWorkspace(e.policy.Workspace, req.Dir)
 	if err != nil {

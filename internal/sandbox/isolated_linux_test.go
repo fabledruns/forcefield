@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"forcefield/internal/sandbox/boundarytest"
 	"forcefield/internal/sandbox/landlock"
 )
@@ -125,6 +127,84 @@ func TestIsolatedFailsClosedWithoutLandlock(t *testing.T) {
 	if _, err := ex.Prepare(context.Background(), Request{Command: "echo hi"}); !errors.Is(err, ErrBackendUnavailable) {
 		t.Errorf("Prepare error = %v, want ErrBackendUnavailable", err)
 	}
+}
+
+// TestIsolatedDiagnostic_UnsupportedABI pins the diagnostic requirement:
+// when the kernel reports ABI 0 or unsupported ABI, Probe and Prepare fail
+// with ErrBackendUnavailable and return an actionable diagnostic explaining
+// how to inspect kernel support and how to configure standard execution.
+func TestIsolatedDiagnostic_UnsupportedABI(t *testing.T) {
+	orig := landlockABIFunc
+	t.Cleanup(func() { landlockABIFunc = orig })
+	landlockABIFunc = func() (int, error) { return 0, nil }
+
+	ex, err := NewExecutor(Policy{Mode: ModeIsolated, Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	assertDiagnostic := func(err error, op string) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s unexpectedly succeeded, want error", op)
+		}
+		if !errors.Is(err, ErrBackendUnavailable) {
+			t.Errorf("%s error = %v, want ErrBackendUnavailable", op, err)
+		}
+		msg := err.Error()
+		for _, required := range []string{
+			"landlock reported unsupported ABI 0",
+			"/sys/kernel/security/lsm",
+			"CONFIG_SECURITY_LANDLOCK",
+			`sandbox.mode = "standard"`,
+		} {
+			if !strings.Contains(msg, required) {
+				t.Errorf("%s diagnostic missing %q; got:\n%s", op, required, msg)
+			}
+		}
+	}
+
+	assertDiagnostic(ex.Probe(context.Background()), "Probe")
+	_, prepErr := ex.Prepare(context.Background(), Request{Command: "echo hi"})
+	assertDiagnostic(prepErr, "Prepare")
+}
+
+// TestIsolatedDiagnostic_InitializationFailure pins actionable diagnostics when
+// the Landlock syscall is not implemented (e.g. ENOSYS on kernels < 5.13).
+func TestIsolatedDiagnostic_InitializationFailure(t *testing.T) {
+	orig := landlockABIFunc
+	t.Cleanup(func() { landlockABIFunc = orig })
+	landlockABIFunc = func() (int, error) { return -1, unix.ENOSYS }
+
+	ex, err := NewExecutor(Policy{Mode: ModeIsolated, Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	assertDiagnostic := func(err error, op string) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s unexpectedly succeeded, want error", op)
+		}
+		if !errors.Is(err, ErrBackendUnavailable) {
+			t.Errorf("%s error = %v, want ErrBackendUnavailable", op, err)
+		}
+		msg := err.Error()
+		for _, required := range []string{
+			"landlock unavailable",
+			"/sys/kernel/security/lsm",
+			"CONFIG_SECURITY_LANDLOCK",
+			`sandbox.mode = "standard"`,
+		} {
+			if !strings.Contains(msg, required) {
+				t.Errorf("%s diagnostic missing %q; got:\n%s", op, required, msg)
+			}
+		}
+	}
+
+	assertDiagnostic(ex.Probe(context.Background()), "Probe")
+	_, prepErr := ex.Prepare(context.Background(), Request{Command: "echo hi"})
+	assertDiagnostic(prepErr, "Prepare")
 }
 
 // TestIsolatedProbeValidatesExtras pins early failure: a missing

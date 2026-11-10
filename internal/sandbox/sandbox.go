@@ -35,17 +35,17 @@ const (
 
 // ParseMode converts a configuration string into a Mode. Empty means
 // native, preserving behavior for users who have never configured a
-// sandbox.
+// sandbox. "standard" is accepted as an alias for native.
 func ParseMode(s string) (Mode, error) {
 	switch s {
-	case "", string(ModeNative):
+	case "", string(ModeNative), "standard":
 		return ModeNative, nil
 	case string(ModeWSL):
 		return ModeWSL, nil
 	case string(ModeIsolated):
 		return ModeIsolated, nil
 	default:
-		return "", fmt.Errorf("unknown sandbox mode %q (supported: \"native\", \"wsl\", \"isolated\")", s)
+		return "", fmt.Errorf("unknown sandbox mode %q (supported: \"native\", \"standard\", \"wsl\", \"isolated\")", s)
 	}
 }
 
