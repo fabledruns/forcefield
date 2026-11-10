@@ -17,6 +17,7 @@ vendor/
 .env
 .env.*
 !.env.example
+*.pem
 
 # OS
 .DS_Store
