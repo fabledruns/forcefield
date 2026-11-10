@@ -53,7 +53,7 @@ var Catalog = []Preset{
 		Name:        "llama.cpp",
 		Description: "Local models served by llama-server.",
 		Type:        "openai-compatible",
-		BaseURL:     "http://localhost:8080/v1",
+		BaseURL:     "http://localhost:9931/v1",
 		Auth:        AuthNone,
 		Scope:       ScopeLocal,
 		// No fallback models: the served model ID is user-defined

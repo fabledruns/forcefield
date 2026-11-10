@@ -215,13 +215,25 @@ func (e *linuxExecutor) Prepare(ctx context.Context, req Request) (*Prepared, er
 		cleanup()
 		return nil, err
 	}
-	// TMPDIR is filtered from both inheritance and explicit extras
-	// before the private directory is appended: syscall.Exec performs
-	// no deduplication (unlike exec.Cmd), and libc getenv honors the
-	// first match, so duplicates would let the documented
-	// private-tmp-wins guarantee depend on lookup order.
-	env := append(stripCredentialEnv(os.Environ(), append([]string{"TMPDIR"}, e.policy.CredentialEnv...)), stripTMPDIRExtras(req.ExtraEnv)...)
-	env = append(env, "TMPDIR="+tmpDir)
+	// TMPDIR, GIT_CONFIG_GLOBAL, and GIT_CONFIG_NOSYSTEM are filtered from
+	// both inheritance and explicit extras before the isolated security
+	// defaults are appended: syscall.Exec performs no deduplication (unlike
+	// exec.Cmd), and libc getenv honors the first match, so duplicates would
+	// make the winning value depend on slice order.
+	//
+	// Precedence: Isolated sandbox security defaults strictly take precedence
+	// over both host environment variables and caller-supplied ExtraEnv.
+	// - TMPDIR is pinned to the isolated private temp directory.
+	// - GIT_CONFIG_GLOBAL is pinned to /dev/null so git commands cannot
+	//   attempt to read ~/.gitconfig (which is denied by Landlock and causes exit 128).
+	// - GIT_CONFIG_NOSYSTEM is pinned to 1 so git does not probe /etc/gitconfig.
+	stripVars := append(append([]string(nil), isolatedSecurityEnvVars...), e.policy.CredentialEnv...)
+	env := append(stripCredentialEnv(os.Environ(), stripVars), stripIsolatedExtras(req.ExtraEnv)...)
+	env = append(env,
+		"TMPDIR="+tmpDir,
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+	)
 	helperReq := helperRequest{
 		Version:    helperVersion,
 		Command:    req.Command,
@@ -267,17 +279,54 @@ func (e *linuxExecutor) Prepare(ctx context.Context, req Request) (*Prepared, er
 	return &Prepared{Cmd: cmd, Dir: dir, Cleanup: cleanups}, nil
 }
 
-// stripTMPDIRExtras drops explicit per-command TMPDIR entries: the
-// private temp directory always wins (see Prepare), and leaving a
-// duplicate in would make the winner depend on env lookup order.
-func stripTMPDIRExtras(extra []string) []string {
+// isolatedSecurityEnvVars lists environment variable names reserved and
+// enforced by the isolated sandbox backend.
+//
+// Precedence:
+// The isolated sandbox security defaults strictly take precedence over both
+// inherited host environment variables and caller-supplied Request.ExtraEnv.
+// Neither host inheritance nor explicit ExtraEnv can override or duplicate
+// these variables:
+// - TMPDIR: always points to the isolated private temporary directory.
+// - GIT_CONFIG_GLOBAL: pinned to /dev/null to ensure git commands do not
+//   attempt to read $HOME/.gitconfig. Under Landlock confinement, $HOME is
+//   intentionally excluded from the sandbox's read-only corpus; unhandled
+//   reads fail with EACCES and cause git to exit with fatal error code 128.
+// - GIT_CONFIG_NOSYSTEM: pinned to 1 so git does not probe /etc/gitconfig.
+var isolatedSecurityEnvVars = []string{
+	"TMPDIR",
+	"GIT_CONFIG_GLOBAL",
+	"GIT_CONFIG_NOSYSTEM",
+}
+
+func isIsolatedReservedEnv(name string) bool {
+	for _, reserved := range isolatedSecurityEnvVars {
+		if strings.EqualFold(name, reserved) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripIsolatedExtras drops explicit per-command entries for variables
+// whose values are strictly controlled by the isolated sandbox:
+// TMPDIR (always points to the private temp dir), GIT_CONFIG_GLOBAL
+// (always /dev/null), and GIT_CONFIG_NOSYSTEM (always 1). Explicit per-command
+// extras cannot override or weaken these security defaults.
+func stripIsolatedExtras(extra []string) []string {
 	out := extra[:0:0]
 	for _, kv := range extra {
-		if name, _, _ := strings.Cut(kv, "="); name != "TMPDIR" {
+		if name, _, _ := strings.Cut(kv, "="); !isIsolatedReservedEnv(name) {
 			out = append(out, kv)
 		}
 	}
 	return out
+}
+
+// stripTMPDIRExtras is preserved for backwards compatibility with any
+// callers expecting the previous helper name.
+func stripTMPDIRExtras(extra []string) []string {
+	return stripIsolatedExtras(extra)
 }
 
 // Describe reports what the isolated backend enforces. Filesystem

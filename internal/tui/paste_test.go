@@ -38,12 +38,13 @@ func pasteMsg(text string) tea.KeyMsg {
 	}
 }
 
-func TestPasteWithNewlinesIsInsertedNotSubmitted(t *testing.T) {
+func TestPasteWithNewlinesBecomesPlaceholderNotSubmitted(t *testing.T) {
 	// Indentation uses spaces here (not a literal tab) because the
 	// underlying textarea widget expands tabs to 4 spaces on input, same
 	// as it would for a typed tab -- an intentional, pre-existing widget
-	// behavior, not something this fix introduces. Newlines are what the
-	// bug was about, and those must survive completely unmodified.
+	// behavior. Newlines are what the old bug was about; the paste now
+	// collapses to one placeholder token and the original content keeps
+	// its newlines and indentation verbatim in the store.
 	pasted := "line one\n    line two indented\n\nline four after a blank line"
 
 	m := newTestModel()
@@ -53,11 +54,15 @@ func TestPasteWithNewlinesIsInsertedNotSubmitted(t *testing.T) {
 	if len(got.entries) != 0 {
 		t.Fatalf("paste was treated as a submission: got %d transcript entries, want 0", len(got.entries))
 	}
-	if got.input.Value() != pasted {
-		t.Errorf("input.Value() = %q, want %q (newlines/indentation must be preserved verbatim)", got.input.Value(), pasted)
+	token := pastePlaceholder(4, 1)
+	if got.input.Value() != token {
+		t.Errorf("input.Value() = %q, want the compact placeholder %q", got.input.Value(), token)
 	}
-	if got.input.LineCount() != 4 {
-		t.Errorf("input.LineCount() = %d, want 4", got.input.LineCount())
+	if got.input.LineCount() != 1 {
+		t.Errorf("input.LineCount() = %d, want 1 (the placeholder is a single line)", got.input.LineCount())
+	}
+	if content := got.pastes[token]; content != pasted {
+		t.Errorf("paste store holds %q, want the original %q (newlines/indentation preserved verbatim)", content, pasted)
 	}
 }
 
@@ -68,8 +73,16 @@ func TestPasteWithCodeBlockPreservesStructure(t *testing.T) {
 	next, _ := m.handleKey(pasteMsg(pasted))
 	got := next.(model)
 
-	if got.input.Value() != pasted {
-		t.Errorf("code block was mangled by paste handling:\ngot:  %q\nwant: %q", got.input.Value(), pasted)
+	// The visible input is the compact token (the trailing newline
+	// closes line 7 rather than opening an empty line 8)…
+	token := pastePlaceholder(7, 1)
+	if got.input.Value() != token {
+		t.Errorf("input.Value() = %q, want placeholder %q", got.input.Value(), token)
+	}
+	// …and the stored original keeps the code block byte-for-byte,
+	// ready to be submitted unmodified.
+	if content := got.pastes[token]; content != pasted {
+		t.Errorf("code block was mangled by paste handling:\nstored:  %q\nwant: %q", content, pasted)
 	}
 }
 
@@ -134,8 +147,10 @@ func TestPasteThenManualEnterSubmitsWholePastedPrompt(t *testing.T) {
 }
 
 func TestLargePasteIsInsertedEfficientlyInOneUpdate(t *testing.T) {
-	// A large paste should be handled as a single insert, not by
-	// iterating per character through repeated Update calls.
+	// A large paste must be handled as a single insert in one Update —
+	// one placeholder token replacing the whole content — not by
+	// iterating per character through repeated Update calls, and not by
+	// pushing 500 lines into the textarea.
 	var b strings.Builder
 	for i := 0; i < 500; i++ {
 		b.WriteString("line of pasted content\n")
@@ -146,11 +161,15 @@ func TestLargePasteIsInsertedEfficientlyInOneUpdate(t *testing.T) {
 	next, _ := m.handleKey(pasteMsg(pasted))
 	got := next.(model)
 
-	if got.input.Value() != pasted {
-		t.Errorf("large multiline paste was not preserved verbatim")
+	token := pastePlaceholder(500, 1)
+	if got.input.Value() != token {
+		t.Errorf("large multiline paste did not collapse to its placeholder; input = %q", got.input.Value())
 	}
-	if got.input.LineCount() < 500 {
-		t.Errorf("input.LineCount() = %d, want at least 500", got.input.LineCount())
+	if got.input.LineCount() != 1 {
+		t.Errorf("input.LineCount() = %d, want 1 (placeholder token)", got.input.LineCount())
+	}
+	if content := got.pastes[token]; content != pasted {
+		t.Errorf("paste store lost the large content: %d bytes stored, want %d", len(content), len(pasted))
 	}
 }
 

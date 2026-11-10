@@ -2,8 +2,10 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"forcefield/internal/agent"
@@ -163,6 +165,33 @@ func (rt *Runtime) SetOrchestrationEventSink(s orchevents.Sink) {
 		return
 	}
 	rt.orch.setSink(s)
+}
+
+type executionIDContextKey struct{}
+
+// WithExecutionID returns a copy of ctx carrying the explicit execution
+// identity id. When id is non-empty, top-level orchestration scopes created
+// under this context adopt it as their execution identity without mutating
+// shared runtime state.
+func WithExecutionID(ctx context.Context, id string) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, executionIDContextKey{}, id)
+}
+
+// ExecutionIDFrom returns the explicit execution identity stored in ctx,
+// or empty string if none was set.
+func ExecutionIDFrom(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(executionIDContextKey{}).(string)
+	return id
 }
 
 func newRuntime(cfg *config.Config) (*Runtime, error) {

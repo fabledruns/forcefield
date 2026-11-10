@@ -5,9 +5,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
+	"forcefield/internal/orchevents"
 	"forcefield/internal/providers"
+	"forcefield/internal/redact"
 	"forcefield/internal/runtime"
 )
 
@@ -27,6 +31,31 @@ const (
 	AgentRejected  AgentRowState = "rejected"
 )
 
+// maxChildOutputLines bounds how many lines of live child text one row
+// keeps. The bound is per row and transient in the sense that it is
+// enforced while the row lives: a completed row keeps the last lines it
+// captured, so the final answer stays visible after the child is done.
+const maxChildOutputLines = 20
+
+// childOutputVisibleLines bounds how many lines of live child text the
+// quadrant actually draws. The compositor clips whatever does not fit,
+// but the panel keeps its own bound so a chatty child cannot push the
+// quadrant's state lines off the top.
+const childOutputVisibleLines = 6
+
+// maxRememberedBatches bounds how many batch delegations keep their
+// declared task texts in the panel state.
+const maxRememberedBatches = 8
+
+// maxPendingTextChunks bounds how many live-text chunks are held for a
+// child whose row has not appeared yet.
+const maxPendingTextChunks = 32
+
+// maxChildOutputBytes bounds how many bytes of live child text one row
+// keeps. The line bound alone cannot cut a child that streams one very
+// long line, so the byte bound closes that gap.
+const maxChildOutputBytes = 4096
+
 // childRow is one delegate child. Rows are created by the panel when a
 // delegate tool call starts and are never removed, so subagent-N labels
 // stay stable for the lifetime of the session.
@@ -42,11 +71,71 @@ type childRow struct {
 	// renders Turns (the observed floor, "N+"); the transcript summary
 	// cites FinalTurns when the progress budget hid turns.
 	FinalTurns int
-	State      AgentRowState
-	Status     string
-	Detail     string
-	StartedAt  time.Time
-	EndedAt    time.Time
+	// BatchIndex is the 1-based position of this child inside a native
+	// batch delegation (one delegate call carrying a tasks array). Zero
+	// for a child of an ordinary single-task delegation. It is the only
+	// thing that tells two tasks of the same batch apart when they
+	// target the same agent.
+	BatchIndex int
+	// Output is a bounded buffer of the child's actual streaming text.
+	// Mutex-protected: concurrent text emission must not interleave or
+	// corrupt.
+	mu     sync.Mutex
+	output strings.Builder // live child response text
+	// MaxOutputLines bounds the row's scrollback so a long run cannot
+	// flood the quadrant or memory. The bound is transient only:
+	// completed rows keep what they captured.
+	maxOutputLines int
+	State          AgentRowState
+	Status         string
+	Detail         string
+	StartedAt      time.Time
+	EndedAt        time.Time
+
+	// RunID identifies the execution run this row was created for,
+	// preventing cross-run event contamination.
+	RunID string
+
+	// Delegation telemetry, enriched by applyOrchEvent from the
+	// structured orchevents stream. Every field below is only filled
+	// from something the events actually said, never reconstructed.
+	// Depth stays 0 until a structured event anchors this row: 1 for
+	// first-level children of the main agent, 2+ for nested runs.
+	Depth int
+	// Chain is the child's full delegation path as the events carried
+	// it ("root > child"), first anchor wins and later spellings never
+	// overwrite it.
+	Chain string
+	// ParentLabel names the parent visually: "main agent" for
+	// first-level children, otherwise the parent row's subagent-N
+	// label. Empty when the parent row was still unknown.
+	ParentLabel string
+	// TaskChars is the requested task length carried by delegation
+	// events. The structured log deliberately stores a count, never
+	// text; task content is never fabricated from it.
+	TaskChars int
+	// ActiveTool is the tool currently observed running inside the
+	// child per structured tool events. The runtime emits no tool
+	// events through the orchestrator sink today, so this stays empty
+	// unless a future emitter does.
+	ActiveTool string
+	// ToolCalls/DeniedCount/FailedCount are observed tool counters.
+	// A tool event of the child's own run never touches another
+	// child's row, and terminal totals adopt by maximum so neither
+	// feed can undercount the other.
+	ToolCalls   int
+	DeniedCount int
+	FailedCount int
+	// SlotIndex pins the row to quadrant slot 1..3 (0 = no slot, shown
+	// in overflow). Only assignQuadrantSlots may set or clear it, and
+	// a non-terminal owner never jumps between slots.
+	SlotIndex int
+	// seq orders rows deterministically for slot tie-breaks; rows are
+	// only appended, so creation order is stable.
+	seq int
+	// terminalAt stamps the first terminal transition for slot
+	// retention age (see terminalSlotRetention).
+	terminalAt time.Time
 }
 
 // agentsState is the agents panel's state model. It is pure presentation
@@ -56,10 +145,44 @@ type agentsState struct {
 	rows      []*childRow
 	byCall    map[string]*childRow
 	nextLabel int
+	seq       int
 	// collapsed holds call IDs whose terminal row was already reported
 	// to the transcript (the panel itself stops rendering terminal
 	// rows). drainCollapsed hands those summaries out exactly once.
 	collapsed map[string]bool
+
+	// batchTasks holds the declared task texts of a native batch
+	// delegation, keyed by the delegate call id, in declared order.
+	// The runtime feed is the only place the task text exists; the
+	// structured stream carries only counts, so the panel joins the
+	// two through the call id and the batch index. Bounded: only the
+	// most recent batch calls are remembered.
+	batchTasks map[string][]string
+	// pendingText holds live child text that arrived before the row
+	// it belongs to existed (the runtime feed and the structured stream
+	// are separate queues, so their order is not guaranteed). The text
+	// is replayed into the row as soon as the row appears.
+	pendingText map[string][]string
+
+	// --- structured orchestration events (see applyOrchEvent) ---
+	// Correlation indices. Chain-bearing keys are lower-cased because
+	// spawn events carry registry casing while delegation events
+	// lowercase the target; the pair (call id, chain) is the standing
+	// fallback because call ids alone restart per scheduler.
+	byChildRun  map[string]*childRow // child run UUID -> row
+	byOrchCall  map[string]*childRow // callID + orchKeySep + lower(chain) -> row
+	byOrchChain map[string]*childRow // lower(full child chain) -> row
+
+	// Quadrant slot bookkeeping. slots[0..2] hold the owners of Q1..Q3
+	// (the main agent is Q0 and is drawn by the panel, never tracked
+	// here); archivedBySlot[1..3] counts agents archived out of reuse
+	// of that slot so a reclaimed quadrant can report its history.
+	slots          [3]*childRow
+	archivedBySlot [4]int
+
+	// now injects the wall clock so tests can drive retention ages and
+	// StartedAt ordering deterministically. nil means time.Now.
+	now func() time.Time
 }
 
 // apply folds one runtime event into the state. It is tolerant of
@@ -71,15 +194,7 @@ func (s *agentsState) apply(e runtime.Event) {
 	if s == nil {
 		return
 	}
-	if s.rows == nil {
-		s.rows = make([]*childRow, 0)
-	}
-	if s.byCall == nil {
-		s.byCall = make(map[string]*childRow)
-	}
-	if s.collapsed == nil {
-		s.collapsed = make(map[string]bool)
-	}
+	s.initFeed()
 
 	switch {
 	case e.Type == runtime.EventToolStart && e.ToolCall != nil && e.ToolCall.Name == "delegate":
@@ -93,22 +208,112 @@ func (s *agentsState) apply(e runtime.Event) {
 
 // startDelegate creates the row for a delegate call. A repeated start for
 // the same call ID is ignored so labels and start times never move.
+//
+// A native batch delegation (one call carrying a tasks array) creates no
+// row of its own: the batch call is the parent's own tool call, and each
+// declared task becomes its own child row through the structured stream
+// (see orchAnchor). The call's task texts are remembered here, because
+// the runtime feed is the only place they exist: the structured stream
+// carries counts, never task content.
 func (s *agentsState) startDelegate(call *providers.ToolCall) {
-	if s.byCall[call.ID] != nil {
+	s.initFeed()
+	if tasks, ok := batchTaskLines(call.Arguments); ok {
+		s.rememberBatchTasks(call.ID, tasks)
 		return
+	}
+	if existing := s.byCall[call.ID]; existing != nil {
+		if !existing.State.terminal() {
+			return
+		}
 	}
 	s.nextLabel++
 	row := &childRow{
-		Label:      "subagent-" + strconv.Itoa(s.nextLabel),
-		Agent:      childAgentName(call.Arguments),
-		Task:       childTaskLine(call.Arguments),
-		CallID:     call.ID,
-		State:      AgentQueued,
-		TurnsExact: true,
-		StartedAt:  time.Now(),
+		Label:          "subagent-" + strconv.Itoa(s.nextLabel),
+		Agent:          childAgentName(call.Arguments),
+		Task:           childTaskLine(call.Arguments),
+		CallID:         call.ID,
+		State:          AgentQueued,
+		TurnsExact:     true,
+		StartedAt:      s.clock(),
+		seq:            s.nextRow(),
+		maxOutputLines: maxChildOutputLines,
 	}
 	s.rows = append(s.rows, row)
 	s.byCall[call.ID] = row
+	s.replayPendingText(row)
+}
+
+// batchTaskLines reads the declared tasks of a batch delegation call.
+// It reports false when the call is an ordinary single-task delegation.
+func batchTaskLines(args map[string]any) ([]string, bool) {
+	raw, ok := args["tasks"]
+	if !ok {
+		return nil, false
+	}
+	list, ok := raw.([]any)
+	if !ok || len(list) == 0 {
+		return nil, false
+	}
+	tasks := make([]string, 0, len(list))
+	for _, item := range list {
+		taskMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		task, _ := taskMap["task"].(string)
+		tasks = append(tasks, truncateRunes(strings.TrimSpace(task), 80))
+	}
+	return tasks, len(tasks) > 0
+}
+
+// rememberBatchTasks stores the declared task texts of a batch call and
+// fills in the task text of any child row that already exists for it
+// (the structured stream can deliver a child before the runtime feed
+// delivers the call). Only the most recent batch calls are kept, so a
+// long session cannot grow this without bound.
+func (s *agentsState) rememberBatchTasks(callID string, tasks []string) {
+	if s.batchTasks == nil {
+		s.batchTasks = make(map[string][]string)
+	}
+	s.batchTasks[callID] = tasks
+	for len(s.batchTasks) > maxRememberedBatches {
+		for id := range s.batchTasks {
+			delete(s.batchTasks, id)
+			break
+		}
+	}
+	for _, row := range s.rows {
+		if row.CallID != callID || row.BatchIndex <= 0 {
+			continue
+		}
+		if task, ok := batchTaskAt(tasks, row.BatchIndex); ok && row.Task == "" {
+			row.Task = task
+		}
+	}
+}
+
+// batchTaskAt returns the declared task text of one batch position.
+// The index is 1-based, matching the runtime's batch index.
+func batchTaskAt(tasks []string, index int) (string, bool) {
+	if index <= 0 || index > len(tasks) {
+		return "", false
+	}
+	return tasks[index-1], true
+}
+
+// clock is the panel's wall clock, injected (s.now) in tests so slot
+// retention and row ordering stay deterministic.
+func (s *agentsState) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+// nextRow hands out the next stable row ordinal.
+func (s *agentsState) nextRow() int {
+	s.seq++
+	return s.seq
 }
 
 // applyProgress counts child turns. The recorder's progress lines carry
@@ -131,6 +336,138 @@ func (s *agentsState) applyProgress(p *runtime.ToolProgress) {
 	}
 }
 
+// applyChildText appends a live streaming text chunk to this child's
+// bounded output buffer. The row is found by call id (mirrored from the
+// structured ChildText event). Text from one child never touches another
+// child's buffer because each row owns its mutex-protected buffer, and
+// each row is only ever written through its own call id.
+// The buffer is bounded: once full, the oldest line is dropped to make
+// room, so runaway output cannot flood memory or block the runtime.
+func (s *agentsState) applyChildText(callID string, text string) {
+	if text == "" {
+		return
+	}
+	row := s.byCall[callID]
+	if row == nil {
+		s.holdPendingText(callID, text)
+		return
+	}
+	row.appendOutput(text)
+}
+
+// holdPendingText keeps live text that arrived before its row existed.
+// The runtime feed and the structured stream are separate queues, so a
+// child's first text can be delivered before the row that identifies it.
+// The buffer is bounded in both the number of chunks and the number of
+// children waiting, so a stray event cannot grow the state without
+// limit.
+func (s *agentsState) holdPendingText(callID string, text string) {
+	if callID == "" {
+		return
+	}
+	if s.pendingText == nil {
+		s.pendingText = make(map[string][]string)
+	}
+	chunks := append(s.pendingText[callID], text)
+	if len(chunks) > maxPendingTextChunks {
+		chunks = chunks[len(chunks)-maxPendingTextChunks:]
+	}
+	s.pendingText[callID] = chunks
+	for len(s.pendingText) > maxPendingTextChunks {
+		for id := range s.pendingText {
+			if id == callID {
+				continue
+			}
+			delete(s.pendingText, id)
+			break
+		}
+	}
+}
+
+// replayPendingText hands the text held for a call id to the row that
+// just appeared. The text is appended in arrival order, so the child's
+// buffer reads exactly as it would have without the gap.
+func (s *agentsState) replayPendingText(row *childRow) {
+	if row == nil || row.CallID == "" {
+		return
+	}
+	chunks, ok := s.pendingText[row.CallID]
+	if !ok || len(chunks) == 0 {
+		return
+	}
+	delete(s.pendingText, row.CallID)
+	for _, chunk := range chunks {
+		row.appendOutput(chunk)
+	}
+}
+
+// appendOutput writes one text chunk into the row's bounded buffer and
+// trims it back to the row's bounds. Two bounds apply: a line count and
+// a byte count. The byte bound matters for a child that streams one very
+// long line, which the line bound alone would never cut.
+func (row *childRow) appendOutput(text string) {
+	if text == "" {
+		return
+	}
+	row.mu.Lock()
+	defer row.mu.Unlock()
+	row.output.WriteString(text)
+	if row.output.Len() > maxChildOutputBytes {
+		s := row.output.String()
+		cut := len(s) - maxChildOutputBytes
+		for cut < len(s) && !utf8.RuneStart(s[cut]) {
+			cut++
+		}
+		row.output.Reset()
+		row.output.WriteString(s[cut:])
+	}
+	if row.maxOutputLines > 0 {
+		lines := strings.Split(row.output.String(), "\n")
+		// A trailing newline leaves an empty tail element: it is not a
+		// line of output, so it never counts against the cap.
+		if len(lines) > 1 && lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		}
+		if len(lines) > row.maxOutputLines {
+			lines = lines[len(lines)-row.maxOutputLines:]
+			row.output.Reset()
+			for _, l := range lines {
+				if row.output.Len() > 0 {
+					row.output.WriteString("\n")
+				}
+				row.output.WriteString(l)
+			}
+		}
+	}
+}
+
+// outputText returns the complete buffered text of this child's output,
+// or "" when none was observed. Called by the renderer under no lock
+// (output is only appended during run, terminal rows are stable).
+func (row *childRow) outputText() string {
+	row.mu.Lock()
+	defer row.mu.Unlock()
+	return row.output.String()
+}
+
+// outputLines returns the child's buffered output split into lines,
+// bounded by keepLast when non-zero. Used by the renderer to draw only
+// what fits in the quadrant.
+func (row *childRow) outputLines(keepLast int) []string {
+	row.mu.Lock()
+	defer row.mu.Unlock()
+	all := strings.Split(row.output.String(), "\n")
+	// A trailing newline leaves an empty tail element: it is not a
+	// line of output and never drawn.
+	if len(all) > 1 && all[len(all)-1] == "" {
+		all = all[:len(all)-1]
+	}
+	if keepLast > 0 && len(all) > keepLast {
+		all = all[len(all)-keepLast:]
+	}
+	return all
+}
+
 // finishDelegate applies the first terminal event for a delegate call.
 // Rejections and before-start cancellations are recognized from the
 // delegation tool's fixed result messages, so the panel's failed and
@@ -140,7 +477,8 @@ func (s *agentsState) finishDelegate(t runtime.EventType, result *runtime.ToolRe
 	if row == nil || row.State.terminal() {
 		return
 	}
-	row.EndedAt = time.Now()
+	row.EndedAt = s.clock()
+	row.stampTerminal(row.EndedAt)
 	// Every path below are terminal: queue the transcript summary once.
 	s.collapsed[result.ToolCallID] = true
 
@@ -226,12 +564,14 @@ func (s *agentsState) cancelOpen() {
 	if s == nil {
 		return
 	}
-	now := time.Now()
+	now := s.clock()
 	for _, row := range s.rows {
 		if !row.State.terminal() {
 			row.State = AgentCancelled
 			row.Detail = "delegation cancelled"
 			row.EndedAt = now
+			row.stampTerminal(now)
+			row.ActiveTool = ""
 		}
 	}
 }
@@ -382,4 +722,875 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string([]rune(s)[:n])
+}
+
+// --- structured orchestration events ------------------------------------------------
+//
+// The runtime's orchestrator mirrors delegation evidence into the
+// structured orchevents stream (internal/orchevents, docs/Events.md).
+// Through Runtime.SetOrchestrationEventSink it emits exactly:
+//
+//	DelegationRequested / DelegationAccepted / DelegationRejected
+//	AgentSpawned / ChildProgress / ChildCompleted / BudgetExhausted
+//
+// Delegation* events carry the DELEGATING scope's identity: Depth is
+// the child's depth minus one, CallID is the delegate call's id (the
+// same id the runtime feed stamped on the EventToolStart that created
+// the panel row), ChildRunID is still empty. Child events carry the
+// CHILD's own depth and run UUID, and inherit the delegate call id.
+// The schema also defines per-tool events (tool_started & co). No
+// runtime path emits them through the sink (internal/runtime has zero
+// Tool* emissions), but applyOrchEvent keeps defensive handlers so a
+// future emitter lands without re-plumbing. Emissions that identify
+// prose (Error, Reason, Status) are scrubbed here because the TUI sink
+// sits upstream of the event file's own sanitize pass.
+
+// mainAgentLabel is the visual identity of the main-agent quadrant
+// (Q0). First-level children show it as their parent lineage.
+const mainAgentLabel = "main agent"
+
+// terminalSlotRetention is PLAN §6.1's terminal retention window: slot
+// reuse prefers an owner that has been terminal at least this long.
+// Because reuse always picks the LONGEST-terminal owner, and any aged
+// owner is by construction the oldest, this window classifies the same
+// owner the plain oldest rule would pick; it documents intent and lets
+// tests assert the boundary.
+const terminalSlotRetention = 1500 * time.Millisecond
+
+// orchKeySep joins correlation key parts. Control characters cannot
+// appear in agent names or call ids, so the pair stays unambiguous.
+const orchKeySep = "\x1f"
+
+// orchChainSep is the chain separator the runtime emits.
+const orchChainSep = " > "
+
+// eventChildDepth maps an event's scope depth to the child row's own
+// depth: Delegation* carry the delegating scope's depth, so the child
+// is one deeper; child events carry the child's own depth directly.
+func eventChildDepth(ev orchevents.Event) int {
+	switch ev.Type {
+	case orchevents.DelegationRequested, orchevents.DelegationAccepted, orchevents.DelegationRejected:
+		return ev.Depth + 1
+	default:
+		return ev.Depth
+	}
+}
+
+// orchParentChainKey builds the byOrchChain lookup key for the row that
+// delegated along this chain: the path without its own last segment,
+// lower-cased. A one-segment chain identifies the main agent and has
+// no parent row key.
+func orchParentChainKey(chain string) string {
+	c := strings.ToLower(strings.TrimSpace(chain))
+	if i := strings.LastIndex(c, orchChainSep); i > 0 {
+		return c[:i]
+	}
+	return ""
+}
+
+// orchCallKey builds the (call id, chain) correlation key used by all
+// event types the delegation path emits.
+func orchCallKey(callID, chain string) string {
+	return callID + orchKeySep + strings.ToLower(chain)
+}
+
+// orchCallKeyScoped builds the (run id, call id, chain) correlation key.
+func orchCallKeyScoped(runID, callID, chain string) string {
+	if runID != "" {
+		return runID + orchKeySep + callID + orchKeySep + strings.ToLower(chain)
+	}
+	return orchCallKey(callID, chain)
+}
+
+// applyOrchEvent folds one structured orchestration event into the
+// state. It enriches rows the runtime feed already created and creates
+// rows for nested delegations, which the runtime feed can never see.
+// It never mutates anything outside this package's own state.
+//
+// Ordering tolerances: the sink preserves the runtime's emission
+// order, but this stream interleaves with the runtime event feed.
+// Everything here re-checks terminal state and adopts counters by
+// maximum, so neither feed can reverse or undercount the other, and
+// duplicate events collapse into the row they anchored.
+func (s *agentsState) applyOrchEvent(ev orchevents.Event) {
+	if s == nil {
+		return
+	}
+	s.orchInit()
+	now := s.clock()
+	switch ev.Type {
+	case orchevents.DelegationRequested, orchevents.DelegationAccepted:
+		s.orchDelegation(ev, false, now)
+	case orchevents.DelegationRejected:
+		s.orchDelegation(ev, true, now)
+	case orchevents.AgentSpawned:
+		s.orchAgentSpawned(ev, now)
+	case orchevents.ChildProgress:
+		s.orchChildActive(ev, now)
+	case orchevents.ChildText:
+		s.orchChildText(ev, now)
+	case orchevents.BudgetExhausted:
+		s.orchBudget(ev, now)
+	case orchevents.ChildCompleted:
+		s.orchChildCompleted(ev, now)
+	case orchevents.ToolStarted:
+		s.orchTool(ev, true, now)
+	case orchevents.ToolCompleted, orchevents.ToolFailed,
+		orchevents.ToolDenied, orchevents.ToolCancelled:
+		s.orchTool(ev, false, now)
+	default:
+		// run_* and events_truncated flow only to the headless event
+		// writer (cmd/run.go emits them to its own Writer); unknown
+		// types are tolerated per the schema's reader contract.
+	}
+}
+
+// orchInit lazily prepares the maps applyOrchEvent writes to, so the
+// zero value keeps working without the runtime feed having run first.
+func (s *agentsState) orchInit() {
+	s.initFeed()
+	if s.byChildRun == nil {
+		s.byChildRun = make(map[string]*childRow)
+	}
+	if s.byOrchCall == nil {
+		s.byOrchCall = make(map[string]*childRow)
+	}
+	if s.byOrchChain == nil {
+		s.byOrchChain = make(map[string]*childRow)
+	}
+}
+
+// initFeed is the lazy map setup shared by the runtime feed (apply)
+// and the orch path: both create rows and collapse entries.
+func (s *agentsState) initFeed() {
+	if s.rows == nil {
+		s.rows = make([]*childRow, 0)
+	}
+	if s.byCall == nil {
+		s.byCall = make(map[string]*childRow)
+	}
+	if s.collapsed == nil {
+		s.collapsed = make(map[string]bool)
+	}
+}
+
+// orchAnchor resolves the row a structured event belongs to, creating
+// a nested row when canCreate and the event pins its own parent.
+//
+// Lookup order (docs/Events.md "Correlation"):
+//  1. ChildRunID — the fresh UUID of the child run, unique;
+//  2. the (call id, chain) pair — the delegate call that carries the
+//     child's identity, unique within a run because every delegation
+//     is a distinct tool call;
+//  3. for first-level events only, the delegate call id the runtime
+//     feed row was created from, when the chain agrees (empty chains
+//     too - the row may simply not be anchored yet). Call ids alone
+//     are NOT unique across schedulers (provider counters restart
+//     per run), so the pair check plus the chain match is what keeps
+//     nested schedulers' call ids from being confused with the
+//     main stream's.
+//
+// Nothing anchors without a row to anchor: unanchored first-level
+// events are skipped (the runtime feed row always follows), and
+// unanchored nested events are skipped until a parent row resolves
+// (a later event of the same child anchors then).
+func (s *agentsState) orchAnchor(ev orchevents.Event, now time.Time, canCreate bool) *childRow {
+	if ev.ChildRunID != "" {
+		if row := s.byChildRun[ev.ChildRunID]; row != nil {
+			if ev.RunID == "" || row.RunID == "" || row.RunID == ev.RunID {
+				return row
+			}
+		}
+	}
+	if ev.CallID != "" && ev.Chain != "" {
+		if ev.RunID != "" {
+			if row := s.byOrchCall[orchCallKeyScoped(ev.RunID, ev.CallID, ev.Chain)]; row != nil {
+				if row.RunID == "" || row.RunID == ev.RunID {
+					return row
+				}
+			}
+		}
+		if row := s.byOrchCall[orchCallKey(ev.CallID, ev.Chain)]; row != nil {
+			if ev.RunID == "" || row.RunID == "" || row.RunID == ev.RunID {
+				return row
+			}
+		}
+	}
+	if ev.CallID != "" && eventChildDepth(ev) <= 1 {
+		// When ev carries an explicit RunID, first check if an existing row
+		// in this state already owns this (CallID, RunID) pair. This preserves
+		// delivery to prior runs when CallID was reused.
+		if ev.RunID != "" {
+			for i := len(s.rows) - 1; i >= 0; i-- {
+				r := s.rows[i]
+				if r.CallID == ev.CallID && r.RunID == ev.RunID && rowChainMatches(r, ev.Chain) {
+					return r
+				}
+			}
+		}
+		if row := s.byCall[ev.CallID]; row != nil && rowChainMatches(row, ev.Chain) {
+			// If this CallID was reused across executions (an earlier row with
+			// the same CallID exists in s.rows prior to row), prevent late events
+			// from an earlier execution from claiming or mutating this newly created row:
+			if ev.RunID != "" && row.RunID == "" && s.hasEarlierCallRow(ev.CallID, row) {
+				if s.hasRunIDForCall(ev.RunID, ev.CallID) || s.hasEarlierRunID(ev.RunID, row) {
+					return nil
+				}
+			}
+			if ev.RunID == "" || row.RunID == "" || row.RunID == ev.RunID {
+				return row
+			}
+		}
+	}
+	if !canCreate || ev.Chain == "" {
+		return nil
+	}
+	if eventChildDepth(ev) >= 2 {
+		parent := s.byOrchChain[orchParentChainKey(ev.Chain)]
+		if parent == nil {
+			return nil
+		}
+		if ev.RunID != "" && parent.RunID != "" && ev.RunID != parent.RunID {
+			return nil
+		}
+		return s.newOrchRow(parent, ev, now)
+	}
+	// A batch child is created from the structured stream alone: the
+	// runtime feed only ever sees the batch call, never its tasks, so
+	// there is no runtime-feed row to wait for. Every other first-level
+	// event still needs the runtime feed's row and is skipped until it
+	// arrives.
+	if ev.BatchIndex > 0 {
+		return s.newBatchRow(ev, now)
+	}
+	return nil
+}
+
+// rowChainMatches reports whether a row's known chain agrees with a
+// chain an event carries. An empty row chain matches anything: the row
+// simply has not been anchored by a structured event yet, and the
+// runtime feed's own dedup already made one call id mean one child.
+func rowChainMatches(row *childRow, chain string) bool {
+	if row.Chain == "" || chain == "" {
+		return true
+	}
+	return strings.EqualFold(row.Chain, chain)
+}
+
+// anchorRow attaches an event's identity to its row. First-seen values
+// win so late duplicates and reordered events never rewrite lineage.
+// The event also registers its own index entries, which is how later
+// events of the same child find the row through any single one of its
+// identifiers.
+func (s *agentsState) anchorRow(row *childRow, ev orchevents.Event) {
+	if row.RunID == "" && ev.RunID != "" {
+		row.RunID = ev.RunID
+	}
+	if d := eventChildDepth(ev); d > 0 && row.Depth == 0 {
+		row.Depth = d
+	}
+	if row.Chain == "" && ev.Chain != "" {
+		row.Chain = ev.Chain
+	}
+	if row.ParentLabel == "" {
+		row.ParentLabel = s.parentLabelFor(ev)
+	}
+	if ev.ChildRunID != "" {
+		s.byChildRun[ev.ChildRunID] = row
+	}
+	if ev.CallID != "" && ev.Chain != "" {
+		if row.RunID != "" {
+			s.byOrchCall[orchCallKeyScoped(row.RunID, ev.CallID, ev.Chain)] = row
+		}
+		s.byOrchCall[orchCallKey(ev.CallID, ev.Chain)] = row
+	}
+	if ev.Chain != "" {
+		s.byOrchChain[strings.ToLower(ev.Chain)] = row
+	}
+	if ev.TaskChars > row.TaskChars {
+		row.TaskChars = ev.TaskChars
+	}
+}
+
+// parentLabelFor derives the visible parent for a row being anchored.
+// First-level children hang off the main agent; deeper children's
+// parent is the row registered for the chain without the child's own
+// segment. Blank when the chain does not identify one.
+func (s *agentsState) parentLabelFor(ev orchevents.Event) string {
+	d := eventChildDepth(ev)
+	if d <= 0 {
+		return ""
+	}
+	if d == 1 {
+		return mainAgentLabel
+	}
+	if ev.Chain == "" {
+		return ""
+	}
+	if parent := s.byOrchChain[orchParentChainKey(ev.Chain)]; parent != nil {
+		return parent.Label
+	}
+	return ""
+}
+
+// newOrchRow creates a nested child row. Nested delegations run inside
+// a parent's tool execution, so the runtime feed (fed from the
+// top-level stream) can never create them: the structured stream is
+// their only source. Callers have already resolved the parent.
+func (s *agentsState) newOrchRow(parent *childRow, ev orchevents.Event, now time.Time) *childRow {
+	s.nextLabel++
+	row := &childRow{
+		Label:          "subagent-" + strconv.Itoa(s.nextLabel),
+		Agent:          strings.TrimSpace(ev.Agent),
+		CallID:         ev.CallID,
+		State:          AgentQueued,
+		TurnsExact:     true,
+		StartedAt:      now,
+		seq:            s.nextRow(),
+		maxOutputLines: maxChildOutputLines,
+	}
+	s.rows = append(s.rows, row)
+	s.anchorRow(row, ev)
+	s.replayPendingText(row)
+	return row
+}
+
+// newBatchRow creates the row of one task of a native batch delegation.
+// The row is created from the structured stream, which is the only
+// source that knows a batch task exists. Its identity is the batch
+// index plus the chain the runtime gave the task, so two tasks of the
+// same batch never share a row.
+func (s *agentsState) newBatchRow(ev orchevents.Event, now time.Time) *childRow {
+	s.nextLabel++
+	row := &childRow{
+		Label:          "subagent-" + strconv.Itoa(s.nextLabel),
+		Agent:          strings.TrimSpace(ev.Agent),
+		CallID:         ev.CallID,
+		BatchIndex:     ev.BatchIndex,
+		State:          AgentQueued,
+		TurnsExact:     true,
+		StartedAt:      now,
+		seq:            s.nextRow(),
+		maxOutputLines: maxChildOutputLines,
+	}
+	if tasks, ok := s.batchTasks[ev.CallID]; ok {
+		if task, ok := batchTaskAt(tasks, ev.BatchIndex); ok {
+			row.Task = task
+		}
+	}
+	s.rows = append(s.rows, row)
+	s.anchorRow(row, ev)
+	s.replayPendingText(row)
+	return row
+}
+
+// orchDelegation folds DelegationRequested / Accepted / Rejected. The
+// accepted/rejected events add nothing but the reject reason after the
+// requested one, and runs on the row the delegation anchors.
+func (s *agentsState) orchDelegation(ev orchevents.Event, rejected bool, now time.Time) {
+	row := s.orchAnchor(ev, now, !rejected)
+	if row == nil {
+		return
+	}
+	s.anchorRow(row, ev)
+	if rejected {
+		// Terminally rejected delegations are exactly what AgentRejected
+		// exists for. A rejection never creates a row, never reverses a
+		// terminal state, and never re-queues a collapsed summary.
+		if !row.State.terminal() {
+			row.State = AgentRejected
+			row.EndedAt = now
+			row.stampTerminal(now)
+			row.ActiveTool = ""
+			if d := scrubbedDetail(ev.Reason); d != "" {
+				row.Detail = d
+			}
+			s.flushCollapse(row)
+		}
+		return
+	}
+	// requested/accepted: the task length is the only new fact; the
+	// task text stays whatever richer feeds captured.
+	if ev.TaskChars > row.TaskChars {
+		row.TaskChars = ev.TaskChars
+	}
+}
+
+// orchAgentSpawned binds a child run's UUID to its row. It never
+// creates rows and never flips lifecycle state: the child has not yet
+// proven a turn, so queued→running waits for the first progress event.
+func (s *agentsState) orchAgentSpawned(ev orchevents.Event, now time.Time) {
+	row := s.orchAnchor(ev, now, false)
+	if row == nil {
+		return
+	}
+	s.anchorRow(row, ev)
+}
+
+// orchChildActive folds ChildProgress. Turns are a cumulative exact
+// count and only ever climb. First-level events whose runtime row has
+// not arrived yet are skipped (the row always follows in the source's
+// order); nested progress may still create its row once the parent is
+// known.
+func (s *agentsState) orchChildActive(ev orchevents.Event, now time.Time) {
+	row := s.orchAnchor(ev, now, true)
+	if row == nil {
+		return
+	}
+	s.anchorRow(row, ev)
+	if row.State.terminal() {
+		return // late progress must not reverse a terminal state
+	}
+	if ev.Turns > row.Turns {
+		row.Turns = ev.Turns
+		row.TurnsExact = true // recorder counts are exact
+	}
+	if row.State != AgentRunning {
+		row.State = AgentRunning
+	}
+}
+
+// orchBudget folds BudgetExhausted. Exhaustion is never terminal by
+// itself: the affected child keeps running until it records an honest
+// cancellation, and the budget fields name the aggregate limit that
+// fired. The event anchors like progress but never creates a row: a
+// budget record only exists for a child whose delegation already
+// appeared.
+func (s *agentsState) orchBudget(ev orchevents.Event, now time.Time) {
+	row := s.orchAnchor(ev, now, false)
+	if row == nil {
+		return
+	}
+	s.anchorRow(row, ev)
+}
+
+// orchChildCompleted applies the first terminal outcome from the
+// structured stream. Rows the runtime feed already terminalized keep
+// their lifecycle state (first-terminal-wins across both feeds) but
+// still adopt the exact counter snapshot, which can be higher when the
+// progress budget hid turns from the live feed.
+func (s *agentsState) orchChildCompleted(ev orchevents.Event, now time.Time) {
+	row := s.orchAnchor(ev, now, true)
+	if row == nil {
+		return
+	}
+	s.anchorRow(row, ev)
+
+	// Counter snapshots are exact sums; adopt by maximum even on rows
+	// the terminal race already closed, and never let a later feed
+	// undercount the other.
+	if ev.Turns > row.Turns {
+		row.Turns = ev.Turns
+		row.TurnsExact = true
+	}
+	if ev.ToolCalls > row.ToolCalls {
+		row.ToolCalls = ev.ToolCalls
+	}
+	if ev.Denied > row.DeniedCount {
+		row.DeniedCount = ev.Denied
+	}
+	if ev.Failed > row.FailedCount {
+		row.FailedCount = ev.Failed
+	}
+
+	if row.State.terminal() {
+		return
+	}
+	row.ActiveTool = ""
+	switch ev.Outcome {
+	case orchevents.OutcomeDone:
+		row.State = AgentCompleted
+		if s := scrubbedDetail(ev.Status); s != "" {
+			row.Status = s
+		}
+	case orchevents.OutcomeCancelled:
+		row.State = AgentCancelled
+		row.Detail = scrubbedDetail(ev.Error)
+	case orchevents.OutcomeBlocked:
+		row.State = AgentFailed
+		if d := scrubbedDetail(ev.Error); d != "" {
+			row.Detail = d
+		}
+	case "", orchevents.OutcomeError:
+		row.State = AgentFailed
+		if d := scrubbedDetail(ev.Error); d != "" {
+			row.Detail = d
+		} else {
+			row.Detail = "child run failed"
+		}
+	default:
+		// Unknown outcome: stay honest rather than optimistic.
+		row.State = AgentFailed
+		row.Detail = "child run ended with unknown outcome " + string(ev.Outcome)
+	}
+	row.EndedAt = now
+	row.stampTerminal(now)
+	s.flushCollapse(row)
+}
+
+// orchChildText routes a ChildText event to the correct child's output
+// buffer. The event carries the delegate call ID and chain; we resolve
+// the row via the standard correlation (ChildRunID first, then call-id
+// + chain pair) and append the text to that child's bounded buffer.
+// Text from one child never touches another child's buffer because each
+// row owns its mutex-protected buffer and rows are only resolved through
+// the child's own identity keys.
+func (s *agentsState) orchChildText(ev orchevents.Event, now time.Time) {
+	row := s.orchAnchor(ev, now, true)
+	if row == nil {
+		// The row has not appeared yet (the runtime feed and the
+		// structured stream are separate queues). Hold the text until
+		// the row exists, so the child's first words are not lost.
+		s.holdPendingText(ev.CallID, ev.Text)
+		return
+	}
+	s.anchorRow(row, ev)
+	if row.State.terminal() {
+		// Never feed output into a settled row; completed rows keep
+		// their final text (the final report body) untouched.
+		return
+	}
+	if ev.Text == "" {
+		return
+	}
+	row.appendOutput(ev.Text)
+	// Mark the row running if it was not yet running.
+	if row.State != AgentRunning {
+		row.State = AgentRunning
+	}
+}
+
+// orchTool folds per-tool events. The runtime emits none through the
+// sink today, so this stays deliberately simple: correlate by the
+// usual order, count the call exactly once per started operation, and
+// clear the active tool again on the first matching terminal event.
+// A tool event can never touch another child's row (each event
+// carries enough identity to anchor its own), never double-counts a
+// tool already marked active, and never revives a terminal row's
+// display.
+func (s *agentsState) orchTool(ev orchevents.Event, started bool, now time.Time) {
+	row := s.orchAnchor(ev, now, false)
+	if row == nil {
+		return
+	}
+	s.anchorRow(row, ev)
+	if started {
+		if row.State.terminal() || (ev.Tool != "" && row.ActiveTool == ev.Tool) {
+			return // tool already known active: same operation, no double count
+		}
+		row.ActiveTool = ev.Tool
+		if ev.Tool != "" {
+			row.ToolCalls++
+		}
+		return
+	}
+	switch ev.Type {
+	case orchevents.ToolFailed:
+		row.FailedCount++
+	case orchevents.ToolDenied:
+		row.DeniedCount++
+	}
+	if row.ActiveTool == "" || ev.Tool == row.ActiveTool || ev.Tool == "" {
+		row.ActiveTool = ""
+	}
+}
+
+// scrubbedDetail cuts prose from a structured event into the row's
+// bounded detail text. The TUI's sink sits upstream of the event
+// file's own sanitize pass (orchevents.Writer.sanitize), so it scrubs
+// defensively as well.
+func scrubbedDetail(prose string) string {
+	return truncateRunes(redact.Scrub(strings.TrimSpace(prose)), 160)
+}
+
+// stampTerminal records the first time the row reached a terminal
+// state. Later terminal observations never move it: the slot
+// manager's retention age measures the first completion.
+func (row *childRow) stampTerminal(now time.Time) {
+	if row.terminalAt.IsZero() {
+		row.terminalAt = now
+	}
+}
+
+// flushCollapse queues the row's one-time transcript summary through
+// the same drain the runtime feed's finishDelegate uses. Only rows the
+// runtime feed can resolve drain (drainCollapsed looks rows up in
+// byCall by call id); nested rows are panel-only, so they do not queue
+// a summary keyed by a call id no other feed would supply.
+func (s *agentsState) flushCollapse(row *childRow) {
+	if row.CallID == "" {
+		return
+	}
+	if s.byCall[row.CallID] == row {
+		s.collapsed[row.CallID] = true
+	}
+}
+
+// --- quadrant slot management -------------------------------------------------------
+
+// assignQuadrantSlots pins the rows the quadrant canvas shows in
+// Q1..Q3 and reports them in slot order (nil = empty slot, rendered as
+// idle standby). It is idempotent: repeated calls reshuffle nothing.
+//
+// Policy (PLAN §6.1):
+//   - non-terminal owners (queued or running) keep their slot; a
+//     running agent never jumps and a queued agent never displaces a
+//     running one;
+//   - vacant slots fill in claim order: running rows first, then
+//     queued, oldest StartedAt first;
+//   - when no slot is vacant, a claimant reuses the slot of a
+//     TERMINAL owner — the one terminal longest, which is exactly the
+//     "prefer ≥ terminalSlotRetention" winner whenever an aged owner
+//     exists, and the plan's "oldest eligible terminal slot" fallback
+//     otherwise;
+//   - active rows are never evicted; rows that cannot claim stay in
+//     the overflow summary (see overflowRows).
+func (s *agentsState) assignQuadrantSlots() [3]*childRow {
+	if s == nil {
+		return [3]*childRow{}
+	}
+	now := s.clock()
+
+	var claimants []*childRow
+	for _, r := range s.rows {
+		if !r.State.terminal() && r.SlotIndex == 0 {
+			claimants = append(claimants, r)
+		}
+	}
+	sort.SliceStable(claimants, func(i, j int) bool { return slotClaimOrder(claimants[i], claimants[j]) })
+
+	for _, claim := range claimants {
+		slot := -1
+		for i, owner := range s.slots {
+			if owner == nil {
+				slot = i
+				break
+			}
+		}
+		if slot < 0 {
+			slot = s.reusableSlot(now)
+		}
+		if slot < 0 {
+			continue // stays visible in the overflow summary
+		}
+		s.claimSlot(slot, claim)
+	}
+	return s.slots
+}
+
+// slotClaimOrder sorts slot claimants: running work first (the slots
+// exist to watch live work), then queued; oldest start first, with
+// the row ordinal as the deterministic tiebreak.
+func slotClaimOrder(a, b *childRow) bool {
+	ra, rb := a.State == AgentRunning, b.State == AgentRunning
+	if ra != rb {
+		return ra
+	}
+	if !a.StartedAt.Equal(b.StartedAt) {
+		return a.StartedAt.Before(b.StartedAt)
+	}
+	return a.seq < b.seq
+}
+
+// reusableSlot returns the slot worth reclaiming, or -1. Only terminal
+// owners are candidates — an active owner is never evicted — and the
+// one terminal longest wins, which unifies the plan's retention
+// preference and its oldest-eligible fallback into a single testable
+// rule.
+func (s *agentsState) reusableSlot(now time.Time) int {
+	best := -1
+	for i, owner := range s.slots {
+		if owner == nil || !owner.State.terminal() {
+			continue
+		}
+		if best < 0 || owner.terminalAt.Before(s.slots[best].terminalAt) {
+			best = i
+		}
+	}
+	return best
+}
+
+// claimSlot moves slot ownership. Evicting a terminal owner archives
+// it (SlotIndex cleared, history counted for the reused slot).
+func (s *agentsState) claimSlot(slot int, claim *childRow) {
+	if owner := s.slots[slot]; owner != nil && owner != claim {
+		if !owner.State.terminal() {
+			// Defensive: only reusableSlot offers owners for eviction,
+			// which are terminal by construction. Refusing to boot an
+			// active owner keeps an upstream bug from corrupting state.
+			return
+		}
+		owner.SlotIndex = 0
+		s.archivedBySlot[slot+1]++
+	}
+	s.slots[slot] = claim
+	claim.SlotIndex = slot + 1
+}
+
+// archivedCount reports how many agents have been archived out of a
+// reused quadrant slot (1..3), so a reclaimed slot can show its
+// history. Slot 0 is the main agent and never contains children.
+func (s *agentsState) archivedCount(slot int) int {
+	if s == nil || slot < 1 || slot >= len(s.archivedBySlot) {
+		return 0
+	}
+	return s.archivedBySlot[slot]
+}
+
+// overflowRows returns the non-terminal rows that hold no quadrant
+// slot, in claim order (running before queued, oldest first). After
+// assignQuadrantSlots fills the three assignable slots, this list is
+// exactly what the canvas summarizes as "+N running".
+func (s *agentsState) overflowRows() []*childRow {
+	if s == nil {
+		return nil
+	}
+	var out []*childRow
+	for _, r := range s.rows {
+		if !r.State.terminal() && r.SlotIndex == 0 {
+			out = append(out, r)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return slotClaimOrder(out[i], out[j]) })
+	return out
+}
+
+// overflowLine renders the overflow summary: "+R running: <labels>",
+// where running rows are named with their live turn counter and queued
+// rows with "(queued)". No agent with a slot is named, queued agents
+// keep their own state word, and the summary can only grow as long as
+// concurrency limits allow.
+func (s *agentsState) overflowLine() string {
+	rows := s.overflowRows()
+	if len(rows) == 0 {
+		return ""
+	}
+	running := 0
+	parts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if r.State == AgentRunning {
+			running++
+			mark := ""
+			if !r.TurnsExact {
+				mark = "+"
+			}
+			parts = append(parts, fmt.Sprintf("%s (turn %d%s)", r.Label, r.Turns, mark))
+			continue
+		}
+		parts = append(parts, r.Label+" (queued)")
+	}
+	return fmt.Sprintf("+%d running: %s", running, strings.Join(parts, ", "))
+}
+
+// lineageLine renders the nested-delegation subtitle for depth-2+
+// rows: "↳ via subagent-1 (depth 2)". Depth-1 children hang straight
+// off the main agent and show nothing extra.
+func (row *childRow) lineageLine() string {
+	if row.Depth < 2 || row.ParentLabel == "" || row.ParentLabel == mainAgentLabel {
+		return ""
+	}
+	return fmt.Sprintf("↳ via %s (depth %d)", row.ParentLabel, row.Depth)
+}
+
+// nestedActiveChild returns the first still-open child nested under
+// parent's delegation subtree, if the event stream identified one, so
+// the parent can show a derived wait state. It is strictly derived
+// from observed lineage (never stored, never assumed): a "waiting"
+// parent must itself be live, and without a genuinely active
+// descendant nothing renders. (The runtime joins children before a
+// parent's delegate call returns, so a terminal parent with an open
+// descendant cannot occur realistically; the guard is for reordered
+// delivery.)
+func (s *agentsState) nestedActiveChild(parent *childRow) *childRow {
+	if s == nil || parent == nil || parent.Depth < 1 || parent.State.terminal() {
+		return nil
+	}
+	var found *childRow
+	for _, r := range s.rows {
+		if r == parent || r.ParentLabel == "" || r.State.terminal() {
+			continue
+		}
+		if r.Depth > parent.Depth && s.descendsFrom(r, parent) {
+			if found == nil || r.seq < found.seq {
+				found = r
+			}
+		}
+	}
+	return found
+}
+
+// descendsFrom walks r's observed parent chain to see whether it
+// contains parent. Parents are always created before their children,
+// so the label walk is acyclic and terminates.
+func (s *agentsState) descendsFrom(r, parent *childRow) bool {
+	cur := r
+	for cur != nil {
+		if cur.ParentLabel == "" {
+			return false
+		}
+		if cur.ParentLabel == parent.Label {
+			return true
+		}
+		cur = s.rowByLabel(cur.ParentLabel)
+	}
+	return false
+}
+
+// rowByLabel finds the row owning a subagent label, or nil ("main
+// agent" is a visual pseudonym, not a row, and ends the walk).
+func (s *agentsState) rowByLabel(label string) *childRow {
+	for _, r := range s.rows {
+		if r.Label == label {
+			return r
+		}
+	}
+	return nil
+}
+
+// hasEarlierCallRow reports whether s.rows contains an earlier row
+// with the same CallID prior to row.
+func (s *agentsState) hasEarlierCallRow(callID string, row *childRow) bool {
+	if callID == "" || row == nil {
+		return false
+	}
+	for _, r := range s.rows {
+		if r == row {
+			break
+		}
+		if r.CallID == callID {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRunIDForCall reports whether an existing row for this CallID has
+// already anchored to runID.
+func (s *agentsState) hasRunIDForCall(runID, callID string) bool {
+	if runID == "" || callID == "" {
+		return false
+	}
+	for _, r := range s.rows {
+		if r.CallID == callID && r.RunID == runID {
+			return true
+		}
+	}
+	return false
+}
+
+// hasEarlierRunID reports whether any row created prior to row was
+// associated with runID.
+func (s *agentsState) hasEarlierRunID(runID string, row *childRow) bool {
+	if runID == "" || row == nil {
+		return false
+	}
+	for _, r := range s.rows {
+		if r == row {
+			break
+		}
+		if r.RunID == runID {
+			return true
+		}
+	}
+	return false
 }

@@ -53,7 +53,7 @@ func TestResolveProviderLlamaCppDefaults(t *testing.T) {
 	if resolved.Type != "openai-compatible" {
 		t.Errorf("type = %q, want the openai-compatible protocol", resolved.Type)
 	}
-	if resolved.Label != "llama.cpp" || resolved.BaseURL != "http://localhost:8080/v1" {
+	if resolved.Label != "llama.cpp" || resolved.BaseURL != "http://localhost:9931/v1" {
 		t.Errorf("label/base = %q/%q, want llama.cpp catalog defaults", resolved.Label, resolved.BaseURL)
 	}
 	if resolved.AuthRequired || resolved.AuthEnvVar != "" {
@@ -66,7 +66,7 @@ func TestResolveProviderLlamaCppDefaults(t *testing.T) {
 		t.Errorf("models = %v, want no fallback models (discovery is the source of truth)", resolved.Models)
 	}
 	spec := resolved.Spec(cfg.Model.Name)
-	if spec.Model != "my-model" || spec.Type != "openai-compatible" || spec.BaseURL != "http://localhost:8080/v1" {
+	if spec.Model != "my-model" || spec.Type != "openai-compatible" || spec.BaseURL != "http://localhost:9931/v1" {
 		t.Errorf("spec = %+v, want active model on the shared transport", spec)
 	}
 }

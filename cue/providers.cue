@@ -64,7 +64,7 @@ providers: {
 		id:          "llama-cpp"
 		type:        "openai-compatible"
 		description: "Local models served by llama-server."
-		endpoint:    "http://localhost:8080/v1"
+		endpoint:    "http://localhost:9931/v1"
 		scope:       "local"
 		requires_api_key: false
 		models: []

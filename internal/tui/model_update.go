@@ -3,11 +3,13 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"forcefield/internal/config"
+	"forcefield/internal/orchevents"
 	"forcefield/internal/perfmark"
 	"forcefield/internal/permissions"
 	"forcefield/internal/recovery"
@@ -126,6 +128,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.ready = true
+		// The opening animation is NOT tied to startup anymore: the
+		// normal TUI is the default surface, and the opening timeline
+		// measures from the orchestration activation transition instead
+		// (Phase 5). Resizes only lay out.
 		m.layout()
 		return m, nil
 
@@ -195,6 +201,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		prevPanelHeight := m.agentsPanelHeight()
 		m.agents.apply(msg.Event)
+		// The quadrant canvas reads slot assignments; refresh them from
+		// the stream feed too, so both event paths keep the canvas
+		// live. Slot state is orch-canvas presentation: nothing reads
+		// it when the feature is off.
+		if m.orchEnabled {
+			m.agents.assignQuadrantSlots()
+			// The stream feed terminalizes rows too (delegate results,
+			// repairs); the view must hand back when the orch feed's
+			// own terminal event was dropped or lags behind.
+			m.refreshOrchActive()
+		}
 		if m.agentsPanelHeight() != prevPanelHeight {
 			m.layout()
 		}
@@ -381,6 +398,65 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, loadingTickCmd()
+
+	case openingTickMsg:
+		// One frame of the opening animation (orchestration mode only).
+		// The tick chain stops itself exactly when the animation is done
+		// or was never started, so no scheduled work survives past the
+		// 10.6s completion boundary (PLAN §12.1). Advance takes the
+		// tick's explicit timestamp: a large scheduler stall lands in
+		// the correct final state in one step, and nothing ever sleeps.
+		if !m.orchEnabled || !m.anim.Started() || m.anim.Done() {
+			return m, nil
+		}
+		m.anim.Advance(time.Time(msg))
+		if m.anim.Done() {
+			return m, nil
+		}
+		return m, openingTickCmd()
+
+	case orchDeliverMsg:
+		if msg.gen != m.orchGen {
+			return m, nil // stale batch queued before a session reset
+		}
+		// Fold through the Phase 3 state machine — the same one the
+		// stream feed enriches — so ordering, correlation, and
+		// first-terminal-wins stay owned by agentsState. Terminal
+		// children collapse into bounded transcript entries exactly as
+		// the stream feed does; drainCollapsed hands each summary out
+		// exactly once no matter which feed finished the row.
+		prevPanelHeight := m.agentsPanelHeight()
+		var animCmd tea.Cmd
+		for _, ev := range msg.events {
+			m.agents.applyOrchEvent(ev)
+			// Activation is the AgentSpawned event and nothing else:
+			// the runtime emits it only after a delegation was accepted,
+			// admitted under the concurrency limits, and the child run
+			// is actually about to execute. Configuration, tool
+			// availability, rejections, and pre-execution failures
+			// never emit it, so none of them can switch the view.
+			if m.orchEnabled && !m.orchActive && ev.Type == orchevents.AgentSpawned {
+				m.orchActive = true
+				animCmd = m.maybeStartOpening()
+			}
+		}
+		m.agents.assignQuadrantSlots()
+		if m.agentsPanelHeight() != prevPanelHeight {
+			m.layout()
+		}
+		if summaries := m.agents.drainCollapsed(); len(summaries) > 0 {
+			for _, summary := range summaries {
+				m.Println("agent %s", summary)
+			}
+			m.refreshTranscript()
+		}
+		m.observeOrchDrops(msg.drops)
+		// Deactivation happens after the whole batch: a completed child
+		// must not hide the view while a sibling in the same batch is
+		// still running, and a spawn+completion pair in one batch nets
+		// out to the correct end state.
+		m.refreshOrchActive()
+		return m, animCmd
 	}
 
 	// Anything not handled above (mouse events, cursor-blink ticks, etc.)
@@ -401,4 +477,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.layout()
 
 	return m, tea.Batch(cmds...)
+}
+
+// maybeStartOpening latches the opening animation at the orchestration
+// opening transition — the orchestration activation (the first
+// AgentSpawned of a session), when the quadrant canvas first renders —
+// and schedules the first tick. It returns nil (no command) when the
+// feature is off, when the animation already latched (Start ignores
+// repeats, and the early Started check keeps later activations from
+// stacking a second concurrent tick chain), or when the session-reset
+// wordmark latch already dismissed it. The animation runs once per
+// orchestration session, never once per child: Start is only reachable
+// on the session's first activation because the reset sites zero the
+// animation state alongside orchGen.
+func (m *model) maybeStartOpening() tea.Cmd {
+	if !m.orchEnabled || m.anim.Started() || m.anim.Done() {
+		return nil
+	}
+	m.anim.Start(time.Now())
+	if !m.anim.Started() || m.anim.Done() {
+		return nil
+	}
+	return openingTickCmd()
+}
+
+// refreshOrchActive retires the orchestration view when no orchestration
+// work remains: agentsState.active() reports whether any child row is
+// still queued or running, across both event feeds. Called after every
+// state-mutating feed application (and after stopStream's cancelOpen),
+// so the view hands back exactly when the last child finishes — a
+// completed child never hides the view while a sibling runs.
+func (m *model) refreshOrchActive() {
+	if m.orchActive && !m.agents.active() {
+		m.orchActive = false
+	}
+}
+
+// observeOrchDrops reports new lifecycle-event loss exactly once per
+// increase. Droppable sheds stay silent by design: the next progress
+// event supersedes them and ChildCompleted's counter snapshot
+// reconciles what was hidden. A hard drop, by contrast, means the
+// panel's history is incomplete — never presenting that as complete is
+// exactly why the counters exist. Counters are cumulative, so this is
+// O(1) per delivery with no extra storage or queue.
+func (m *model) observeOrchDrops(snap orchDropSnapshot) {
+	if snap.hard <= m.orchHardDrops {
+		return
+	}
+	lost := snap.hard - m.orchHardDrops
+	m.orchHardDrops = snap.hard
+	m.Println("system: %d orchestration lifecycle event(s) were dropped under event-queue pressure; agent panel history may be incomplete.", lost)
+	m.refreshTranscript()
 }

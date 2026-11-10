@@ -3,7 +3,6 @@ package tui
 import (
 	"strings"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -125,8 +124,11 @@ func TestUnicodeAndNewlinesSurviveToSubmission(t *testing.T) {
 	m := newInputModel()
 	pasted := "héllo wörld\n日本語 ✓\n→ αβγ"
 	m = press(m, pasteMsg(pasted))
-	if got := m.input.Value(); got != pasted {
-		t.Fatalf("input.Value() = %q, want verbatim paste %q", got, pasted)
+	// The visible input is the compact token; unicode and newlines
+	// must survive to submission via the store, byte-for-byte.
+	token := pastePlaceholder(3, 1)
+	if got := m.input.Value(); got != token {
+		t.Fatalf("input.Value() = %q, want placeholder %q", got, token)
 	}
 
 	started, _ := m.acceptInput()
@@ -136,7 +138,7 @@ func TestUnicodeAndNewlinesSurviveToSubmission(t *testing.T) {
 
 	stored := m.session.Messages[len(m.session.Messages)-1].Content
 	if stored != pasted {
-		t.Errorf("session message = %q, want verbatim", stored)
+		t.Errorf("session message = %q, want verbatim %q", stored, pasted)
 	}
 	if strings.Contains(stored, "\\n") {
 		t.Errorf("session message contains a literal backslash-n: %q", stored)
@@ -171,46 +173,68 @@ func TestMultilinePasteSubmittedWithRealNewlines(t *testing.T) {
 func TestPasteCRLFNormalizedToLF(t *testing.T) {
 	m := newInputModel()
 	m = press(m, pasteMsg("windows\r\nstyle\r\npaste"))
-	if got := m.input.Value(); got != "windows\nstyle\npaste" {
-		t.Errorf("input.Value() = %q, want CRLF normalized to LF", got)
+	// The visible input collapses to a placeholder token; the stored
+	// original is where CRLF is normalized to LF.
+	token := pastePlaceholder(3, 1)
+	if got := m.input.Value(); got != token {
+		t.Errorf("input.Value() = %q, want placeholder %q", got, token)
+	}
+	if got := m.pastes[token]; got != "windows\nstyle\npaste" {
+		t.Errorf("stored paste = %q, want CRLF normalized to LF", got)
 	}
 }
 
-func TestPasteBurstEnterInsertsNewlineNotSubmit(t *testing.T) {
-	// Simulates the Windows console driver, where a paste has no bracketed
-	// paste markers: characters arrive as rapid keystrokes and each pasted
-	// newline is a plain Enter event.
+func TestPlainEnterSubmitsInsteadOfNewline(t *testing.T) {
+	// A plain Enter is a deliberate submit, not a newline insert.
+	// Forcefield no longer uses timing-based heuristics.
 	m := newInputModel()
 	m = press(m, typeMsg("line one"))
-	m = press(m, enterMsg()) // arrives immediately: burst window active
+	m = press(m, enterMsg())
+
+	if newlineEnter(enterMsg()) {
+		t.Error("plain Enter was classified as a newline insert")
+	}
+	if !newlineEnter(altEnterMsg()) {
+		t.Error("alt+enter was not classified as a newline insert")
+	}
+	if !newlineEnter(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("shift+enter")}) {
+		t.Error("shift+enter string was not classified as a newline insert")
+	}
+	// Plain Enter submitted the input:
+	if m.input.Value() != "" {
+		t.Errorf("input.Value() = %q, want empty after submit", m.input.Value())
+	}
+	if len(m.entries) == 0 || m.entries[0].Content != "line one" {
+		t.Fatalf("entries = %+v, want user entry 'line one'", m.entries)
+	}
+}
+
+func TestModifiedEnterAndBracketedPastePreserveNewlines(t *testing.T) {
+	// Alt+Enter inserts a newline
+	m := newInputModel()
+	m = press(m, typeMsg("line one"))
+	m = press(m, altEnterMsg())
 	m = press(m, typeMsg("line two"))
 
 	if got := m.input.Value(); got != "line one\nline two" {
-		t.Errorf("input.Value() = %q, want pasted newline preserved", got)
+		t.Errorf("input.Value() = %q, want %q", got, "line one\nline two")
 	}
 	if len(m.entries) != 0 {
-		t.Fatalf("burst Enter submitted mid-paste: %d entries", len(m.entries))
+		t.Fatalf("alt+enter submitted: %d entries", len(m.entries))
 	}
-}
 
-func TestEnterAfterBurstWindowStillReachesSubmitPath(t *testing.T) {
-	// A deliberate Enter more than pasteBurstWindow after the last
-	// keystroke must not be mistaken for a pasted newline. (The submit leg
-	// itself needs a live runtime, so it's covered by the integration
-	// test's /help run; here we assert the branch decision only.)
-	m := newInputModel()
-	m = press(m, typeMsg("hello"))
-	m.lastKeyAt = time.Now().Add(-time.Second) // simulate a long pause
-
-	inBurst := time.Since(m.lastKeyAt) <= pasteBurstWindow
-	if newlineEnter(enterMsg(), inBurst) {
-		t.Error("delayed plain Enter was classified as a newline insert")
+	// Bracketed paste preserves newlines via Paste: true without submitting
+	m2 := newInputModel()
+	m2 = press(m2, pasteMsg("line one\nline two"))
+	if len(m2.entries) != 0 {
+		t.Fatalf("bracketed paste submitted: %d entries", len(m2.entries))
 	}
-	if !newlineEnter(enterMsg(), true) {
-		t.Error("burst Enter was not classified as a newline insert")
+	token := pastePlaceholder(2, 1)
+	if got := m2.input.Value(); got != token {
+		t.Errorf("input.Value() = %q, want placeholder %q", got, token)
 	}
-	if !newlineEnter(altEnterMsg(), false) {
-		t.Error("alt+enter was not classified as a newline insert")
+	if got := m2.pastes[token]; got != "line one\nline two" {
+		t.Errorf("stored paste = %q, want original multiline text", got)
 	}
 }
 

@@ -2,9 +2,12 @@ package cue
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"forcefield/internal/config"
 )
 
 // The CUE schemas are the declarative mirror of the Go validation rules.
@@ -99,6 +102,139 @@ func TestProviderCatalogEndpointsMatchHTTPURL(t *testing.T) {
 		}
 		if strings.ContainsAny(endpoint, "?#") {
 			t.Errorf("catalog endpoint %q carries a query or fragment", endpoint)
+		}
+	}
+}
+
+// TestSchemaOrchestrationCrossField pins the orchestration cross-field
+// parity (fix O2): Go's validateOrchestration rejects an explicit
+// concurrency cap below an explicit depth (a nested chain holds one child
+// slot per depth level at the same time, so the capped chain stalls on
+// the semaphore until the delegate timeout), and config.cue mirrors that
+// rule behind a presence guard so `cue vet` rejects the same
+// configurations. The guard follows the real rule exactly: the relation
+// only exists when BOTH fields appear - omitted values resolve to the
+// documented defaults (depth <= 3, concurrency 4) which always satisfy
+// it.
+//
+// The fixture files are shared with the CI cue job (.github/workflows/
+// test.yml), which enforces the CUE verdict on them; the checks below
+// enforce the corresponding verdicts through the real Go Load path, so
+// both engines are demonstrated against the same configurations.
+func TestSchemaOrchestrationCrossField(t *testing.T) {
+	raw, err := os.ReadFile(configCue)
+	if err != nil {
+		t.Fatalf("read %s: %v", configCue, err)
+	}
+	schema := string(raw)
+
+	// The guard and the relation must both be present, conditioned on
+	// both fields appearing.
+	for _, want := range []string{
+		"if max_depth != _|_ && max_concurrent_children != _|_ {",
+		"max_concurrent_children: >= max_depth",
+	} {
+		if !strings.Contains(schema, want) {
+			t.Fatalf("config.cue lost the guarded cross-field constraint, want literal %q", want)
+		}
+	}
+
+	// Parity must stay exact in BOTH directions: Go intentionally does
+	// not relate max_children_per_run to max_depth (a small spawn cap
+	// only makes deep chains unreachable, and Go refuses every excess
+	// spawn honestly), so a constraint to that effect in the schema
+	// would reject configurations Go accepts. This literal keeps the
+	// phantom rule out of the schema.
+	if strings.Contains(schema, "max_children_per_run: >= max_depth") {
+		t.Fatalf("config.cue bounds max_children_per_run against max_depth; sys validation has no such rule, so the schema would reject configs Go accepts")
+	}
+
+	// loadGoConfig runs the real Go load path against one YAML body in
+	// an isolated home directory (mirrors internal/config's own test
+	// harness via the exported Load API).
+	loadGoConfig := func(t *testing.T, body string) error {
+		t.Helper()
+		home := t.TempDir()
+		t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
+		t.Setenv("HOME", home)        // os.UserHomeDir everywhere else
+		path, err := config.Path()
+		if err != nil {
+			t.Fatalf("config.Path: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("create home dir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		_, err = config.Load()
+		return err
+	}
+
+	// The CI-shared fixtures must carry the same verdicts here that the
+	// cue job enforces there.
+	invalid, err := os.ReadFile("testdata/invalid-orchestration-crossfield.yaml")
+	if err != nil {
+		t.Fatalf("read cross-field fixture: %v", err)
+	}
+	err = loadGoConfig(t, string(invalid))
+	if err == nil {
+		t.Fatalf("Go Load accepted the deadlocking fixture CUE rejects (max_depth: 3, max_concurrent_children: 2)")
+	}
+	for _, want := range []string{"max_concurrent_children", "max_depth"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Go Load error %q does not name %q", err, want)
+		}
+	}
+	for _, ok := range []string{
+		"testdata/valid-orchestration-crossfield.yaml",
+		"testdata/valid-orchestration-depth-only.yaml",
+	} {
+		body, ferr := os.ReadFile(ok)
+		if ferr != nil {
+			t.Fatalf("read %s: %v", ok, ferr)
+		}
+		if err := loadGoConfig(t, string(body)); err != nil {
+			t.Fatalf("Go Load rejected %s: %v", ok, err)
+		}
+	}
+
+	// The exact boundary: the load path accepts cap == depth and
+	// the single-field forms, and rejects cap < depth with an error
+	// naming both fields.
+	modelBlock := `model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ornith:9b
+agent:
+  name: default
+permissions:
+  default: ask
+orchestration:
+`
+	for _, tc := range []struct {
+		name   string
+		bounds string
+		reject bool
+	}{
+		{"depth 3 cap 3 (boundary)", "  enabled: true\n  max_depth: 3\n  max_concurrent_children: 3", false},
+		{"depth 2 cap 2 (boundary)", "  enabled: true\n  max_depth: 2\n  max_concurrent_children: 2", false},
+		{"depth 1 cap 1 (floor)", "  enabled: true\n  max_depth: 1\n  max_concurrent_children: 1", false},
+		{"depth only (default cap)", "  enabled: true\n  max_depth: 3", false},
+		{"cap only", "  enabled: true\n  max_concurrent_children: 1", false},
+		{"depth 3, per_run 1 (no relation)", "  enabled: true\n  max_depth: 3\n  max_children_per_run: 1", false},
+		{"depth 3 cap 2 (deadlock)", "  enabled: true\n  max_depth: 3\n  max_concurrent_children: 2", true},
+		{"depth 2 cap 1 (deadlock)", "  enabled: true\n  max_depth: 2\n  max_concurrent_children: 1", true},
+	} {
+		err := loadGoConfig(t, modelBlock+tc.bounds)
+		if tc.reject && err == nil {
+			t.Errorf("%s: Go Load accepted, want rejection", tc.name)
+		}
+		if !tc.reject && err != nil {
+			t.Errorf("%s: Go Load rejected: %v", tc.name, err)
+		}
+		if tc.reject && err != nil && !strings.Contains(err.Error(), "max_concurrent_children") {
+			t.Errorf("%s: error %q does not name max_concurrent_children", tc.name, err)
 		}
 	}
 }

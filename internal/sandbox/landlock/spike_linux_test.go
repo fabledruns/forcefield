@@ -769,6 +769,7 @@ echo WRITES-OK`,
 			setup: seedRepo,
 			script: `set -e
 export GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-/dev/null}"
 git status --short
 git log --oneline | grep -q init
 echo STAGED >> tracked.txt

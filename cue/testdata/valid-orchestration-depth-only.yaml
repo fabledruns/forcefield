@@ -1,0 +1,15 @@
+# VALID: with max_concurrent_children omitted, Go resolves the documented
+# default (4), which covers any allowed depth (<= 3), so the cross-field
+# relation only applies when both fields appear. The schema must accept
+# depth alone.
+model:
+  provider: ollama
+  endpoint: http://localhost:11434
+  name: ornith:9b
+agent:
+  name: default
+permissions:
+  default: ask
+orchestration:
+  enabled: true
+  max_depth: 3

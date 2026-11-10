@@ -16,6 +16,7 @@ VERSION="${FORCEFIELD_VERSION:-}"
 INSTALL_DIR="${FORCEFIELD_INSTALL_DIR:-}"
 NO_MODIFY_PATH="${FORCEFIELD_NO_MODIFY_PATH:-0}"
 FORCE="${FORCEFIELD_FORCE:-0}"
+SKIP_CHECKSUM="${FORCEFIELD_SKIP_CHECKSUM:-0}"
 
 # ---------- helpers ----------
 
@@ -50,12 +51,14 @@ Options:
   --dir <path>      Install directory. Default: $HOME/.local/bin
   --no-modify-path  Do not try to add install dir to PATH
   --force           Reinstall even when the requested version is already installed
+  --skip-checksum   Skip checksum verification (not recommended)
   -h, --help        Show this help
 
 Environment:
-  FORCEFIELD_VERSION      Same as --version
-  FORCEFIELD_INSTALL_DIR  Same as --dir
-  FORCEFIELD_FORCE        Same as --force (set to 1)
+  FORCEFIELD_VERSION        Same as --version
+  FORCEFIELD_INSTALL_DIR    Same as --dir
+  FORCEFIELD_FORCE          Same as --force (set to 1)
+  FORCEFIELD_SKIP_CHECKSUM  Same as --skip-checksum (set to 1)
   NO_COLOR                Set (to anything) for plain, log-friendly output
   FORCEFIELD_ASCII        Set to 1 for ASCII output on a terminal
 EOF
@@ -509,6 +512,10 @@ parse_args() {
         FORCE=1
         shift
         ;;
+      --skip-checksum)
+        SKIP_CHECKSUM=1
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -817,60 +824,64 @@ fi
 ui_done "Download complete"
 
 # ---------- checksum ----------
-ui_step "Verifying checksum"
-CHECKSUM_FILE="$TMP/checksums.txt"
-CHECKSUM_OK=0
-CHECKSUM_TMP="$TMP/checksums.tmp"
+if [ "$SKIP_CHECKSUM" = "1" ]; then
+  ui_warn "skipping checksum verification (--skip-checksum is set)"
+else
+  ui_step "Verifying checksum"
+  CHECKSUM_FILE="$TMP/checksums.txt"
+  CHECKSUM_OK=0
+  CHECKSUM_TMP="$TMP/checksums.tmp"
 
-# Try primary checksums.txt, then fallback to SHA256SUMS / checksums.txt variations
-for url in "$CHECKSUM_URL" "https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS" "https://github.com/${REPO}/releases/download/${VERSION}/checksums.sha256"; do
-  if download_file "$url" "$CHECKSUM_TMP" 2>/dev/null; then
-    if [ -s "$CHECKSUM_TMP" ]; then
-      mv "$CHECKSUM_TMP" "$CHECKSUM_FILE"
-      ui_detail "Checksums: $url"
-      break
+  # Try primary checksums.txt, then fallback to SHA256SUMS / checksums.txt variations
+  for url in "$CHECKSUM_URL" "https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS" "https://github.com/${REPO}/releases/download/${VERSION}/checksums.sha256"; do
+    if download_file "$url" "$CHECKSUM_TMP" 2>/dev/null; then
+      if [ -s "$CHECKSUM_TMP" ]; then
+        mv "$CHECKSUM_TMP" "$CHECKSUM_FILE"
+        ui_detail "Checksums: $url"
+        break
+      fi
     fi
-  fi
-  rm -f "$CHECKSUM_TMP" 2>/dev/null || true
-done
+    rm -f "$CHECKSUM_TMP" 2>/dev/null || true
+  done
 
-if [ -f "$CHECKSUM_FILE" ]; then
-  # Extract expected hash for our artifact; format is "<hash>  <filename>" (GNU) or "<hash> *<filename>" (binary)
-  # Use exact filename match, not substring, to prevent similarly-named artifacts from satisfying verification.
-  expected="$(awk -v art="$ARTIFACT" '{
-    f=$2; sub(/^\*/, "", f); sub(/\r$/, "", f);
-    if (f == art) { print $1; exit }
-  }' "$CHECKSUM_FILE" 2>/dev/null || true)"
-  # Fallback for CRLF or extra handling: also try stripping * and comparing
-  if [ -z "$expected" ]; then
+  if [ -f "$CHECKSUM_FILE" ]; then
+    # Extract expected hash for our artifact; format is "<hash>  <filename>" (GNU) or "<hash> *<filename>" (binary)
+    # Use exact filename match, not substring, to prevent similarly-named artifacts from satisfying verification.
     expected="$(awk -v art="$ARTIFACT" '{
-      for (i=2;i<=NF;i++) { f=$i; sub(/^\*/, "", f); sub(/\r$/, "", f); if (f == art) {print $1; exit}}
+      f=$2; sub(/^\*/, "", f); sub(/\r$/, "", f);
+      if (f == art) { print $1; exit }
     }' "$CHECKSUM_FILE" 2>/dev/null || true)"
-  fi
-  if [ -z "$expected" ]; then
-    ui_warn "checksums.txt does not contain $ARTIFACT; skipping verification (this should not happen for new releases)"
-  else
-    # Normalize to lowercase
-    expected="$(printf "%s" "$expected" | tr 'A-F' 'a-f')"
-    actual="$(sha256_of_file "$TMP/$ARTIFACT" 2>/dev/null || true)"
-    if [ -z "$actual" ]; then
-      ui_warn "could not compute sha256; skipping verification"
+    # Fallback for CRLF or extra handling: also try stripping * and comparing
+    if [ -z "$expected" ]; then
+      expected="$(awk -v art="$ARTIFACT" '{
+        for (i=2;i<=NF;i++) { f=$i; sub(/^\*/, "", f); sub(/\r$/, "", f); if (f == art) {print $1; exit}}
+      }' "$CHECKSUM_FILE" 2>/dev/null || true)"
+    fi
+    if [ -z "$expected" ]; then
+      die "checksums.txt does not contain $ARTIFACT. Refusing to install unverified binary. Pass --skip-checksum to override."
     else
-      actual="$(printf "%s" "$actual" | tr 'A-F' 'a-f')"
-      if [ "$expected" != "$actual" ]; then
-        die "Checksum mismatch for $ARTIFACT
+      # Normalize to lowercase
+      expected="$(printf "%s" "$expected" | tr 'A-F' 'a-f')"
+      actual="$(sha256_of_file "$TMP/$ARTIFACT" 2>/dev/null || true)"
+      if [ -z "$actual" ]; then
+        die "could not compute sha256 for verification. Refusing to install unverified binary. Pass --skip-checksum to override."
+      else
+        actual="$(printf "%s" "$actual" | tr 'A-F' 'a-f')"
+        if [ "$expected" != "$actual" ]; then
+          die "Checksum mismatch for $ARTIFACT
   expected: $expected
   actual:   $actual
 Refusing to install. The download may be corrupted or tampered with."
+        fi
+        ui_done "Checksum verified"
+        CHECKSUM_OK=1
       fi
-      ui_done "Checksum verified"
-      CHECKSUM_OK=1
     fi
+  else
+    die "no checksums file found at $CHECKSUM_URL.
+Refusing to install unverified binary.
+Pass --skip-checksum (or set FORCEFIELD_SKIP_CHECKSUM=1) to override if you trust this download."
   fi
-else
-  ui_warn "no checksums file at $CHECKSUM_URL"
-  ui_warn "skipping verification (old releases before v1.2 may not have checksums)"
-  ui_detail "for security, prefer a release with checksums.txt or verify manually"
 fi
 
 # ---------- install ----------

@@ -81,6 +81,12 @@ func (m *model) Clear() {
 	m.entries = nil
 	m.activeTools = make(map[string]int)
 	m.agents = agentsState{}
+	m.bumpOrchGen()
+	m.orchActive = false
+	// A new orchestration session re-runs the opening animation once:
+	// the reset zeroes the animation state, so the session's first
+	// activation latches a fresh timeline. Children never re-run it.
+	m.anim = openingAnimState{}
 	m.assistantBuffer = ""
 	m.status = ""
 	m.clearNotice()
@@ -110,6 +116,12 @@ func (m *model) NewSession() error {
 	m.session = next
 	m.entries = nil
 	m.agents = agentsState{}
+	m.bumpOrchGen()
+	m.orchActive = false
+	// A new orchestration session re-runs the opening animation once
+	// (see Clear): the reset zeroes the animation state so this
+	// session's first activation latches a fresh timeline.
+	m.anim = openingAnimState{}
 	m.assistantBuffer = ""
 	m.activeTools = make(map[string]int)
 	m.permissionPrompt = nil
@@ -120,7 +132,7 @@ func (m *model) NewSession() error {
 	m.clearNotice()
 	m.loadingFrame = 0
 	m.following = true
-	m.input.Reset()
+	m.resetInput()
 	m.suggestions = nil
 	m.suggestionCursor = 0
 	m.refreshTranscript()

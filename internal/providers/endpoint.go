@@ -30,11 +30,15 @@ var metadataHosts = map[string]struct{}{
 func isLoopbackHostname(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	h = strings.TrimSuffix(h, ".")
+	if sh, _, err := net.SplitHostPort(h); err == nil {
+		h = sh
+	}
+	h = strings.TrimPrefix(strings.TrimSuffix(h, "]"), "[")
 	if h == "localhost" {
 		return true
 	}
 	if ip, err := netip.ParseAddr(stripZone(h)); err == nil {
-		return ip.IsLoopback()
+		return ip.Unmap().IsLoopback()
 	}
 	if ip := net.ParseIP(stripZone(h)); ip != nil {
 		return ip.IsLoopback()
@@ -46,10 +50,15 @@ func isLoopbackHostname(host string) bool {
 func IsMetadataHost(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	h = strings.TrimSuffix(h, ".")
+	if sh, _, err := net.SplitHostPort(h); err == nil {
+		h = sh
+	}
+	h = strings.TrimPrefix(strings.TrimSuffix(h, "]"), "[")
 	if _, ok := metadataHosts[h]; ok {
 		return true
 	}
 	if ip, err := netip.ParseAddr(stripZone(h)); err == nil {
+		ip = ip.Unmap()
 		if ip.Is4() && ip.String() == "169.254.169.254" {
 			return true
 		}
@@ -64,6 +73,10 @@ func IsMetadataHost(host string) bool {
 func IsPrivateEndpointHost(host string) bool {
 	h := strings.TrimSpace(host)
 	h = strings.TrimSuffix(strings.ToLower(h), ".")
+	if sh, _, err := net.SplitHostPort(h); err == nil {
+		h = sh
+	}
+	h = strings.TrimPrefix(strings.TrimSuffix(h, "]"), "[")
 	if h == "localhost" {
 		return true
 	}
@@ -71,6 +84,7 @@ func IsPrivateEndpointHost(host string) bool {
 	if err != nil {
 		return false
 	}
+	addr = addr.Unmap()
 	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast()
 }
 

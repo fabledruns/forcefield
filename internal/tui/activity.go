@@ -2,14 +2,45 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"forcefield/internal/providers"
 	"forcefield/internal/runtime"
 )
+
+var (
+	ansiCSI    = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
+	ansiOSC    = regexp.MustCompile("\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)")
+	ansiSimple = regexp.MustCompile("\x1b[@-Z\\\\\\]^_0-9=>]")
+)
+
+// sanitizeTerminalOutput strips ANSI escape sequences and non-printable control
+// characters from untrusted tool output, errors, and arguments before rendering
+// into the TUI.
+func sanitizeTerminalOutput(s string) string {
+	s = ansiOSC.ReplaceAllString(s, "")
+	s = ansiCSI.ReplaceAllString(s, "")
+	s = ansiSimple.ReplaceAllString(s, "")
+
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\t' || r == '\n':
+			b.WriteRune(r)
+		case r < 0x20 || r == 0x7f:
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 // toolRecord carries a tool call's structured details for the lifetime of
 // its activity line, so the compact one-line summary can be expanded
@@ -41,7 +72,7 @@ func formatToolStart(call *providers.ToolCall) string {
 	}
 
 	if detail := usefulToolArgument(call.Arguments); detail != "" {
-		return fmt.Sprintf("%s Running %s %s", IconRunning, call.Name, detail)
+		return fmt.Sprintf("%s Running %s %s", IconRunning, call.Name, sanitizeTerminalOutput(detail))
 	}
 	return fmt.Sprintf("%s Running %s", IconRunning, call.Name)
 }
@@ -115,11 +146,11 @@ func formatToolFinish(result *runtime.ToolResult, eventType runtime.EventType) s
 		}
 	case "read_file":
 		if path, ok := result.Arguments["path"].(string); ok && path != "" {
-			message = fmt.Sprintf("%s Read %s", IconDiamond, path)
+			message = fmt.Sprintf("%s Read %s", IconDiamond, sanitizeTerminalOutput(path))
 		}
 	case "write_file":
 		if path, ok := result.Arguments["path"].(string); ok && path != "" {
-			message = fmt.Sprintf("%s Wrote %s", IconDiamond, path)
+			message = fmt.Sprintf("%s Wrote %s", IconDiamond, sanitizeTerminalOutput(path))
 		}
 	}
 	if message == "" {
@@ -135,11 +166,11 @@ func formatToolDetails(t *toolRecord, width int) string {
 	var b strings.Builder
 
 	appendSection := func(label, value string) {
-		value = strings.TrimRight(value, "\n")
+		value = sanitizeTerminalOutput(strings.TrimRight(value, "\n"))
 		if value == "" {
 			return
 		}
-		fmt.Fprintf(&b, "\n  %s", label)
+		fmt.Fprintf(&b, "\n  %s", sanitizeTerminalOutput(label))
 		for _, line := range clampLines(value, maxExpandedOutputLines) {
 			b.WriteString("\n  │ " + line)
 		}
@@ -199,6 +230,7 @@ func usefulToolArgument(args map[string]any) string {
 		if !ok || value == "" {
 			continue
 		}
+		value = sanitizeTerminalOutput(value)
 		if key == "command" || key == "cmd" {
 			return quoteCommand(value)
 		}
@@ -232,10 +264,21 @@ func nonEmptyLines(value string) int {
 
 // shortResult collapses a result to one summary line, truncating on rune
 // boundaries so multi-byte characters are never split into mojibake.
+//
+// The limit counts characters, not bytes, because the cut is made at a
+// character boundary. The guard and the slice therefore have to measure
+// the same unit: comparing a byte length against a character limit let
+// multi-byte text (CJK, emoji) whose byte count exceeded the limit while
+// its character count did not reach it slice past the end of the rune
+// slice and panic ("slice bounds out of range [:119] with capacity 72").
 func shortResult(value string) string {
+	value = sanitizeTerminalOutput(value)
 	value = strings.TrimSpace(strings.ReplaceAll(value, "\n", " "))
 	const limit = 120
-	if len(value) <= limit {
+	// utf8.RuneCountInString matches len([]rune(value)) exactly, so the
+	// count below is the length of the slice made further down: more than
+	// limit characters always means the slice has at least limit runes.
+	if utf8.RuneCountInString(value) <= limit {
 		return value
 	}
 	truncated := []rune(value)[:limit-1]

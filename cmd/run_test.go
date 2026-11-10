@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"forcefield/internal/orchevents"
 	"forcefield/internal/providers"
 	"forcefield/internal/recovery"
 	"forcefield/internal/runtime"
@@ -265,5 +266,85 @@ func TestRunCommand_ReportsMCPWarnings(t *testing.T) {
 	}
 	if !strings.Contains(stderr, `mcp server "dead" failed to start`) {
 		t.Errorf("stderr = %q, want the MCP warning", stderr)
+	}
+}
+
+// TestRunDemotesOnMidStreamEventWriteFailure pins the ORCH-TEST-04 core
+// safety property at the command boundary: a telemetry failure that
+// strikes mid-stream — RunStarted's record already accepted, then the
+// log's pipe breaks while the model turn is in flight (the
+// deterministic stand-in for an ENOSPC-style after-open failure) — must
+// not convert the run's own verified outcome into an orchestration
+// execution failure. The model response stays authoritative, the
+// terminal status is demoted to partial, stderr carries the write
+// failure plus the unverified demotion notice, and the process exits
+// ExitUnverified so pipelines never accept output whose own evidence
+// could not be written.
+//
+// Complementary to the failure-modes suite in run_persist_test.go:
+// those subtests cover seam-time EPIPE (log writes from the first
+// record onward), terminal-event closure timing, and the open-failure
+// exit code, but never assert that a *write* failure keeps runErr nil
+// or its exit code; the reader-recovery half of the contract lives
+// with the writer fault-injection tests in internal/orchevents.
+func TestRunDemotesOnMidStreamEventWriteFailure(t *testing.T) {
+	origWriter := newEventWriter
+	origExit := osExit
+	defer func() {
+		newEventWriter = origWriter
+		osExit = origExit
+	}()
+
+	var rEnd *os.File
+	rt := newVerifiedHeadlessRuntime(t, func() {
+		// Armed mid-stream: the real (pipe-backed) writer has already
+		// accepted RunStarted's record; from here on every write fails
+		// deterministically — the write-side shape of a disk that
+		// fills up after the log was opened.
+		if rEnd != nil {
+			_ = rEnd.Close()
+		}
+	})
+	newEventWriter = func(path, runID string) (*orchevents.Writer, error) {
+		var wEnd *os.File
+		var err error
+		rEnd, wEnd, err = os.Pipe()
+		if err != nil {
+			return nil, err
+		}
+		return orchevents.NewFileWriter(wEnd, "run-mid-stream-fail"), nil
+	}
+
+	var resp providers.Response
+	var status runtime.Status
+	var runErr error
+	stderr := captureStderr(t, func() {
+		resp, status, _, runErr = runHeadlessSession(context.Background(), rt, []providers.Message{
+			{Role: providers.UserRole, Content: "mid-stream marker"},
+		})
+	})
+	if runErr != nil {
+		t.Fatalf("runErr = %v, want nil: a telemetry write failure must not become an orchestration execution failure", runErr)
+	}
+	if status != runtime.StatusPartial {
+		t.Errorf("status = %q, want %q (verified demoted on mid-stream event-log write failure)", status, runtime.StatusPartial)
+	}
+	if resp.Content != "verified answer" {
+		t.Errorf("response = %q, want the model's authoritative outcome untouched by telemetry failure", resp.Content)
+	}
+	if !strings.Contains(stderr, "orchestration event log write failed (write event 2:") {
+		t.Errorf("missing mid-stream write failure warning on stderr: %q", stderr)
+	}
+	if !strings.Contains(stderr, "result marked unverified: orchestration event log unusable") {
+		t.Errorf("missing demotion notice on stderr: %q", stderr)
+	}
+
+	exited := -1
+	osExit = func(code int) { exited = code }
+	_ = captureStderr(t, func() {
+		_ = exitForRunStatus(status)
+	})
+	if exited != recovery.ExitUnverified {
+		t.Errorf("exit code = %d, want %d (ExitUnverified: lost evidence is never reported as success)", exited, recovery.ExitUnverified)
 	}
 }

@@ -32,6 +32,7 @@ const (
 	DelegationRejected  Type = "delegation_rejected"
 	AgentSpawned        Type = "agent_spawned"
 	ChildProgress       Type = "child_progress"
+	ChildText           Type = "child_text"
 	ChildCompleted      Type = "child_completed"
 	ToolStarted         Type = "tool_started"
 	ToolCompleted       Type = "tool_completed"
@@ -66,7 +67,13 @@ type Event struct {
 	// delegation path ("root > child > ...") that correlates it.
 	ChildRunID  string         `json:"child_run,omitempty"`
 	CallID      string         `json:"call_id,omitempty"`
-	Tool        string         `json:"tool,omitempty"`
+	// BatchIndex is the 1-based position of a child inside a native
+	// batch delegation (one delegate call carrying a tasks array).
+	// Zero for every event outside batch delegation. It identifies
+	// which declared task an event belongs to, so two children of the
+	// same batch never share an identity.
+	BatchIndex int    `json:"batch_index,omitempty"`
+	Tool       string `json:"tool,omitempty"`
 	Status      string         `json:"status,omitempty"`
 	Outcome     string         `json:"outcome,omitempty"` // done|error|blocked|cancelled
 	Turns       int            `json:"turns,omitempty"`
@@ -83,6 +90,12 @@ type Event struct {
 	BudgetLimit int            `json:"budget_limit,omitempty"`
 	BudgetValue int            `json:"budget_value,omitempty"`
 	Meta        map[string]any `json:"meta,omitempty"`
+	// Text carries the actual child output for ChildText events.
+	// Content-scoped and omitempty: transient visibility only, never
+	// persisted task content (see docs/Events.md). The headless writer
+	// drops ChildText events entirely, so response text never reaches
+	// the event log.
+	Text string `json:"text,omitempty"`
 }
 
 // terminalOutcome validates the Outcome vocabulary; empty is allowed
@@ -112,6 +125,13 @@ type Sink interface {
 	Emit(Event)
 }
 
+// RunScopedSink is an optional extension of Sink that exposes the run ID
+// this sink is scoped to.
+type RunScopedSink interface {
+	Sink
+	RunID() string
+}
+
 // sanitize scrubs free-text fields defensively before persistence: even
 // though producers are trusted internal code, error strings can embed
 // tool output. Counters and identifiers carry no prose and pass through.
@@ -129,7 +149,7 @@ func (e Event) valid() bool {
 		return false
 	case RunStarted, RunCompleted, RunFailed, RunCancelled, RunBlocked,
 		DelegationRequested, DelegationAccepted, DelegationRejected,
-		AgentSpawned, ChildProgress, ChildCompleted, ToolStarted,
+		AgentSpawned, ChildProgress, ChildText, ChildCompleted, ToolStarted,
 		ToolCompleted, ToolFailed, ToolDenied, ToolCancelled,
 		BudgetExhausted, EventsTruncated:
 	default:

@@ -109,11 +109,24 @@ func (w *Writer) Close() error {
 // violate the schema (unknown type, child events without attribution)
 // are dropped silently: a malformed event is a producer bug, and
 // recording it would poison the stream's schema guarantees.
+//
+// ChildText events are dropped as well, and deliberately: they carry the
+// child's own response text, which the log's privacy contract excludes
+// ("no response content"). They exist for the live TUI only, and the TUI
+// installs its own sink, so nothing is lost by keeping them out of the
+// file.
 func (w *Writer) Emit(e Event) {
 	if w == nil {
 		return
 	}
 	if !e.valid() {
+		return
+	}
+	if e.Type == ChildText {
+		return
+	}
+	// Drop events belonging to a different execution run to prevent cross-run pollution.
+	if e.RunID != "" && w.runID != "" && e.RunID != w.runID {
 		return
 	}
 	sanitize(&e)

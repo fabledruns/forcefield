@@ -158,7 +158,7 @@ func TestDelegateToolValidation(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := withOrchestrationScope(context.Background(), orch.rootScope(&snap))
+			ctx := withOrchestrationScope(context.Background(), orch.rootScope(context.Background(), &snap))
 			result, err := tool.Execute(ctx, tc.args)
 			if err != nil {
 				t.Fatalf("Execute() error = %v, want soft error", err)
@@ -173,7 +173,7 @@ func TestDelegateToolValidation(t *testing.T) {
 	}
 
 	t.Run("missing fields", func(t *testing.T) {
-		ctx := withOrchestrationScope(context.Background(), orch.rootScope(&snap))
+		ctx := withOrchestrationScope(context.Background(), orch.rootScope(context.Background(), &snap))
 		for _, args := range []map[string]any{
 			{"agent": "researcher"},
 			{"task": "x"},

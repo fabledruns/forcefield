@@ -41,8 +41,8 @@ func TestLlamaCppPresetSharesOpenAICompatibleTransport(t *testing.T) {
 	if preset.Type != "openai-compatible" {
 		t.Errorf("type = %q, want the shared OpenAI-compatible transport", preset.Type)
 	}
-	if preset.BaseURL != "http://localhost:8080/v1" {
-		t.Errorf("base URL = %q, want llama-server's default http://localhost:8080/v1", preset.BaseURL)
+	if preset.BaseURL != "http://localhost:9931/v1" {
+		t.Errorf("base URL = %q, want llama-server's default http://localhost:9931/v1", preset.BaseURL)
 	}
 	if preset.Auth != AuthNone || preset.Scope != ScopeLocal {
 		t.Errorf("auth/scope = %v/%q, want unauthenticated local", preset.Auth, preset.Scope)
@@ -53,7 +53,7 @@ func TestLlamaCppPresetSharesOpenAICompatibleTransport(t *testing.T) {
 
 	p, err := DefaultFactories().Create(Spec{
 		ID: "llama-cpp", Type: "openai-compatible", Label: "llama.cpp",
-		BaseURL: "http://localhost:8080/v1", Model: "my-model",
+		BaseURL: "http://localhost:9931/v1", Model: "my-model",
 	})
 	if err != nil {
 		t.Fatalf("Create(llama-cpp) error = %v", err)

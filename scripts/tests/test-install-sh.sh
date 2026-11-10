@@ -190,10 +190,16 @@ parse_args --version=1.2.3 --no-modify-path
 assert_eq "parse equals-form version" "1.2.3" "$VERSION"
 assert_eq "parse no-modify-path" "1" "$NO_MODIFY_PATH"
 
+SKIP_CHECKSUM="0"
+parse_args --skip-checksum
+assert_eq "parse skip-checksum" "1" "$SKIP_CHECKSUM"
+
 check_exit "parse rejects unknown flag" "1" parse_args --bogus
 check_exit "parse rejects empty version" "1" parse_args --version ""
 assert_eq "env enables force" "1" "$(FORCEFIELD_FORCE=1 "$TEST_SH" -c 'FORCEFIELD_LIB_ONLY=1 . "$0"; printf "%s" "$FORCE"' "$INSTALL_SH")"
 assert_eq "force defaults off" "0" "$("$TEST_SH" -c 'FORCEFIELD_LIB_ONLY=1 . "$0"; printf "%s" "$FORCE"' "$INSTALL_SH")"
+assert_eq "env enables skip-checksum" "1" "$(FORCEFIELD_SKIP_CHECKSUM=1 "$TEST_SH" -c 'FORCEFIELD_LIB_ONLY=1 . "$0"; printf "%s" "$SKIP_CHECKSUM"' "$INSTALL_SH")"
+assert_eq "skip-checksum defaults off" "0" "$("$TEST_SH" -c 'FORCEFIELD_LIB_ONLY=1 . "$0"; printf "%s" "$SKIP_CHECKSUM"' "$INSTALL_SH")"
 
 ACTION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/forcefield-action.XXXXXX")"
 trap 'rm -rf "${STUBS:-}" "${ACTION_DIR:-}" 2>/dev/null || true' EXIT INT TERM HUP
