@@ -11,10 +11,11 @@
 </p>
 
 <p align="center">
-  <a href="https://dodolaunch.com/p/superprime?ref=badge" target="_blank" rel="noreferrer">
+  <a href="https://dodolaunch.com/p/superprime?ref=badge" target="_blank">
     <img
       src="https://dodolaunch.com/badge/superprime?theme=light&type=launched"
       alt="Forcefield on DodoLaunch"
+      width="200"
       height="54"
     />
   </a>
