@@ -1,0 +1,175 @@
+id: "DEBUG-003"
+name: "Race Condition in Concurrent Ring Buffer"
+category: "debugging"
+difficulty: "hard"
+description: "Fix race condition and synchronization bug in concurrent ring buffer."
+instructions: "In ringbuf/buffer.go, concurrent calls to Push and Pop can corrupt buffer state due to unsynchronized length updates. Inspect Push and Pop, ensure mutex synchronization guards all shared buffer mutations, and verify that ringbuf/buffer_test.go passes cleanly."
+timeout: "90s"
+expected_files:
+  - "ringbuf/buffer.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+  disallow_unexpected_files: true
+fixtures:
+  "go.mod": |
+    module ringpkg
+
+    go 1.21
+  "ringbuf/buffer.go": |
+    package ringbuf
+
+    import (
+    	"sync"
+    )
+
+    type RingBuffer struct {
+    	mu    sync.Mutex
+    	data  []int
+    	head  int
+    	tail  int
+    	size  int
+    	cap   int
+    }
+
+    func New(capacity int) *RingBuffer {
+    	return &RingBuffer{
+    		data: make([]int, capacity),
+    		cap:  capacity,
+    	}
+    }
+
+    func (r *RingBuffer) Push(val int) bool {
+    	if r.size >= r.cap {
+    		return false
+    	}
+    	r.mu.Lock()
+    	r.data[r.tail] = val
+    	r.tail = (r.tail + 1) % r.cap
+    	r.size++
+    	r.mu.Unlock()
+    	return true
+    }
+
+    func (r *RingBuffer) Pop() (int, bool) {
+    	if r.size == 0 {
+    		return 0, false
+    	}
+    	r.mu.Lock()
+    	val := r.data[r.head]
+    	r.head = (r.head + 1) % r.cap
+    	r.size--
+    	r.mu.Unlock()
+    	return val, true
+    }
+  "ringbuf/buffer_test.go": |
+    package ringbuf_test
+
+    import (
+    	"sync"
+    	"testing"
+
+    	"ringpkg/ringbuf"
+    )
+
+    func TestRingBuffer_Concurrent(t *testing.T) {
+    	buf := ringbuf.New(100)
+    	const numOps = 500
+
+    	var wg sync.WaitGroup
+    	wg.Add(2)
+
+    	pushed := 0
+    	popped := 0
+
+    	go func() {
+    		defer wg.Done()
+    		for i := 0; i < numOps; i++ {
+    			if buf.Push(i) {
+    				pushed++
+    			}
+    		}
+    	}()
+
+    	go func() {
+    		defer wg.Done()
+    		for i := 0; i < numOps; i++ {
+    			if _, ok := buf.Pop(); ok {
+    				popped++
+    			}
+    		}
+    	}()
+
+    	wg.Wait()
+
+    	// Drain remaining
+    	for {
+    		if _, ok := buf.Pop(); ok {
+    			popped++
+    		} else {
+    			break
+    		}
+    	}
+
+    	if pushed != popped {
+    		t.Fatalf("pushed count %d != popped count %d (lost items due to race)", pushed, popped)
+    	}
+    }
+canonical_files:
+  "ringbuf/buffer_test.go": |
+    package ringbuf_test
+
+    import (
+    	"sync"
+    	"testing"
+
+    	"ringpkg/ringbuf"
+    )
+
+    func TestRingBuffer_Concurrent(t *testing.T) {
+    	buf := ringbuf.New(100)
+    	const numOps = 500
+
+    	var wg sync.WaitGroup
+    	wg.Add(2)
+
+    	pushed := 0
+    	popped := 0
+
+    	go func() {
+    		defer wg.Done()
+    		for i := 0; i < numOps; i++ {
+    			if buf.Push(i) {
+    				pushed++
+    			}
+    		}
+    	}()
+
+    	go func() {
+    		defer wg.Done()
+    		for i := 0; i < numOps; i++ {
+    			if _, ok := buf.Pop(); ok {
+    				popped++
+    			}
+    		}
+    	}()
+
+    	wg.Wait()
+
+    	// Drain remaining
+    	for {
+    		if _, ok := buf.Pop(); ok {
+    			popped++
+    		} else {
+    			break
+    		}
+    	}
+
+    	if pushed != popped {
+    		t.Fatalf("pushed count %d != popped count %d (lost items due to race)", pushed, popped)
+    	}
+    }

@@ -70,25 +70,23 @@ func (r *Runtime) configSnapshot() *config.Config {
 // API key that was not found.
 func (r *Runtime) checkAuth() error {
 	required, envVar, provider := r.authSnapshot()
-	if !required || envVar == "" {
-		return nil
-	}
-	if key, _, err := config.ResolveEnvValue(envVar); err == nil && key != "" {
-		return nil
-	}
-	return fmt.Errorf(
-		"%s requires an API key - set %s in your environment or .env file and restart Forcefield",
-		providers.DisplayName(provider), envVar,
-	)
+	return checkAuthWithSnapshot(r.configSnapshot(), required, envVar, provider)
 }
 
 // checkAuthWithSnapshot is checkAuth against an explicit snapshot so a run
 // uses one consistent view even if a switch lands mid-run.
-func checkAuthWithSnapshot(required bool, envVar, provider string) error {
+func checkAuthWithSnapshot(cfg *config.Config, required bool, envVar, provider string) error {
 	if !required || envVar == "" {
 		return nil
 	}
-	if key, _, err := config.ResolveEnvValue(envVar); err == nil && key != "" {
+	var key string
+	var err error
+	if cfg != nil {
+		key, _, err = cfg.ResolveEnvValue(envVar)
+	} else {
+		key, _, err = config.ResolveEnvValue(envVar)
+	}
+	if err == nil && key != "" {
 		return nil
 	}
 	return fmt.Errorf(

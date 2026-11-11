@@ -264,6 +264,22 @@ func (e EditFile) Execute(ctx context.Context, args map[string]any) (tools.Resul
 		}
 
 		if count == 0 {
+			// Conservative indentation-aware fallback: only attempted when exact matching
+			// returns zero occurrences. Normalizes leading indentation only, requiring exactly
+			// one unambiguous match.
+			newBuf, matchCount, matchedLines, err := applyIndentationAwareEdit(currentBuffer, search, replace, fileEnding)
+			if err == nil && matchCount == 1 {
+				currentBuffer = newBuf
+				continue
+			}
+			if matchCount > 1 {
+				lineList := formatLineNumbers(matchedLines)
+				return tools.Result{
+					IsError: true,
+					Content: fmt.Sprintf("edit %d of %d failed: search block matched %d times in %s (at lines %s).\nThe search block must be unique. Please include more surrounding context lines in 'search' to uniquely identify the replacement site.", i+1, len(edits), matchCount, path, lineList),
+				}, nil
+			}
+
 			hint := findNearMatchHint(currentBuffer, edit.Search)
 			return tools.Result{
 				IsError: true,
@@ -448,4 +464,261 @@ func validateSyntax(path string, content []byte) error {
 		}
 	}
 	return nil
+}
+
+// lineRecord holds a single line with parsed leading indentation, content, and line ending.
+type lineRecord struct {
+	raw     string
+	indent  string
+	content string
+	ending  string
+}
+
+func parseLines(text string) []lineRecord {
+	if len(text) == 0 {
+		return nil
+	}
+	rawLines := strings.SplitAfter(text, "\n")
+	// If text ends with a newline, SplitAfter produces a trailing empty string
+	// representing the EOF boundary. Trim it so a terminal newline is captured
+	// by the final line's ending field rather than creating a phantom empty line.
+	if len(rawLines) > 0 && rawLines[len(rawLines)-1] == "" {
+		rawLines = rawLines[:len(rawLines)-1]
+	}
+	records := make([]lineRecord, len(rawLines))
+	for i, raw := range rawLines {
+		ending := ""
+		core := raw
+		if strings.HasSuffix(core, "\r\n") {
+			ending = "\r\n"
+			core = core[:len(core)-2]
+		} else if strings.HasSuffix(core, "\n") {
+			ending = "\n"
+			core = core[:len(core)-1]
+		}
+		lead := 0
+		for lead < len(core) && (core[lead] == ' ' || core[lead] == '\t') {
+			lead++
+		}
+		records[i] = lineRecord{
+			raw:     raw,
+			indent:  core[:lead],
+			content: core[lead:],
+			ending:  ending,
+		}
+	}
+	return records
+}
+
+func indentCol(indent string, tabWidth int) int {
+	col := 0
+	for _, ch := range indent {
+		if ch == '\t' {
+			col = (col/tabWidth + 1) * tabWidth
+		} else if ch == ' ' {
+			col++
+		}
+	}
+	return col
+}
+
+type indentCandidate struct {
+	startLine int
+	tabWidth  int
+}
+
+func applyIndentationAwareEdit(buffer, search, replace, defaultEnding string) (string, int, []int, error) {
+	fileLines := parseLines(buffer)
+	searchLines := parseLines(search)
+	if len(fileLines) == 0 || len(searchLines) == 0 || len(searchLines) > len(fileLines) {
+		return buffer, 0, nil, nil
+	}
+
+	tabWidths := []int{4, 2, 8}
+	var matchedCandidates []indentCandidate
+	var matchedStartLines []int
+	seenStarts := make(map[int]bool)
+
+	for start := 0; start <= len(fileLines)-len(searchLines); start++ {
+		// First pass: content equality (without leading indent or trailing line breaks)
+		contentMatches := true
+		for i := 0; i < len(searchLines); i++ {
+			if fileLines[start+i].content != searchLines[i].content {
+				contentMatches = false
+				break
+			}
+		}
+		if !contentMatches {
+			continue
+		}
+
+		// Second pass: indentation structure check across candidate tab widths
+		for _, tw := range tabWidths {
+			firstNonEmpty := -1
+			for i := 0; i < len(searchLines); i++ {
+				if searchLines[i].content != "" {
+					firstNonEmpty = i
+					break
+				}
+			}
+
+			indentMatches := true
+			if firstNonEmpty != -1 {
+				baseFileCol := indentCol(fileLines[start+firstNonEmpty].indent, tw)
+				baseSearchCol := indentCol(searchLines[firstNonEmpty].indent, tw)
+				diff := baseFileCol - baseSearchCol
+
+				for i := 0; i < len(searchLines); i++ {
+					if searchLines[i].content == "" {
+						continue
+					}
+					fCol := indentCol(fileLines[start+i].indent, tw)
+					sCol := indentCol(searchLines[i].indent, tw)
+					if fCol != sCol+diff {
+						indentMatches = false
+						break
+					}
+				}
+			} else {
+				// All lines are blank; require exact column equality
+				for i := 0; i < len(searchLines); i++ {
+					if indentCol(fileLines[start+i].indent, tw) != indentCol(searchLines[i].indent, tw) {
+						indentMatches = false
+						break
+					}
+				}
+			}
+
+			if indentMatches {
+				if !seenStarts[start] {
+					seenStarts[start] = true
+					matchedCandidates = append(matchedCandidates, indentCandidate{
+						startLine: start,
+						tabWidth:  tw,
+					})
+					matchedStartLines = append(matchedStartLines, start+1)
+				}
+				break
+			}
+		}
+	}
+
+	if len(matchedCandidates) != 1 {
+		return buffer, len(matchedCandidates), matchedStartLines, nil
+	}
+
+	cand := matchedCandidates[0]
+	start := cand.startLine
+	tw := cand.tabWidth
+	m := len(searchLines)
+
+	// Determine file indentation style (tabs vs spaces)
+	fileStyle := detectIndentationStyle(fileLines, start, m)
+
+	// Format replacement lines using the file's indentation style and line endings
+	replaceLines := parseLines(replace)
+	firstNonEmpty := -1
+	for i := 0; i < len(searchLines); i++ {
+		if searchLines[i].content != "" {
+			firstNonEmpty = i
+			break
+		}
+	}
+	baseSearchCol := 0
+	baseFileCol := 0
+	if firstNonEmpty != -1 {
+		baseSearchCol = indentCol(searchLines[firstNonEmpty].indent, tw)
+		baseFileCol = indentCol(fileLines[start+firstNonEmpty].indent, tw)
+	}
+
+	ending := fileLines[start].ending
+	if ending == "" {
+		ending = defaultEnding
+	}
+
+	var repBuffer strings.Builder
+	for i, rLine := range replaceLines {
+		if rLine.content == "" && rLine.indent == "" {
+			// Blank line
+			if i < len(replaceLines)-1 || strings.HasSuffix(replace, "\n") {
+				repBuffer.WriteString(ending)
+			}
+			continue
+		}
+
+		rCol := indentCol(rLine.indent, tw)
+		targetCol := baseFileCol + (rCol - baseSearchCol)
+		if targetCol < 0 {
+			targetCol = 0
+		}
+
+		var newIndent string
+		if fileStyle == "\t" {
+			numTabs := targetCol / tw
+			remSpaces := targetCol % tw
+			newIndent = strings.Repeat("\t", numTabs) + strings.Repeat(" ", remSpaces)
+		} else {
+			newIndent = strings.Repeat(" ", targetCol)
+		}
+
+		repBuffer.WriteString(newIndent)
+		repBuffer.WriteString(rLine.content)
+		if i < len(replaceLines)-1 || strings.HasSuffix(replace, "\n") || fileLines[start+m-1].ending != "" {
+			repBuffer.WriteString(ending)
+		}
+	}
+
+	// Reconstruct buffer atomically
+	var finalBuf strings.Builder
+	for i := 0; i < start; i++ {
+		finalBuf.WriteString(fileLines[i].raw)
+	}
+	finalBuf.WriteString(repBuffer.String())
+	for i := start + m; i < len(fileLines); i++ {
+		finalBuf.WriteString(fileLines[i].raw)
+	}
+
+	return finalBuf.String(), 1, matchedStartLines, nil
+}
+
+func detectIndentationStyle(lines []lineRecord, start, count int) string {
+	blockTabs := 0
+	blockSpaces := 0
+	for i := start; i < start+count && i < len(lines); i++ {
+		if lines[i].content == "" {
+			continue // skip blank lines
+		}
+		if strings.Contains(lines[i].indent, "\t") {
+			blockTabs++
+		} else if len(lines[i].indent) > 0 {
+			blockSpaces++
+		}
+	}
+	if blockTabs > blockSpaces {
+		return "\t"
+	}
+	if blockSpaces > blockTabs {
+		return " "
+	}
+
+	// Tied or no indentation in the matched block: inspect the entire file.
+	tabCount := 0
+	spaceCount := 0
+	for _, l := range lines {
+		if l.content == "" {
+			continue
+		}
+		if strings.Contains(l.indent, "\t") {
+			tabCount++
+		} else if len(l.indent) > 0 {
+			spaceCount++
+		}
+	}
+	if tabCount >= spaceCount && tabCount > 0 {
+		return "\t"
+	}
+	if spaceCount > 0 {
+		return " "
+	}
+	return "\t"
 }

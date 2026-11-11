@@ -1,0 +1,117 @@
+id: "DELEG-002"
+name: "API and Client Schema Synchronization"
+category: "parallel_delegation"
+difficulty: "hard"
+description: "Synchronize API model schema and client serialization across modules."
+instructions: "Coordinate updates between API and Client modules using sub-agent delegation. Use the delegate tool to inspect and update both packages concurrently: (1) In api/v1/types.go, add an optional Priority integer field (JSON 'priority,omitempty') to TaskItem. (2) In client/v1/client.go, add Priority to CreateTaskParams and serialize it into the API payload. Ensure integration_test.go passes."
+timeout: "90s"
+expected_files:
+  - "api/v1/types.go"
+  - "client/v1/client.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+  require_delegation: true
+  disallow_unexpected_files: true
+fixtures:
+  "go.mod": |
+    module apipkg
+
+    go 1.21
+  "api/v1/types.go": |
+    package v1
+
+    type TaskItem struct {
+    	ID    string `json:"id"`
+    	Title string `json:"title"`
+    }
+  "client/v1/client.go": |
+    package v1
+
+    import (
+    	"encoding/json"
+
+    	apiv1 "apipkg/api/v1"
+    )
+
+    type CreateTaskParams struct {
+    	ID    string
+    	Title string
+    }
+
+    func BuildCreatePayload(p CreateTaskParams) ([]byte, error) {
+    	item := apiv1.TaskItem{
+    		ID:    p.ID,
+    		Title: p.Title,
+    	}
+    	return json.Marshal(item)
+    }
+  "integration_test.go": |
+    package main_test
+
+    import (
+    	"encoding/json"
+    	"testing"
+
+    	apiv1 "apipkg/api/v1"
+    	clientv1 "apipkg/client/v1"
+    )
+
+    func TestSchemaSynchronization(t *testing.T) {
+    	params := clientv1.CreateTaskParams{
+    		ID:       "task-42",
+    		Title:    "Review Security",
+    		Priority: 1,
+    	}
+
+    	payload, err := clientv1.BuildCreatePayload(params)
+    	if err != nil {
+    		t.Fatalf("BuildCreatePayload error: %v", err)
+    	}
+
+    	var item apiv1.TaskItem
+    	if err := json.Unmarshal(payload, &item); err != nil {
+    		t.Fatalf("Unmarshal into TaskItem error: %v", err)
+    	}
+
+    	if item.ID != "task-42" || item.Title != "Review Security" || item.Priority != 1 {
+    		t.Fatalf("unexpected item deserialized: %+v", item)
+    	}
+    }
+canonical_files:
+  "integration_test.go": |
+    package main_test
+
+    import (
+    	"encoding/json"
+    	"testing"
+
+    	apiv1 "apipkg/api/v1"
+    	clientv1 "apipkg/client/v1"
+    )
+
+    func TestSchemaSynchronization(t *testing.T) {
+    	params := clientv1.CreateTaskParams{
+    		ID:       "task-42",
+    		Title:    "Review Security",
+    		Priority: 1,
+    	}
+
+    	payload, err := clientv1.BuildCreatePayload(params)
+    	if err != nil {
+    		t.Fatalf("BuildCreatePayload error: %v", err)
+    	}
+
+    	var item apiv1.TaskItem
+    	if err := json.Unmarshal(payload, &item); err != nil {
+    		t.Fatalf("Unmarshal into TaskItem error: %v", err)
+    	}
+
+    	if item.ID != "task-42" || item.Title != "Review Security" || item.Priority != 1 {
+    		t.Fatalf("unexpected item deserialized: %+v", item)
+    	}
+    }

@@ -1,0 +1,126 @@
+id: "DEBUG-001"
+name: "Off-by-One in Sliding Window"
+category: "debugging"
+difficulty: "medium"
+description: "Fix timestamp boundary exclusion bug in sliding window rate limiter."
+instructions: "Run tests in window/window_test.go to observe the failure in TestSlidingWindow_Boundary. Locate the off-by-one bug in window/window.go where events right at the window cutoff are incorrectly dropped or kept, and fix it so all tests pass."
+timeout: "90s"
+expected_files:
+  - "window/window.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+  disallow_unexpected_files: true
+fixtures:
+  "go.mod": |
+    module windowpkg
+
+    go 1.21
+  "window/window.go": |
+    package window
+
+    import (
+    	"sync"
+    	"time"
+    )
+
+    type SlidingWindow struct {
+    	mu         sync.Mutex
+    	timestamps []time.Time
+    	limit      int
+    	window     time.Duration
+    }
+
+    func New(limit int, window time.Duration) *SlidingWindow {
+    	return &SlidingWindow{
+    		limit:  limit,
+    		window: window,
+    	}
+    }
+
+    func (s *SlidingWindow) Allow(now time.Time) bool {
+    	s.mu.Lock()
+    	defer s.mu.Unlock()
+
+    	cutoff := now.Add(-s.window)
+
+    	valid := s.timestamps[:0]
+    	for _, t := range s.timestamps {
+    		if t.Before(cutoff) {
+    			continue
+    		}
+    		valid = append(valid, t)
+    	}
+    	s.timestamps = valid
+
+    	if len(s.timestamps) > s.limit {
+    		return false
+    	}
+    	s.timestamps = append(s.timestamps, now)
+    	return true
+    }
+  "window/window_test.go": |
+    package window_test
+
+    import (
+    	"testing"
+    	"time"
+
+    	"windowpkg/window"
+    )
+
+    func TestSlidingWindow_Boundary(t *testing.T) {
+    	w := window.New(2, 100*time.Millisecond) // limit 2 requests per 100ms
+    	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+    	if !w.Allow(base) {
+    		t.Fatal("request 1 should be allowed")
+    	}
+    	if !w.Allow(base.Add(10 * time.Millisecond)) {
+    		t.Fatal("request 2 should be allowed")
+    	}
+    	// Request 3 is within the same window and limit is 2 -> must be rejected
+    	if w.Allow(base.Add(20 * time.Millisecond)) {
+    		t.Fatal("request 3 must be denied because limit is 2")
+    	}
+
+    	// Request 4 at exactly base + 100ms: request 1 (at base) is exactly 100ms old and expired!
+    	if !w.Allow(base.Add(100 * time.Millisecond)) {
+    		t.Fatal("request at base + 100ms should be allowed as request 1 expired")
+    	}
+    }
+canonical_files:
+  "window/window_test.go": |
+    package window_test
+
+    import (
+    	"testing"
+    	"time"
+
+    	"windowpkg/window"
+    )
+
+    func TestSlidingWindow_Boundary(t *testing.T) {
+    	w := window.New(2, 100*time.Millisecond) // limit 2 requests per 100ms
+    	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+    	if !w.Allow(base) {
+    		t.Fatal("request 1 should be allowed")
+    	}
+    	if !w.Allow(base.Add(10 * time.Millisecond)) {
+    		t.Fatal("request 2 should be allowed")
+    	}
+    	// Request 3 is within the same window and limit is 2 -> must be rejected
+    	if w.Allow(base.Add(20 * time.Millisecond)) {
+    		t.Fatal("request 3 must be denied because limit is 2")
+    	}
+
+    	// Request 4 at exactly base + 100ms: request 1 (at base) is exactly 100ms old and expired!
+    	if !w.Allow(base.Add(100 * time.Millisecond)) {
+    		t.Fatal("request at base + 100ms should be allowed as request 1 expired")
+    	}
+    }

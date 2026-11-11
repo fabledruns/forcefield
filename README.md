@@ -11,11 +11,19 @@
 </p>
 
 <p align="center">
+  <a href="https://dodolaunch.com/p/superprime?ref=badge" target="_blank" rel="noreferrer">
+    <img
+      src="https://dodolaunch.com/badge/superprime?theme=light&type=launched"
+      alt="Forcefield on DodoLaunch"
+      height="54"
+    />
+  </a>
+  &nbsp;&nbsp;
   <a href="https://peerlist.io/jehoshuam/project/forcefield" target="_blank" rel="noreferrer">
     <img
-      src="https://peerlist.io/api/v1/projects/embed/PRJH6A7OMP7DM9JK9CODMPQQKQQAJB?showUpvote=false&theme=light"
+      src="https://peerlist.io/api/v1/projects/embed/PRJH6A7OMP7DM9JK9CODMPQQKQQAJB?showUpvote=true&theme=light"
       alt="Forcefield on Peerlist"
-      height="56"
+      height="54"
     />
   </a>
 </p>

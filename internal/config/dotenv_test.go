@@ -118,3 +118,179 @@ func TestLoadFailsOnMalformedDotEnv(t *testing.T) {
 		t.Errorf("error = %v, want it to name the .env file", err)
 	}
 }
+
+func TestResolveEnvValueReadsProjectEnvDir(t *testing.T) {
+	isolateHome(t)
+
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, ".env"), []byte("NVIDIA_API_KEY=nvapi-from-project-dir\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{ProjectDir: projectDir}
+
+	// Change to another directory that has no .env
+	otherDir := t.TempDir()
+	t.Chdir(otherDir)
+	t.Setenv(apiKeyName, "")
+
+	key, source, err := cfg.ResolveEnvValue(apiKeyName)
+	if err != nil {
+		t.Fatalf("cfg.ResolveEnvValue error = %v", err)
+	}
+	if key != "nvapi-from-project-dir" {
+		t.Errorf("key = %q, want nvapi-from-project-dir", key)
+	}
+	if !strings.Contains(source, projectDir) {
+		t.Errorf("source = %q, want it to contain %s", source, projectDir)
+	}
+
+	// Also test ResolveEnvValueWithDir directly
+	key2, source2, err := ResolveEnvValueWithDir(projectDir, apiKeyName)
+	if err != nil || key2 != "nvapi-from-project-dir" || !strings.Contains(source2, projectDir) {
+		t.Errorf("ResolveEnvValueWithDir failed: key=%q, source=%q, err=%v", key2, source2, err)
+	}
+}
+
+func TestResolveEnvValueUpwardDiscovery(t *testing.T) {
+	isolateHome(t)
+
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, ".env"), []byte("NVIDIA_API_KEY=nvapi-from-repo-root\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repoDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	nested := filepath.Join(repoDir, "sub1", "sub2")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(nested)
+	t.Setenv(apiKeyName, "")
+
+	key, source, err := ResolveEnvValue(apiKeyName)
+	if err != nil {
+		t.Fatalf("ResolveEnvValue error = %v", err)
+	}
+	if key != "nvapi-from-repo-root" {
+		t.Errorf("key = %q, want nvapi-from-repo-root", key)
+	}
+	if !strings.Contains(source, repoDir) {
+		t.Errorf("source = %q, want it to contain %s", source, repoDir)
+	}
+}
+
+func TestResolveEnvValueUpwardStopsAtGitBoundary(t *testing.T) {
+	isolateHome(t)
+
+	parentDir := t.TempDir()
+	// Foreign .env outside the git repo
+	if err := os.WriteFile(filepath.Join(parentDir, ".env"), []byte("NVIDIA_API_KEY=foreign-parent-key\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Non-git directory inside parentDir must NOT discover parentDir/.env
+	nonGitDir := filepath.Join(parentDir, "nongit")
+	if err := os.Mkdir(nonGitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(nonGitDir)
+	t.Setenv(apiKeyName, "")
+
+	key, _, err := ResolveEnvValue(apiKeyName)
+	if err != nil {
+		t.Fatalf("ResolveEnvValue error = %v", err)
+	}
+	if key != "" {
+		t.Fatalf("security violation: upward discovery escaped non-git directory into parent: got %q", key)
+	}
+
+	// 2. Git repo inside parentDir must NOT discover parentDir/.env
+	gitRepo := filepath.Join(parentDir, "gitrepo")
+	if err := os.MkdirAll(filepath.Join(gitRepo, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(gitRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Join(gitRepo, "sub"))
+
+	key, _, err = ResolveEnvValue(apiKeyName)
+	if err != nil {
+		t.Fatalf("ResolveEnvValue error = %v", err)
+	}
+	if key != "" {
+		t.Fatalf("security violation: upward discovery crossed .git boundary into parent: got %q", key)
+	}
+}
+
+func TestResolveEnvValueUpwardDiscovery_WorktreeGitFile(t *testing.T) {
+	isolateHome(t)
+
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, ".env"), []byte("NVIDIA_API_KEY=nvapi-from-worktree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Git worktrees and submodules represent .git as a file rather than a directory.
+	if err := os.WriteFile(filepath.Join(repoDir, ".git"), []byte("gitdir: /fake/path/to/parent/repo/.git/worktrees/wt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	nested := filepath.Join(repoDir, "pkg", "core")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(nested)
+	t.Setenv(apiKeyName, "")
+
+	key, source, err := ResolveEnvValue(apiKeyName)
+	if err != nil {
+		t.Fatalf("ResolveEnvValue error = %v", err)
+	}
+	if key != "nvapi-from-worktree" {
+		t.Errorf("key = %q, want nvapi-from-worktree", key)
+	}
+	if !strings.Contains(source, repoDir) {
+		t.Errorf("source = %q, want it to contain %s", source, repoDir)
+	}
+}
+
+func TestResolveEnvValueUpwardDiscovery_SymlinkedDir(t *testing.T) {
+	isolateHome(t)
+
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, ".env"), []byte("NVIDIA_API_KEY=nvapi-from-symlinked-repo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repoDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(repoDir, "sub")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink an external directory pointing into the repo's nested folder.
+	linkDir := filepath.Join(t.TempDir(), "external-link")
+	if err := os.Symlink(nested, linkDir); err != nil {
+		t.Skipf("skipping symlink test on platform without symlink privileges: %v", err)
+	}
+
+	t.Chdir(linkDir)
+	t.Setenv(apiKeyName, "")
+
+	key, source, err := ResolveEnvValue(apiKeyName)
+	if err != nil {
+		t.Fatalf("ResolveEnvValue error = %v", err)
+	}
+	if key != "nvapi-from-symlinked-repo" {
+		t.Errorf("key = %q, want nvapi-from-symlinked-repo", key)
+	}
+	if !strings.Contains(source, repoDir) {
+		t.Errorf("source = %q, want it to contain %s", source, repoDir)
+	}
+}

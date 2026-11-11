@@ -5,20 +5,25 @@ package shell
 import (
 	"context"
 	"fmt"
-	"os"
 
+	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 )
 
-// PWD reports the process's current working directory.
-type PWD struct{}
+// PWD reports the current working directory of the active workspace.
+type PWD struct {
+	policy sandbox.Policy
+}
 
-// NewPWD returns a ready-to-register PWD tool.
+// NewPWD returns a ready-to-register PWD tool using the default policy.
 func NewPWD() *PWD { return &PWD{} }
+
+// NewPWDWithPolicy returns a PWD tool bound to policy.Workspace.
+func NewPWDWithPolicy(p sandbox.Policy) *PWD { return &PWD{policy: p} }
 
 func (PWD) Name() string { return "pwd" }
 func (PWD) Description() string {
-	return "Return the current working directory of the Forcefield process."
+	return "Return the current working directory of the active workspace."
 }
 
 func (PWD) InputSchema() map[string]any {
@@ -28,11 +33,15 @@ func (PWD) InputSchema() map[string]any {
 	}
 }
 
-func (PWD) Execute(_ context.Context, _ map[string]any) (tools.Result, error) {
-	wd, err := os.Getwd()
+func (p PWD) Execute(ctx context.Context, _ map[string]any) (tools.Result, error) {
+	if err := sandbox.CheckCtx(ctx); err != nil {
+		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot determine working directory: %v", err)}, nil
+	}
+
+	resolved, err := sandbox.ResolveWithinWorkspace(p.policy.Workspace, "")
 	if err != nil {
 		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot determine working directory: %v", err)}, nil
 	}
 
-	return tools.Result{Content: wd}, nil
+	return tools.Result{Content: resolved}, nil
 }

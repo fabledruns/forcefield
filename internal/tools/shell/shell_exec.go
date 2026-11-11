@@ -44,7 +44,8 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	// programs up front. See docs/Tools.md.
 	if prog, ok := detectInteractiveCommand(command); ok {
 		return tools.Result{
-			IsError: true,
+			IsError:          true,
+			ExecutionFailure: true,
 			Content: fmt.Sprintf(
 				"refusing to run %q: it requires an interactive terminal (tty), which the shell tool does not provide",
 				prog,
@@ -57,7 +58,8 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	// WSL lexical mitigation only, not a boundary (see docs/Sandbox.md).
 	if s.isWSLMode(ctx) && isWSLForbiddenPattern(command) {
 		return tools.Result{
-			IsError: true,
+			IsError:          true,
+			ExecutionFailure: true,
 			Content: fmt.Sprintf(
 				"refusing to run %q: WSL shell access to host filesystem (%s) is blocked as a conservative mitigation (not a sandbox); use workspace-relative paths instead",
 				command, wslForbiddenSnippet(command),
@@ -103,11 +105,12 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	// context so a cold WSL boot doesn't consume the command's own timeout.
 	if err := s.ensureBackend(ctx); err != nil {
 		return tools.Result{
-			IsError:  true,
-			Content:  err.Error(),
-			ExitCode: -1,
-			Tool:     "shell",
-			Command:  command,
+			IsError:          true,
+			ExecutionFailure: true,
+			Content:          err.Error(),
+			ExitCode:         -1,
+			Tool:             "shell",
+			Command:          command,
 		}, nil
 	}
 
@@ -127,25 +130,28 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	case err == nil:
 	case errors.Is(err, sandbox.ErrInvalidDir):
 		return tools.Result{
-			IsError: true,
-			Content: fmt.Sprintf("working directory does not exist: %s", cwd),
-			Tool:    "shell",
-			Command: command,
+			IsError:          true,
+			ExecutionFailure: true,
+			Content:          fmt.Sprintf("working directory does not exist: %s", cwd),
+			Tool:             "shell",
+			Command:          command,
 		}, nil
 	case errors.Is(err, sandbox.ErrWorkspaceEscape):
 		return tools.Result{
-			IsError: true,
-			Content: fmt.Sprintf("working directory %q is outside the allowed workspace; Forcefield will not widen its scope", cwd),
-			Tool:    "shell",
-			Command: command,
+			IsError:          true,
+			ExecutionFailure: true,
+			Content:          fmt.Sprintf("working directory %q is outside the allowed workspace; Forcefield will not widen its scope", cwd),
+			Tool:             "shell",
+			Command:          command,
 		}, nil
 	default:
 		return tools.Result{
-			IsError:  true,
-			Content:  err.Error(),
-			ExitCode: -1,
-			Tool:     "shell",
-			Command:  command,
+			IsError:          true,
+			ExecutionFailure: true,
+			Content:          err.Error(),
+			ExitCode:         -1,
+			Tool:             "shell",
+			Command:          command,
 		}, nil
 	}
 	cmd, cleanup := prepared.Cmd, prepared.Cleanup
@@ -189,12 +195,13 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		// are reported as Results like every other command failure, so the
 		// model always gets stdout/stderr/exit-code-shaped feedback.
 		return tools.Result{
-			IsError:    true,
-			Content:    fmt.Sprintf("failed to start command: %v", err),
-			ExitCode:   -1,
-			Tool:       "shell",
-			Command:    command,
-			DurationMs: time.Since(started).Milliseconds(),
+			IsError:          true,
+			ExecutionFailure: true,
+			Content:          fmt.Sprintf("failed to start command: %v", err),
+			ExitCode:         -1,
+			Tool:             "shell",
+			Command:          command,
+			DurationMs:       time.Since(started).Milliseconds(),
 		}, nil
 	}
 	// The child owns the duplicated write handles after Start. Keeping the
@@ -274,15 +281,16 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 			content += truncNote
 		}
 		return tools.Result{
-			IsError:    true,
-			Content:    content,
-			ExitCode:   -1,
-			Stdout:     stdoutStr,
-			Stderr:     stderrStr,
-			DurationMs: duration.Milliseconds(),
-			Tool:       "shell",
-			Command:    command,
-			Metadata:   truncMeta,
+			IsError:          true,
+			ExecutionFailure: true,
+			Content:          content,
+			ExitCode:         -1,
+			Stdout:           stdoutStr,
+			Stderr:           stderrStr,
+			DurationMs:       duration.Milliseconds(),
+			Tool:             "shell",
+			Command:          command,
+			Metadata:         truncMeta,
 		}, nil
 	}
 	if runCtx.Err() == context.Canceled {
@@ -291,15 +299,16 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 			content += truncNote
 		}
 		return tools.Result{
-			IsError:    true,
-			Content:    content,
-			ExitCode:   -1,
-			Stdout:     stdoutStr,
-			Stderr:     stderrStr,
-			DurationMs: duration.Milliseconds(),
-			Tool:       "shell",
-			Command:    command,
-			Metadata:   truncMeta,
+			IsError:          true,
+			ExecutionFailure: true,
+			Content:          content,
+			ExitCode:         -1,
+			Stdout:           stdoutStr,
+			Stderr:           stderrStr,
+			DurationMs:       duration.Milliseconds(),
+			Tool:             "shell",
+			Command:          command,
+			Metadata:         truncMeta,
 		}, nil
 	}
 
@@ -310,15 +319,16 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	if !success {
 		if detail, hint := sandbox.BackendFailure(stderrStr, stdoutStr); hint != "" {
 			return tools.Result{
-				IsError:    true,
-				Content:    fmt.Sprintf("shell backend error: WSL could not run the command: %s\n%s", detail, hint),
-				ExitCode:   exitCode,
-				Stdout:     stdoutStr,
-				Stderr:     stderrStr,
-				DurationMs: duration.Milliseconds(),
-				Tool:       "shell",
-				Command:    command,
-				Metadata:   truncMeta,
+				IsError:          true,
+				ExecutionFailure: true,
+				Content:          fmt.Sprintf("shell backend error: WSL could not run the command: %s\n%s", detail, hint),
+				ExitCode:         exitCode,
+				Stdout:           stdoutStr,
+				Stderr:           stderrStr,
+				DurationMs:       duration.Milliseconds(),
+				Tool:             "shell",
+				Command:          command,
+				Metadata:         truncMeta,
 			}, nil
 		}
 	}
@@ -342,14 +352,16 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 	}
 
 	return tools.Result{
-		Content:    content,
-		IsError:    !success,
-		ExitCode:   exitCode,
-		Stdout:     stdoutStr,
-		Stderr:     stderrStr,
-		DurationMs: duration.Milliseconds(),
-		Tool:       "shell",
-		Command:    command,
-		Metadata:   truncMeta,
+		Content:          content,
+		IsError:          !success,
+		CommandFailure:   !success,
+		ExecutionFailure: false,
+		ExitCode:         exitCode,
+		Stdout:           stdoutStr,
+		Stderr:           stderrStr,
+		DurationMs:       duration.Milliseconds(),
+		Tool:             "shell",
+		Command:          command,
+		Metadata:         truncMeta,
 	}, nil
 }

@@ -1,0 +1,88 @@
+id: "MOD-005"
+name: "Safe Environment Variable Expander"
+category: "simple_code_modifications"
+difficulty: "easy"
+description: "Expand shell-style environment variables with fallback defaults."
+instructions: "Implement Expand(s string, lookup func(string) string) string in expand.go. Support ${VAR} and ${VAR:-default} patterns. If variable is unset or empty, use default when provided."
+timeout: "60s"
+expected_files:
+  - "expand.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+fixtures:
+  "go.mod": |
+    module expandpkg
+
+    go 1.21
+  "expand.go": |
+    package expandpkg
+
+    // Expand parses and replaces ${VAR} and ${VAR:-default} patterns.
+    func Expand(s string, lookup func(string) string) string {
+    	// Stub: currently unexpanded
+    	return s
+    }
+  "expand_test.go": |
+    package expandpkg
+
+    import "testing"
+
+    func TestExpand(t *testing.T) {
+    	env := map[string]string{
+    		"HOST": "localhost",
+    		"PORT": "8080",
+    	}
+    	lookup := func(k string) string { return env[k] }
+
+    	tests := []struct {
+    		in   string
+    		want string
+    	}{
+    		{"http://${HOST}:${PORT}/api", "http://localhost:8080/api"},
+    		{"connect to ${DB_HOST:-127.0.0.1}", "connect to 127.0.0.1"},
+    		{"port: ${PORT:-3000}", "port: 8080"},
+    		{"plain text with no vars", "plain text with no vars"},
+    	}
+
+    	for _, tc := range tests {
+    		got := Expand(tc.in, lookup)
+    		if got != tc.want {
+    			t.Errorf("Expand(%q) = %q, want %q", tc.in, got, tc.want)
+    		}
+    	}
+    }
+canonical_files:
+  "expand_test.go": |
+    package expandpkg
+
+    import "testing"
+
+    func TestExpand(t *testing.T) {
+    	env := map[string]string{
+    		"HOST": "localhost",
+    		"PORT": "8080",
+    	}
+    	lookup := func(k string) string { return env[k] }
+
+    	tests := []struct {
+    		in   string
+    		want string
+    	}{
+    		{"http://${HOST}:${PORT}/api", "http://localhost:8080/api"},
+    		{"connect to ${DB_HOST:-127.0.0.1}", "connect to 127.0.0.1"},
+    		{"port: ${PORT:-3000}", "port: 8080"},
+    		{"plain text with no vars", "plain text with no vars"},
+    	}
+
+    	for _, tc := range tests {
+    		got := Expand(tc.in, lookup)
+    		if got != tc.want {
+    			t.Errorf("Expand(%q) = %q, want %q", tc.in, got, tc.want)
+    		}
+    	}
+    }

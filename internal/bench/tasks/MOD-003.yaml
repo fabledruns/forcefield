@@ -1,0 +1,105 @@
+id: "MOD-003"
+name: "Exponential Backoff Calculator"
+category: "simple_code_modifications"
+difficulty: "easy"
+description: "Compute bounded exponential backoff intervals."
+instructions: "Implement Backoff.Calculate(attempt int) time.Duration in backoff.go. The interval is Min * 2^(attempt-1). It must clamp to Max if greater than Max, and return Min if attempt <= 1."
+timeout: "60s"
+expected_files:
+  - "backoff.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+fixtures:
+  "go.mod": |
+    module backoffpkg
+
+    go 1.21
+  "backoff.go": |
+    package backoffpkg
+
+    import "time"
+
+    type Backoff struct {
+    	Min time.Duration
+    	Max time.Duration
+    }
+
+    // Calculate returns the backoff delay for the given 1-based attempt.
+    func (b Backoff) Calculate(attempt int) time.Duration {
+    	// Stub: currently constant
+    	return b.Min
+    }
+  "backoff_test.go": |
+    package backoffpkg
+
+    import (
+    	"testing"
+    	"time"
+    )
+
+    func TestBackoff_Calculate(t *testing.T) {
+    	b := Backoff{
+    		Min: 100 * time.Millisecond,
+    		Max: 1 * time.Second,
+    	}
+
+    	cases := []struct {
+    		attempt int
+    		want    time.Duration
+    	}{
+    		{0, 100 * time.Millisecond},
+    		{1, 100 * time.Millisecond},
+    		{2, 200 * time.Millisecond},
+    		{3, 400 * time.Millisecond},
+    		{4, 800 * time.Millisecond},
+    		{5, 1 * time.Second}, // Capped at Max
+    		{10, 1 * time.Second},
+    	}
+
+    	for _, tc := range cases {
+    		got := b.Calculate(tc.attempt)
+    		if got != tc.want {
+    			t.Errorf("Calculate(%d) = %v, want %v", tc.attempt, got, tc.want)
+    		}
+    	}
+    }
+canonical_files:
+  "backoff_test.go": |
+    package backoffpkg
+
+    import (
+    	"testing"
+    	"time"
+    )
+
+    func TestBackoff_Calculate(t *testing.T) {
+    	b := Backoff{
+    		Min: 100 * time.Millisecond,
+    		Max: 1 * time.Second,
+    	}
+
+    	cases := []struct {
+    		attempt int
+    		want    time.Duration
+    	}{
+    		{0, 100 * time.Millisecond},
+    		{1, 100 * time.Millisecond},
+    		{2, 200 * time.Millisecond},
+    		{3, 400 * time.Millisecond},
+    		{4, 800 * time.Millisecond},
+    		{5, 1 * time.Second}, // Capped at Max
+    		{10, 1 * time.Second},
+    	}
+
+    	for _, tc := range cases {
+    		got := b.Calculate(tc.attempt)
+    		if got != tc.want {
+    			t.Errorf("Calculate(%d) = %v, want %v", tc.attempt, got, tc.want)
+    		}
+    	}
+    }

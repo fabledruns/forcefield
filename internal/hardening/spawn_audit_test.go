@@ -52,6 +52,9 @@ var allowedDevSpawnSites = map[string]bool{
 	"benchmarks/pkg/runner/kill_windows.go": true,
 	"benchmarks/pkg/runner/rss_windows.go":  true,
 	"benchmarks/pkg/runner/runner.go":       true,
+	"internal/bench/runner.go":              true,
+	"internal/bench/validator.go":           true,
+	"internal/bench/workspace.go":           true,
 }
 
 // TestSpawnSitesAreAllowlisted parses every non-test Go file in the

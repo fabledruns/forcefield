@@ -74,3 +74,66 @@ The interactive benchmarks need startup markers, which are already compiled into
 Forcefield profile sets it for the marker pass only, so marker overhead never
 lands inside a headline latency sample. Nothing about normal `ff` behavior
 changes.
+
+---
+
+# Coding-Agent Benchmark Suite (`ff bench`)
+
+Forcefield includes a native, automated evaluation system to benchmark coding-agent performance across 15 reproducible tasks.
+
+## Tasks Dataset (`benchmarks/tasks/`)
+
+The benchmark suite consists of 15 deterministic coding challenges divided into 4 categories:
+- **Simple code modifications (5):** `MOD-001` through `MOD-005` (Slugify utility, semver parsing, exponential backoff, token bucket limiter, env var expander).
+- **Multi-file changes (5):** `MULTI-001` through `MULTI-005` (Cache store & memory TTL, HTTP logging middleware, Prometheus metrics exporter, DB connection config overrides, event bus consumer groups).
+- **Debugging (3):** `DEBUG-001` through `DEBUG-003` (Sliding window boundary off-by-one, optional metadata nil pointer dereference, concurrent ring buffer race condition).
+- **Parallel delegation (2):** `DELEG-001` through `DELEG-002` (Crypto & token security audit, API and client schema synchronization).
+
+## Workspace Isolation
+
+Each benchmark task runs inside a dedicated, isolated temporary Git repository.
+- The user's active workspace and uncommitted changes are never touched.
+- Strict sandbox boundaries cage file editing and execution to the temporary workspace directory.
+- Temporary workspaces are cleaned up upon task completion unless `--keep-workspaces` or `--keep-failed` is passed.
+- Independent validation commands (`go test`, `go build`, `go vet`) run with strict security boundaries and timeout limits.
+- Canonical tests can be restored prior to validation to prevent test tampering.
+
+## CLI Usage
+
+```bash
+# Run the complete benchmark suite
+ff bench
+
+# Run a specific task or category
+ff bench run --task MOD-001
+ff bench run --category debugging
+ff bench run --difficulty medium
+
+# Retain workspaces of failed tasks for inspection
+ff bench run --keep-failed
+
+# Output machine-readable JSON results
+ff bench run --json
+
+# List available benchmark tasks
+ff bench list
+
+# Display an existing benchmark report
+ff bench report <run-id>
+```
+
+## Results & Reporting
+
+Benchmark runs record:
+- Task status (`passed`, `failed`, `timeout`, `blocked`, `cancelled`, `error`)
+- Failure classification (`agent`, `test`, `infra`, `timeout`, `invalid_task`)
+- Execution duration and agent turn statistics
+- Tool calls and tool failures breakdown
+- Provider-reported token usage (when available)
+- Modified files count and unexpected file modification detection
+- Independent validation output and git diffs
+
+Results are saved to:
+- `benchmarks/results/<run-id>.json` (versioned structured data)
+- `benchmarks/results/<run-id>.md` (formatted Markdown report with scrubbed secrets)
+

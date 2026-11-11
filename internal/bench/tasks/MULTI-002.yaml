@@ -1,0 +1,134 @@
+id: "MULTI-002"
+name: "HTTP Logger Middleware"
+category: "multi_file_changes"
+difficulty: "medium"
+description: "Implement structured logging middleware capturing HTTP status code and duration."
+instructions: "In http/middleware.go, create a responseWriter wrapper that captures the HTTP status code written by downstream handlers. Log the method, path, status, and duration via logger/logger.go. Ensure all tests in http/middleware_test.go pass."
+timeout: "90s"
+expected_files:
+  - "logger/logger.go"
+  - "http/middleware.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+fixtures:
+  "go.mod": |
+    module loggermw
+
+    go 1.21
+  "logger/logger.go": |
+    package logger
+
+    type Record struct {
+    	Method   string
+    	Path     string
+    	Status   int
+    	Duration int64 // microseconds
+    }
+
+    type LogSink struct {
+    	Records []Record
+    }
+
+    func (s *LogSink) Log(r Record) {
+    	s.Records = append(s.Records, r)
+    }
+  "http/middleware.go": |
+    package http
+
+    import (
+    	"net/http"
+
+    	"loggermw/logger"
+    )
+
+    // LoggingMiddleware wraps next with request logging to sink.
+    func LoggingMiddleware(sink *logger.LogSink, next http.Handler) http.Handler {
+    	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    		// Stub: just passes through without logging
+    		next.ServeHTTP(w, r)
+    	})
+    }
+  "http/middleware_test.go": |
+    package http_test
+
+    import (
+    	"net/http"
+    	"net/http/httptest"
+    	"testing"
+
+    	apphttp "loggermw/http"
+    	"loggermw/logger"
+    )
+
+    func TestLoggingMiddleware(t *testing.T) {
+    	sink := &logger.LogSink{}
+    	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    		w.WriteHeader(http.StatusCreated)
+    		w.Write([]byte("created"))
+    	})
+
+    	wrapped := apphttp.LoggingMiddleware(sink, handler)
+
+    	req := httptest.NewRequest("POST", "/items", nil)
+    	rec := httptest.NewRecorder()
+
+    	wrapped.ServeHTTP(rec, req)
+
+    	if rec.Code != http.StatusCreated {
+    		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusCreated)
+    	}
+
+    	if len(sink.Records) != 1 {
+    		t.Fatalf("sink records count = %d, want 1", len(sink.Records))
+    	}
+
+    	rec0 := sink.Records[0]
+    	if rec0.Method != "POST" || rec0.Path != "/items" || rec0.Status != http.StatusCreated {
+    		t.Fatalf("logged record mismatch: %+v", rec0)
+    	}
+    }
+canonical_files:
+  "http/middleware_test.go": |
+    package http_test
+
+    import (
+    	"net/http"
+    	"net/http/httptest"
+    	"testing"
+
+    	apphttp "loggermw/http"
+    	"loggermw/logger"
+    )
+
+    func TestLoggingMiddleware(t *testing.T) {
+    	sink := &logger.LogSink{}
+    	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    		w.WriteHeader(http.StatusCreated)
+    		w.Write([]byte("created"))
+    	})
+
+    	wrapped := apphttp.LoggingMiddleware(sink, handler)
+
+    	req := httptest.NewRequest("POST", "/items", nil)
+    	rec := httptest.NewRecorder()
+
+    	wrapped.ServeHTTP(rec, req)
+
+    	if rec.Code != http.StatusCreated {
+    		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusCreated)
+    	}
+
+    	if len(sink.Records) != 1 {
+    		t.Fatalf("sink records count = %d, want 1", len(sink.Records))
+    	}
+
+    	rec0 := sink.Records[0]
+    	if rec0.Method != "POST" || rec0.Path != "/items" || rec0.Status != http.StatusCreated {
+    		t.Fatalf("logged record mismatch: %+v", rec0)
+    	}
+    }

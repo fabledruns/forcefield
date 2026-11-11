@@ -76,6 +76,21 @@ Doctor never prints secret values such as API keys. It exits non-zero when a `[F
 ff doctor
 ```
 
+### `ff bench`
+
+Runs the automated coding-agent benchmark suite against Forcefield's coding agent in isolated workspaces.
+
+```bash
+ff bench
+ff bench run --category debugging
+ff bench run --task MOD-001
+ff bench run --keep-workspaces
+ff bench list
+ff bench report [run-id]
+```
+
+See [Benchmarks](Benchmarks.md) for full task definitions, scoring, and report specifications.
+
 ## Run evidence (v1.6)
 
 `ff run` persists every headless run as a session (resumable via `--resume`) and writes a

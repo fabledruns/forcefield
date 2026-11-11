@@ -64,6 +64,55 @@ func TestState_RecordTool_TracksConsecutiveFailures(t *testing.T) {
 	}
 }
 
+func TestState_RecordToolOutcome_CommandFailuresDoNotAccumulateOrResetExecutionFailures(t *testing.T) {
+	st := New("goal")
+	// 1. Repeated command failures alone do not increment ConsecutiveFailures
+	for i := 0; i < 5; i++ {
+		st.RecordToolOutcome("shell", false, true)
+	}
+	if got := st.ConsecutiveFailures(); got != 0 {
+		t.Fatalf("ConsecutiveFailures() = %d, want 0 (command failures must not accumulate)", got)
+	}
+	if got := st.ToolCallCount(); got != 5 {
+		t.Fatalf("ToolCallCount() = %d, want 5", got)
+	}
+
+	// 2. Introduce genuine execution failures
+	st.RecordToolOutcome("edit_file", false, false)
+	st.RecordToolOutcome("edit_file", false, false)
+	if got := st.ConsecutiveFailures(); got != 2 {
+		t.Fatalf("ConsecutiveFailures() = %d, want 2 for genuine execution failures", got)
+	}
+
+	// 3. A command failure between execution failures does not reset the counter
+	st.RecordToolOutcome("shell", false, true)
+	if got := st.ConsecutiveFailures(); got != 2 {
+		t.Fatalf("ConsecutiveFailures() = %d, want 2 (command failure must not reset execution failures)", got)
+	}
+
+	// 4. A third execution failure continues accumulating
+	st.RecordToolOutcome("edit_file", false, false)
+	if got := st.ConsecutiveFailures(); got != 3 {
+		t.Fatalf("ConsecutiveFailures() = %d, want 3 after third execution failure", got)
+	}
+
+	// 5. A successful non-shell tool resets the counter
+	st.RecordToolOutcome("read_file", true, false)
+	if got := st.ConsecutiveFailures(); got != 0 {
+		t.Fatalf("ConsecutiveFailures() = %d, want 0 after successful read_file", got)
+	}
+
+	// 6. Execution failure followed by successful command resets the counter
+	st.RecordToolOutcome("edit_file", false, false)
+	if got := st.ConsecutiveFailures(); got != 1 {
+		t.Fatalf("ConsecutiveFailures() = %d, want 1", got)
+	}
+	st.RecordToolOutcome("shell", true, false)
+	if got := st.ConsecutiveFailures(); got != 0 {
+		t.Fatalf("ConsecutiveFailures() = %d, want 0 after successful shell command", got)
+	}
+}
+
 func TestState_Summary_EmptyUntilSomethingRecorded(t *testing.T) {
 	st := New("goal")
 	if got := st.Summary(); got != "" {

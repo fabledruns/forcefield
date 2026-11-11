@@ -1,0 +1,90 @@
+id: "MOD-002"
+name: "Semantic Version Parser"
+category: "simple_code_modifications"
+difficulty: "easy"
+description: "Parse semantic version strings into Major, Minor, Patch, and Prerelease components."
+instructions: "Implement Parse(v string) (Version, error) in semver.go. Strip optional leading 'v', parse major.minor.patch integers, and extract any trailing prerelease string after '-'. Return an error for malformed versions."
+timeout: "60s"
+expected_files:
+  - "semver.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+fixtures:
+  "go.mod": |
+    module semverpkg
+
+    go 1.21
+  "semver.go": |
+    package semverpkg
+
+    import "errors"
+
+    type Version struct {
+    	Major      int
+    	Minor      int
+    	Patch      int
+    	Prerelease string
+    }
+
+    func Parse(v string) (Version, error) {
+    	// Stub: not implemented
+    	return Version{}, errors.New("not implemented")
+    }
+  "semver_test.go": |
+    package semverpkg
+
+    import "testing"
+
+    func TestParse(t *testing.T) {
+    	v, err := Parse("1.2.3")
+    	if err != nil {
+    		t.Fatalf("unexpected error: %v", err)
+    	}
+    	if v.Major != 1 || v.Minor != 2 || v.Patch != 3 || v.Prerelease != "" {
+    		t.Fatalf("unexpected version parsed: %+v", v)
+    	}
+
+    	v2, err := Parse("v2.10.4-rc.1")
+    	if err != nil {
+    		t.Fatalf("unexpected error: %v", err)
+    	}
+    	if v2.Major != 2 || v2.Minor != 10 || v2.Patch != 4 || v2.Prerelease != "rc.1" {
+    		t.Fatalf("unexpected version parsed: %+v", v2)
+    	}
+
+    	if _, err := Parse("invalid"); err == nil {
+    		t.Fatal("expected error for invalid version, got nil")
+    	}
+    }
+canonical_files:
+  "semver_test.go": |
+    package semverpkg
+
+    import "testing"
+
+    func TestParse(t *testing.T) {
+    	v, err := Parse("1.2.3")
+    	if err != nil {
+    		t.Fatalf("unexpected error: %v", err)
+    	}
+    	if v.Major != 1 || v.Minor != 2 || v.Patch != 3 || v.Prerelease != "" {
+    		t.Fatalf("unexpected version parsed: %+v", v)
+    	}
+
+    	v2, err := Parse("v2.10.4-rc.1")
+    	if err != nil {
+    		t.Fatalf("unexpected error: %v", err)
+    	}
+    	if v2.Major != 2 || v2.Minor != 10 || v2.Patch != 4 || v2.Prerelease != "rc.1" {
+    		t.Fatalf("unexpected version parsed: %+v", v2)
+    	}
+
+    	if _, err := Parse("invalid"); err == nil {
+    		t.Fatal("expected error for invalid version, got nil")
+    	}
+    }

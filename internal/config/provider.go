@@ -230,7 +230,7 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 	authRequired := service.Auth == providers.AuthRequired || entry.APIKeyEnv != ""
 	apiKey, apiKeySource := "", ""
 	if envVar != "" {
-		value, source, err := ResolveEnvValue(envVar)
+		value, source, err := c.ResolveEnvValue(envVar)
 		if err != nil {
 			return ResolvedProvider{}, err
 		}

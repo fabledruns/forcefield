@@ -495,3 +495,106 @@ func TestShell_BashSyntaxIsExecutedAsBash(t *testing.T) {
 		}
 	}
 }
+
+func TestShell_RemediationC_Outcomes(t *testing.T) {
+	requireShellBackend(t)
+
+	t.Run("NonZeroExit_IsCommandFailure", func(t *testing.T) {
+		s := NewShell()
+		// Simulates a command like go test failing with exit code 1
+		cmd := "echo 'testing stdout output'; echo 'testing stderr output' >&2; exit 1"
+		res, err := s.Execute(context.Background(), map[string]any{
+			"command": cmd,
+		})
+		if err != nil {
+			t.Fatalf("unexpected Go error: %v", err)
+		}
+		if !res.CommandFailure {
+			t.Errorf("expected CommandFailure = true, got false")
+		}
+		if res.ExecutionFailure {
+			t.Errorf("expected ExecutionFailure = false, got true")
+		}
+		if !res.IsError {
+			t.Errorf("expected IsError = true for non-zero exit")
+		}
+		if res.ExitCode != 1 {
+			t.Errorf("expected ExitCode = 1, got %d", res.ExitCode)
+		}
+		if !strings.Contains(res.Stdout, "testing stdout output") {
+			t.Errorf("expected stdout to be preserved, got %q", res.Stdout)
+		}
+		if !strings.Contains(res.Stderr, "testing stderr output") {
+			t.Errorf("expected stderr to be preserved, got %q", res.Stderr)
+		}
+		if !strings.Contains(res.Content, "command exited with code 1") {
+			t.Errorf("expected exit code in content, got %q", res.Content)
+		}
+	})
+
+	t.Run("ZeroExit_IsSuccessfulCommand", func(t *testing.T) {
+		s := NewShell()
+		cmd := "echo 'hello world'"
+		res, err := s.Execute(context.Background(), map[string]any{
+			"command": cmd,
+		})
+		if err != nil {
+			t.Fatalf("unexpected Go error: %v", err)
+		}
+		if res.CommandFailure {
+			t.Errorf("expected CommandFailure = false, got true")
+		}
+		if res.ExecutionFailure {
+			t.Errorf("expected ExecutionFailure = false, got true")
+		}
+		if res.IsError {
+			t.Errorf("expected IsError = false, got true")
+		}
+		if res.ExitCode != 0 {
+			t.Errorf("expected ExitCode = 0, got %d", res.ExitCode)
+		}
+		if !strings.Contains(res.Stdout, "hello world") {
+			t.Errorf("expected stdout to contain hello world, got %q", res.Stdout)
+		}
+	})
+
+	t.Run("CannotLaunch_IsExecutionFailure", func(t *testing.T) {
+		s := NewShell()
+		nonExistentDir := filepath.Join(t.TempDir(), "nonexistent_dir_123")
+		res, err := s.Execute(context.Background(), map[string]any{
+			"command": "echo test",
+			"cwd":     nonExistentDir,
+		})
+		if err != nil {
+			t.Fatalf("unexpected Go error: %v", err)
+		}
+		if !res.ExecutionFailure {
+			t.Errorf("expected ExecutionFailure = true for nonexistent cwd")
+		}
+		if res.CommandFailure {
+			t.Errorf("expected CommandFailure = false for unlaunchable command")
+		}
+	})
+
+	t.Run("Timeout_IsExecutionFailure", func(t *testing.T) {
+		s := NewShell()
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+
+		res, err := s.Execute(ctx, map[string]any{
+			"command": "sleep 5",
+		})
+		if err != nil {
+			t.Fatalf("unexpected Go error: %v", err)
+		}
+		if !res.ExecutionFailure {
+			t.Errorf("expected ExecutionFailure = true on timeout")
+		}
+		if res.CommandFailure {
+			t.Errorf("expected CommandFailure = false on timeout")
+		}
+		if !res.IsError {
+			t.Errorf("expected IsError = true on timeout")
+		}
+	})
+}

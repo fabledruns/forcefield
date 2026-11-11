@@ -1,0 +1,107 @@
+id: "DEBUG-002"
+name: "Nil Pointer in Nested Unmarshaler"
+category: "debugging"
+difficulty: "easy"
+description: "Fix panic caused by nil pointer dereference during JSON unmarshaling."
+instructions: "Run tests in payload/payload_test.go to reproduce the panic in TestUnmarshal_MissingMetadata. In payload/payload.go, fix the unmarshaler to safely handle nil or omitted nested metadata objects without panicking."
+timeout: "60s"
+expected_files:
+  - "payload/payload.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+  disallow_unexpected_files: true
+fixtures:
+  "go.mod": |
+    module payloadpkg
+
+    go 1.21
+  "payload/payload.go": |
+    package payload
+
+    import "encoding/json"
+
+    type Metadata struct {
+    	Author string `json:"author"`
+    	Source string `json:"source"`
+    }
+
+    type Document struct {
+    	Title    string    `json:"title"`
+    	Meta     *Metadata `json:"metadata"`
+    	Author   string    `json:"-"`
+    }
+
+    func UnmarshalDocument(data []byte) (*Document, error) {
+    	var doc Document
+    	if err := json.Unmarshal(data, &doc); err != nil {
+    		return nil, err
+    	}
+    	doc.Author = doc.Meta.Author
+    	return &doc, nil
+    }
+  "payload/payload_test.go": |
+    package payload_test
+
+    import (
+    	"testing"
+
+    	"payloadpkg/payload"
+    )
+
+    func TestUnmarshal_WithMetadata(t *testing.T) {
+    	jsonStr := `{"title": "Proposal", "metadata": {"author": "Alice", "source": "web"}}`
+    	doc, err := payload.UnmarshalDocument([]byte(jsonStr))
+    	if err != nil {
+    		t.Fatalf("unexpected error: %v", err)
+    	}
+    	if doc.Author != "Alice" {
+    		t.Fatalf("doc.Author = %q, want Alice", doc.Author)
+    	}
+    }
+
+    func TestUnmarshal_MissingMetadata(t *testing.T) {
+    	jsonStr := `{"title": "Untitled"}`
+    	doc, err := payload.UnmarshalDocument([]byte(jsonStr))
+    	if err != nil {
+    		t.Fatalf("unexpected error: %v", err)
+    	}
+    	if doc.Author != "" {
+    		t.Fatalf("doc.Author = %q, want empty", doc.Author)
+    	}
+    }
+canonical_files:
+  "payload/payload_test.go": |
+    package payload_test
+
+    import (
+    	"testing"
+
+    	"payloadpkg/payload"
+    )
+
+    func TestUnmarshal_WithMetadata(t *testing.T) {
+    	jsonStr := `{"title": "Proposal", "metadata": {"author": "Alice", "source": "web"}}`
+    	doc, err := payload.UnmarshalDocument([]byte(jsonStr))
+    	if err != nil {
+    		t.Fatalf("unexpected error: %v", err)
+    	}
+    	if doc.Author != "Alice" {
+    		t.Fatalf("doc.Author = %q, want Alice", doc.Author)
+    	}
+    }
+
+    func TestUnmarshal_MissingMetadata(t *testing.T) {
+    	jsonStr := `{"title": "Untitled"}`
+    	doc, err := payload.UnmarshalDocument([]byte(jsonStr))
+    	if err != nil {
+    		t.Fatalf("unexpected error: %v", err)
+    	}
+    	if doc.Author != "" {
+    		t.Fatalf("doc.Author = %q, want empty", doc.Author)
+    	}
+    }
