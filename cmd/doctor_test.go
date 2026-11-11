@@ -18,6 +18,7 @@ func isolateDoctorHome(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Chdir(home)
 	return home
 }
 
@@ -437,7 +438,7 @@ func TestDoctorProvider_SkipsWhenKeyMissing(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	// Also ensure no .env file provides it.
 	_ = os.Remove(filepath.Join(home, ".forcefield", ".env"))
-	_ = os.Remove(filepath.Join(".", ".env"))
+	_ = os.Remove(filepath.Join(home, ".env"))
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)

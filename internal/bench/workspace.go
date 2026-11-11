@@ -66,7 +66,7 @@ func (m *WorkspaceManager) Prepare(ctx context.Context, task *Task, runID string
 		fixtureDir := filepath.Join(task.Dir, "fixture")
 		if info, err := os.Stat(fixtureDir); err == nil && info.IsDir() {
 			if err := copyDir(fixtureDir, wsDir); err != nil {
-				_ = os.RemoveAll(wsDir)
+				_ = m.safeRemoveAll(wsDir)
 				return nil, fmt.Errorf("copy task fixture directory: %w", err)
 			}
 		}
@@ -76,21 +76,21 @@ func (m *WorkspaceManager) Prepare(ctx context.Context, task *Task, runID string
 	for relPath, content := range task.Fixtures {
 		cleanRel := filepath.Clean(filepath.FromSlash(relPath))
 		if strings.HasPrefix(cleanRel, "..") || filepath.IsAbs(cleanRel) || filepath.VolumeName(cleanRel) != "" {
-			_ = os.RemoveAll(wsDir)
+			_ = m.safeRemoveAll(wsDir)
 			return nil, fmt.Errorf("fixture path %q escapes workspace boundary", relPath)
 		}
 		target := filepath.Join(wsDir, cleanRel)
 		relCheck, err := filepath.Rel(wsDir, target)
 		if err != nil || strings.HasPrefix(relCheck, "..") {
-			_ = os.RemoveAll(wsDir)
+			_ = m.safeRemoveAll(wsDir)
 			return nil, fmt.Errorf("fixture path %q resolves outside workspace", relPath)
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			_ = os.RemoveAll(wsDir)
+			_ = m.safeRemoveAll(wsDir)
 			return nil, fmt.Errorf("create fixture parent directory for %s: %w", relPath, err)
 		}
 		if err := os.WriteFile(target, []byte(content), 0644); err != nil {
-			_ = os.RemoveAll(wsDir)
+			_ = m.safeRemoveAll(wsDir)
 			return nil, fmt.Errorf("write fixture file %s: %w", relPath, err)
 		}
 	}
@@ -112,7 +112,7 @@ func (m *WorkspaceManager) Prepare(ctx context.Context, task *Task, runID string
 		cmd.Stdout = &out
 		cmd.Stderr = &out
 		if err := cmd.Run(); err != nil {
-			_ = os.RemoveAll(wsDir)
+			_ = m.safeRemoveAll(wsDir)
 			return nil, fmt.Errorf("git %s failed in %s: %v (output: %s)", argv[1], wsDir, err, out.String())
 		}
 	}
@@ -122,7 +122,7 @@ func (m *WorkspaceManager) Prepare(ctx context.Context, task *Task, runID string
 	cmd.Dir = wsDir
 	out, err := cmd.Output()
 	if err != nil {
-		_ = os.RemoveAll(wsDir)
+		_ = m.safeRemoveAll(wsDir)
 		return nil, fmt.Errorf("resolve initial commit in %s: %w", wsDir, err)
 	}
 	ws.InitialCommit = strings.TrimSpace(string(out))
@@ -224,6 +224,131 @@ func (m *WorkspaceManager) Diff(ctx context.Context, ws *Workspace) (files []str
 	return files, diffText, nil
 }
 
+// findEnclosingRepoRoot searches upward from startDir for the enclosing Git repository (.git dir or file).
+func findEnclosingRepoRoot(startDir string) string {
+	if startDir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			startDir = wd
+		}
+	}
+	absStart, err := filepath.Abs(startDir)
+	if err != nil {
+		return ""
+	}
+	realStart, err := filepath.EvalSymlinks(absStart)
+	if err != nil {
+		realStart = absStart
+	}
+	realStart = strings.TrimPrefix(filepath.Clean(realStart), `\\?\`)
+	curr := realStart
+	for {
+		gitMarker := filepath.Join(curr, ".git")
+		if _, err := os.Stat(gitMarker); err == nil {
+			return curr
+		}
+		parent := filepath.Dir(curr)
+		if parent == curr {
+			break
+		}
+		curr = parent
+	}
+	return ""
+}
+
+// isSameOrAncestor checks if pathA is equal to or an ancestor of pathB.
+func isSameOrAncestor(pathA, pathB string) bool {
+	cleanA := strings.ToLower(filepath.Clean(strings.TrimPrefix(pathA, `\\?\`)))
+	cleanB := strings.ToLower(filepath.Clean(strings.TrimPrefix(pathB, `\\?\`)))
+	if cleanA == cleanB {
+		return true
+	}
+	rel, err := filepath.Rel(cleanA, cleanB)
+	if err != nil {
+		return false
+	}
+	return !strings.HasPrefix(rel, "..") && rel != "."
+}
+
+// validateSafeDeletion enforces strict repository safety guardrails before deleting any directory:
+// 1. Rejects empty, relative-root, or volume root paths.
+// 2. Resolves canonical physical paths via filepath.EvalSymlinks.
+// 3. Rejects deletion if target is equal to or an ancestor of the Git repository root.
+// 4. Rejects deletion if target is outside baseDir or is baseDir itself.
+func validateSafeDeletion(baseDir, targetDir string) error {
+	trimmed := strings.TrimSpace(targetDir)
+	if trimmed == "" || trimmed == "." || trimmed == "/" || trimmed == "\\" || filepath.Clean(trimmed) == filepath.VolumeName(trimmed)+string(filepath.Separator) {
+		return fmt.Errorf("CRITICAL REPOSITORY SAFETY GUARDRAIL: refusing to delete root or empty directory: %q", targetDir)
+	}
+
+	if strings.TrimSpace(baseDir) == "" {
+		baseDir = filepath.Join(os.TempDir(), "ff-benchmarks")
+	}
+
+	// 1. Resolve canonical physical path for target.
+	absTarget, err := filepath.Abs(targetDir)
+	if err != nil {
+		return fmt.Errorf("resolve target dir %s: %w", targetDir, err)
+	}
+	realTarget, err := filepath.EvalSymlinks(absTarget)
+	if err != nil {
+		realParent, parentErr := filepath.EvalSymlinks(filepath.Dir(absTarget))
+		if parentErr != nil {
+			realTarget = absTarget
+		} else {
+			realTarget = filepath.Join(realParent, filepath.Base(absTarget))
+		}
+	}
+	realTarget = strings.TrimPrefix(filepath.Clean(realTarget), `\\?\`)
+
+	// 2. Resolve canonical physical path for base directory.
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return fmt.Errorf("resolve base dir %s: %w", baseDir, err)
+	}
+	realBase, err := filepath.EvalSymlinks(absBase)
+	if err != nil {
+		realBase = absBase
+	}
+	realBase = strings.TrimPrefix(filepath.Clean(realBase), `\\?\`)
+
+	// 3. Forbid deleting repository root or any ancestor of repository root.
+	repoRoot := findEnclosingRepoRoot("")
+	if repoRoot != "" {
+		realRepo, err := filepath.EvalSymlinks(repoRoot)
+		if err != nil {
+			realRepo, _ = filepath.Abs(repoRoot)
+		}
+		realRepo = strings.TrimPrefix(filepath.Clean(realRepo), `\\?\`)
+
+		if isSameOrAncestor(realTarget, realRepo) {
+			return fmt.Errorf("CRITICAL REPOSITORY SAFETY GUARDRAIL: target %q is equal to or an ancestor of repository root %q", realTarget, realRepo)
+		}
+	}
+
+	// 4. Target must be strictly inside baseDir (cannot be baseDir itself or outside).
+	cleanTargetLower := strings.ToLower(realTarget)
+	cleanBaseLower := strings.ToLower(realBase)
+	rel, err := filepath.Rel(cleanBaseLower, cleanTargetLower)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("CRITICAL REPOSITORY SAFETY GUARDRAIL: refusing to delete directory outside base dir: %s (base: %s)", realTarget, realBase)
+	}
+
+	return nil
+}
+
+// safeRemoveAll runs safety guardrails before recursively deleting a directory.
+func (m *WorkspaceManager) safeRemoveAll(dir string) error {
+	base := m.BaseDir
+	if strings.TrimSpace(base) == "" {
+		base = filepath.Join(os.TempDir(), "ff-benchmarks")
+	}
+	if err := validateSafeDeletion(base, dir); err != nil {
+		return err
+	}
+	time.Sleep(10 * time.Millisecond)
+	return os.RemoveAll(dir)
+}
+
 // Cleanup removes or retains the workspace according to configuration and outcome.
 func (m *WorkspaceManager) Cleanup(ws *Workspace, passed bool) error {
 	if ws == nil || ws.Cleaned {
@@ -234,23 +359,8 @@ func (m *WorkspaceManager) Cleanup(ws *Workspace, passed bool) error {
 		return nil
 	}
 
-	absBase, err := filepath.Abs(m.BaseDir)
-	if err != nil {
-		return fmt.Errorf("resolve base dir %s: %w", m.BaseDir, err)
-	}
-	absWs, err := filepath.Abs(ws.Dir)
-	if err != nil {
-		return fmt.Errorf("resolve workspace dir %s: %w", ws.Dir, err)
-	}
-	rel, err := filepath.Rel(absBase, absWs)
-	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
-		return fmt.Errorf("refusing to delete directory outside base dir: %s (base: %s)", absWs, absBase)
-	}
-
 	ws.Cleaned = true
-	// Give windows a brief moment to release file handles if needed
-	time.Sleep(10 * time.Millisecond)
-	return os.RemoveAll(ws.Dir)
+	return m.safeRemoveAll(ws.Dir)
 }
 
 // copyDir recursively copies files and directories from src to dst.

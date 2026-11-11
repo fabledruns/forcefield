@@ -469,18 +469,24 @@ func Load() (*Config, error) {
 const apiKeyName = "NVIDIA_API_KEY"
 
 // findUpwardDotEnv searches upward starting from startDir for a .env file,
-// stopping at the enclosing Git repository root (.git). If startDir is not
-// within a Git repository, upward traversal does not occur to prevent escaping
-// into unrelated parent directories.
+// stopping at the enclosing Git repository root (.git). Canonical physical paths
+// are used to ensure symlinked directories and worktrees resolve to their true
+// repository boundaries. If startDir is not within a Git repository, upward
+// traversal does not occur to prevent escaping into unrelated parent directories.
 func findUpwardDotEnv(startDir string) string {
-	dir, err := filepath.Abs(startDir)
+	absStart, err := filepath.Abs(startDir)
 	if err != nil {
 		return ""
 	}
+	realStart, err := filepath.EvalSymlinks(absStart)
+	if err != nil {
+		realStart = absStart
+	}
+	realStart = strings.TrimPrefix(filepath.Clean(realStart), `\\?\`)
 
-	// 1. Locate enclosing Git repository root, if any.
+	// 1. Locate enclosing Git repository root, if any (.git may be dir or worktree/submodule file).
 	gitRoot := ""
-	curr := dir
+	curr := realStart
 	for {
 		gitMarker := filepath.Join(curr, ".git")
 		if _, err := os.Stat(gitMarker); err == nil {
@@ -499,8 +505,8 @@ func findUpwardDotEnv(startDir string) string {
 		return ""
 	}
 
-	// 2. Walk upward from startDir to gitRoot (inclusive).
-	curr = dir
+	// 2. Walk upward from realStart to gitRoot (inclusive).
+	curr = realStart
 	for {
 		candidate := filepath.Join(curr, ".env")
 		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
