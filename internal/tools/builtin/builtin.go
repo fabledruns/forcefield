@@ -70,6 +70,7 @@ func Register(m *tools.Manager, opts ...Option) error {
 	all := []tools.Tool{
 		newReadFile(o),
 		newWriteFile(o),
+		newEditFile(o),
 		newListFiles(o),
 		shell.NewPWD(),
 		newShell(o),
@@ -97,6 +98,10 @@ func newReadFile(o options) tools.Tool {
 
 func newWriteFile(o options) tools.Tool {
 	return filesystem.NewWriteFileWithPolicy(o.policy)
+}
+
+func newEditFile(o options) tools.Tool {
+	return filesystem.NewEditFileWithPolicy(o.policy)
 }
 
 func newListFiles(o options) tools.Tool {

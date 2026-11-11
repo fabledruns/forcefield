@@ -51,7 +51,7 @@ func newAgentTestRuntime(t *testing.T, provider providers.ModelProvider) *Runtim
 
 func registerTestTools(t *testing.T, m *tools.Manager) {
 	t.Helper()
-	names := []string{"read_file", "write_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
+	names := []string{"read_file", "write_file", "edit_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
 	for _, name := range names {
 		n := name
 		tool := &testAgentTool{name: n}
@@ -77,19 +77,19 @@ func (t *testAgentTool) Execute(_ context.Context, args map[string]any) (tools.R
 func TestAgent_ToolIsolationDefinitions(t *testing.T) {
 	rt := newAgentTestRuntime(t, &scriptedProvider{turns: [][]providers.StreamEvent{{{Done: true}}}})
 	// general has all 14
-	if len(rt.manager.Definitions()) != 14 {
-		t.Fatalf("general should have 14 tools, got %d", len(rt.manager.Definitions()))
+	if len(rt.manager.Definitions()) != 15 {
+		t.Fatalf("general should have 15 tools, got %d", len(rt.manager.Definitions()))
 	}
 	if err := rt.SetAgent("legal"); err != nil {
 		t.Fatalf("SetAgent legal: %v", err)
 	}
-	// legal should have 10 (no shell, no write_file, no secret_scan)
+	// legal should have 10 (no shell, no write_file, no edit_file, no secret_scan)
 	defs := rt.manager.Definitions()
 	if len(defs) != 10 {
 		t.Fatalf("legal should have 10 tools, got %d: %v", len(defs), defs)
 	}
 	for _, d := range defs {
-		if d.Name == "shell" || d.Name == "write_file" {
+		if d.Name == "shell" || d.Name == "write_file" || d.Name == "edit_file" {
 			t.Fatalf("legal should not expose %q", d.Name)
 		}
 	}
@@ -102,7 +102,7 @@ func TestAgent_ToolIsolationDefinitions(t *testing.T) {
 		if d.Name == "shell" {
 			foundShell = true
 		}
-		if d.Name == "write_file" {
+		if d.Name == "write_file" || d.Name == "edit_file" {
 			foundWrite = true
 		}
 	}
@@ -110,14 +110,14 @@ func TestAgent_ToolIsolationDefinitions(t *testing.T) {
 		t.Fatalf("cyber should have shell")
 	}
 	if foundWrite {
-		t.Fatalf("cyber should not have write_file")
+		t.Fatalf("cyber should not have write_file or edit_file")
 	}
 	// Switch back to coding restores
 	if err := rt.SetAgent("coding"); err != nil {
 		t.Fatalf("SetAgent coding: %v", err)
 	}
-	if len(rt.manager.Definitions()) != 14 {
-		t.Fatalf("coding should have 14, got %d", len(rt.manager.Definitions()))
+	if len(rt.manager.Definitions()) != 15 {
+		t.Fatalf("coding should have 15, got %d", len(rt.manager.Definitions()))
 	}
 }
 

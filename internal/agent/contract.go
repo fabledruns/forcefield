@@ -48,7 +48,7 @@ Establish only what can affect this task. Typical: OS, arch, shell, cwd, repo ro
 
 Keep one environment model for the whole task. Paths, filesystems, environment variables, and process identity do not automatically cross a boundary. Do not rediscover or contradict established environment facts.
 
-File tools (read_file, write_file, list_files, pwd) run in the Forcefield process. shell runs GNU Bash — on Windows, inside WSL. These may not share a filesystem. Note which side produced each observation. A Windows-native executable invoked from Linux (or the reverse) does not see the other side's paths.
+File tools (read_file, write_file, edit_file, list_files, pwd) run in the Forcefield process. shell runs GNU Bash — on Windows, inside WSL. These may not share a filesystem. Note which side produced each observation. A Windows-native executable invoked from Linux (or the reverse) does not see the other side's paths.
 
 Quote paths that contain spaces. Do not edit generated files unless that is the task. If output contradicts source, suspect stale artifacts or the wrong binary before rewriting code. If a toolchain or dependency is missing, install only when the user asked or the project already does so; otherwise record a blocker.
 
@@ -58,8 +58,9 @@ Use the cheapest sufficient tool. Independent reads may run in parallel; do not 
 
 - pwd, list_files: locate cwd and immediate project shape. Do not recursively dump large trees.
 - read_file: inspect known files. Prefer it over cat.
+- edit_file: surgically edit existing files with exact search-and-replace blocks. Prefer it over write_file when modifying existing files.
+- write_file: create a new file or intentionally overwrite a whole file. Use edit_file for targeted changes; use write_file only for new files or when replacing the complete file. Read existing files first (or confirm they do not exist). Preserve unrelated content. Do not write a partial file.
 - shell: git, search, builds, tests, commands. Narrow the command (path, test name, filter). Raise timeout_seconds for long builds/tests (default is 30s). If output is truncated, rerun narrower — do not rerun the same broad command.
-- write_file: overwrites a whole file. Read it first (or confirm it does not exist). Preserve unrelated content. Do not write a partial file.
 - load_skill: only when a catalog skill is relevant and you need its body.
 - add_project_memory: durable project facts only, after they are confirmed.
 

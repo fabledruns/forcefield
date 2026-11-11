@@ -75,7 +75,8 @@ Built-in tools are registered through `tools/builtin`.
 | Tool          | Package                 | Description                                      |
 | ------------- | ----------------------- | ------------------------------------------------ |
 | `read_file`   | `tools/filesystem`      | Read a text file. Files over 5 MiB are refused with a note. |
-| `write_file`  | `tools/filesystem`      | Write content to a file.                         |
+| `write_file`  | `tools/filesystem`      | Write content to a file (creates or replaces entire file). |
+| `edit_file`   | `tools/filesystem`      | Surgically edit an existing file using exact search-and-replace blocks, atomic commit, and Go syntax verification. |
 | `list_files`  | `tools/filesystem`      | List files in a directory. Max 500 entries per listing. |
 | `pwd`         | `tools/shell`           | Return the current working directory.            |
 | `shell`         | `tools/shell`                 | Run a Bash command. Combined stdout+stderr capped at 2 MiB (lines capped at 256 KiB each); 30s default timeout, per-call up to 300s. |
