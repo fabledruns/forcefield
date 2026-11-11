@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -535,6 +536,51 @@ func TestEditFile_NonexistentFile(t *testing.T) {
 	}
 }
 
+func canonicalizeWorkspacePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = filepath.Clean(p)
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = real
+	}
+	abs = strings.TrimPrefix(filepath.Clean(abs), `\\?\`)
+	if runtime.GOOS == "windows" {
+		abs = strings.ToLower(abs)
+	}
+	return abs
+}
+
+func isWithinWorkspace(workspace, target string) bool {
+	canonWs := canonicalizeWorkspacePath(workspace)
+	canonTarget := canonicalizeWorkspacePath(target)
+	if canonWs == canonTarget {
+		return true
+	}
+	rel, err := filepath.Rel(canonWs, canonTarget)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+func assertWithinWorkspace(t *testing.T, workspace, target string) {
+	t.Helper()
+	if !isWithinWorkspace(workspace, target) {
+		t.Fatalf("target %q (canonical: %q) is not within workspace %q (canonical: %q)",
+			target, canonicalizeWorkspacePath(target), workspace, canonicalizeWorkspacePath(workspace))
+	}
+}
+
 func TestEditFile_BoundaryChecker(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
@@ -544,15 +590,149 @@ func TestEditFile_BoundaryChecker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckBoundary inside workspace: %v", err)
 	}
-	if !strings.HasPrefix(resPath, dir) {
-		t.Errorf("expected path inside %s, got %s", dir, resPath)
-	}
+	assertWithinWorkspace(t, dir, resPath)
 
 	// Check boundary outside workspace
 	_, errOutside := tool.CheckBoundary(map[string]any{"path": "../../../outside.txt"})
 	if errOutside == nil {
 		t.Fatal("expected error for path outside workspace")
 	}
+}
+
+func TestEditFile_BoundaryChecker_Regression(t *testing.T) {
+	t.Run("canonical vs non-canonical temporary paths", func(t *testing.T) {
+		dir := t.TempDir()
+		// Test uncleaned relative path
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		resPath, err := tool.CheckBoundary(map[string]any{"path": "foo/./sub/../bar.txt"})
+		if err != nil {
+			t.Fatalf("CheckBoundary failed for uncleaned subpath: %v", err)
+		}
+		assertWithinWorkspace(t, dir, resPath)
+
+		// Test uncleaned workspace directory
+		uncleanedWs := filepath.Join(dir, "extra", "..")
+		toolUncleaned := NewEditFileWithPolicy(sandbox.Policy{Workspace: uncleanedWs})
+		resPath2, err := toolUncleaned.CheckBoundary(map[string]any{"path": "file.txt"})
+		if err != nil {
+			t.Fatalf("CheckBoundary failed for uncleaned workspace: %v", err)
+		}
+		assertWithinWorkspace(t, dir, resPath2)
+	})
+
+	t.Run("macOS /var vs /private/var symlink alias equivalence", func(t *testing.T) {
+		dir := t.TempDir()
+		aliasDir := filepath.Join(t.TempDir(), "ws-alias")
+		if err := os.Symlink(dir, aliasDir); err != nil {
+			t.Skipf("symlinks unavailable on this host/privilege: %v", err)
+		}
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: aliasDir})
+		resPath, err := tool.CheckBoundary(map[string]any{"path": "nested/target.txt"})
+		if err != nil {
+			t.Fatalf("CheckBoundary failed through workspace symlink: %v", err)
+		}
+		assertWithinWorkspace(t, dir, resPath)
+		assertWithinWorkspace(t, aliasDir, resPath)
+	})
+
+	t.Run("windows short-name vs long-name", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("Windows 8.3 short names are specific to Windows hosts")
+		}
+		dir := t.TempDir()
+		shortDir, err := windowsShortPath(dir)
+		if err != nil {
+			t.Skipf("short path unavailable: %v", err)
+		}
+		dirInfo, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat long workspace path: %v", err)
+		}
+		shortDirInfo, err := os.Stat(shortDir)
+		if err != nil {
+			t.Fatalf("stat short workspace path: %v", err)
+		}
+		if !os.SameFile(dirInfo, shortDirInfo) {
+			t.Fatalf("expected long and short workspace paths to reference the same directory: %q vs %q", dir, shortDir)
+		}
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: shortDir})
+		resPath, err := tool.CheckBoundary(map[string]any{"path": "short/test.txt"})
+		if err != nil {
+			t.Fatalf("CheckBoundary failed for 8.3 short-name workspace: %v", err)
+		}
+		assertWithinWorkspace(t, shortDir, resPath)
+	})
+
+	t.Run("windows case differences", func(t *testing.T) {
+		dir := t.TempDir()
+		var casedDir string
+		if runtime.GOOS == "windows" {
+			casedDir = strings.ToUpper(dir)
+		} else {
+			casedDir = dir
+		}
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: casedDir})
+		resPath, err := tool.CheckBoundary(map[string]any{"path": "cased/file.txt"})
+		if err != nil {
+			t.Fatalf("CheckBoundary failed for cased workspace: %v", err)
+		}
+		assertWithinWorkspace(t, dir, resPath)
+	})
+
+	t.Run("genuine paths outside workspace", func(t *testing.T) {
+		dir := t.TempDir()
+		outside := t.TempDir()
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		outsideFile := filepath.Join(outside, "secret.txt")
+		_, err := tool.CheckBoundary(map[string]any{"path": outsideFile})
+		if err == nil {
+			t.Fatalf("CheckBoundary unexpectedly allowed genuine outside path: %s", outsideFile)
+		}
+	})
+
+	t.Run("prefix collision rejection", func(t *testing.T) {
+		dir := t.TempDir()
+		siblingDir := dir + "_sibling"
+		if err := os.MkdirAll(siblingDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		siblingFile := filepath.Join(siblingDir, "evil.txt")
+		_, err := tool.CheckBoundary(map[string]any{"path": siblingFile})
+		if err == nil {
+			t.Fatalf("CheckBoundary unexpectedly allowed prefix-collision sibling path: %s", siblingFile)
+		}
+	})
+
+	t.Run("parent directory traversal", func(t *testing.T) {
+		dir := t.TempDir()
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		traversals := []string{
+			"../../../outside.txt",
+			"sub/../../outside.txt",
+			"a/b/../../../outside.txt",
+		}
+		for _, target := range traversals {
+			_, err := tool.CheckBoundary(map[string]any{"path": target})
+			if err == nil {
+				t.Fatalf("CheckBoundary unexpectedly allowed traversal %q", target)
+			}
+		}
+	})
+
+	t.Run("symlink escapes", func(t *testing.T) {
+		dir := t.TempDir()
+		outside := t.TempDir()
+		linkOut := filepath.Join(dir, "link_out")
+		if err := os.Symlink(outside, linkOut); err != nil {
+			t.Skipf("symlinks unavailable on this host/privilege: %v", err)
+		}
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		_, err := tool.CheckBoundary(map[string]any{"path": filepath.Join("link_out", "secret.txt")})
+		if err == nil {
+			t.Fatalf("CheckBoundary unexpectedly allowed symlink escape through %s", linkOut)
+		}
+	})
 }
 
 func TestEditFile_ConcurrentModification(t *testing.T) {

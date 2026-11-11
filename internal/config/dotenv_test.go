@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -141,15 +142,14 @@ func TestResolveEnvValueReadsProjectEnvDir(t *testing.T) {
 	if key != "nvapi-from-project-dir" {
 		t.Errorf("key = %q, want nvapi-from-project-dir", key)
 	}
-	if !strings.Contains(source, projectDir) {
-		t.Errorf("source = %q, want it to contain %s", source, projectDir)
-	}
+	assertSameDotEnvSource(t, source, projectDir)
 
 	// Also test ResolveEnvValueWithDir directly
 	key2, source2, err := ResolveEnvValueWithDir(projectDir, apiKeyName)
-	if err != nil || key2 != "nvapi-from-project-dir" || !strings.Contains(source2, projectDir) {
+	if err != nil || key2 != "nvapi-from-project-dir" {
 		t.Errorf("ResolveEnvValueWithDir failed: key=%q, source=%q, err=%v", key2, source2, err)
 	}
+	assertSameDotEnvSource(t, source2, projectDir)
 }
 
 func TestResolveEnvValueUpwardDiscovery(t *testing.T) {
@@ -178,9 +178,7 @@ func TestResolveEnvValueUpwardDiscovery(t *testing.T) {
 	if key != "nvapi-from-repo-root" {
 		t.Errorf("key = %q, want nvapi-from-repo-root", key)
 	}
-	if !strings.Contains(source, repoDir) {
-		t.Errorf("source = %q, want it to contain %s", source, repoDir)
-	}
+	assertSameDotEnvSource(t, source, repoDir)
 }
 
 func TestResolveEnvValueUpwardStopsAtGitBoundary(t *testing.T) {
@@ -254,9 +252,7 @@ func TestResolveEnvValueUpwardDiscovery_WorktreeGitFile(t *testing.T) {
 	if key != "nvapi-from-worktree" {
 		t.Errorf("key = %q, want nvapi-from-worktree", key)
 	}
-	if !strings.Contains(source, repoDir) {
-		t.Errorf("source = %q, want it to contain %s", source, repoDir)
-	}
+	assertSameDotEnvSource(t, source, repoDir)
 }
 
 func TestResolveEnvValueUpwardDiscovery_SymlinkedDir(t *testing.T) {
@@ -290,7 +286,244 @@ func TestResolveEnvValueUpwardDiscovery_SymlinkedDir(t *testing.T) {
 	if key != "nvapi-from-symlinked-repo" {
 		t.Errorf("key = %q, want nvapi-from-symlinked-repo", key)
 	}
-	if !strings.Contains(source, repoDir) {
-		t.Errorf("source = %q, want it to contain %s", source, repoDir)
+	assertSameDotEnvSource(t, source, repoDir)
+}
+
+func canonicalizeTestPath(p string) string {
+	if p == "" {
+		return ""
 	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = filepath.Clean(p)
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = real
+	}
+	abs = strings.TrimPrefix(filepath.Clean(abs), `\\?\`)
+	if runtime.GOOS == "windows" {
+		abs = strings.ToLower(abs)
+	}
+	return abs
+}
+
+func pathContains(target, parent string) bool {
+	canonTarget := canonicalizeTestPath(target)
+	canonParent := canonicalizeTestPath(parent)
+	if canonTarget == canonParent {
+		return true
+	}
+	rel, err := filepath.Rel(canonParent, canonTarget)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+func extractDotEnvPath(source string) string {
+	s := strings.TrimSpace(source)
+	s = strings.TrimPrefix(s, ".env file ")
+	if idx := strings.Index(s, " ("); idx != -1 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
+}
+
+func assertSameDotEnvSource(t *testing.T, source, expectedDir string) {
+	t.Helper()
+	sourcePath := extractDotEnvPath(source)
+	expectedFile := filepath.Join(expectedDir, ".env")
+	fiSource, errSource := os.Stat(sourcePath)
+	fiExpected, errExpected := os.Stat(expectedFile)
+	if errSource == nil && errExpected == nil {
+		if os.SameFile(fiSource, fiExpected) {
+			return
+		}
+	}
+	canonSource := canonicalizeTestPath(sourcePath)
+	canonExpectedFile := canonicalizeTestPath(expectedFile)
+	if canonSource != canonExpectedFile {
+		t.Fatalf("dotenv source mismatch:\n got:  %q (path: %q, canon: %q)\n want exact file: %q (canon: %q)",
+			source, sourcePath, canonSource, expectedFile, canonExpectedFile)
+	}
+}
+
+func TestResolveEnvValue_PathCanonicalizationRegression(t *testing.T) {
+	isolateHome(t)
+
+	t.Run("canonical vs non-canonical temporary paths", func(t *testing.T) {
+		repo := t.TempDir()
+		if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("NVIDIA_API_KEY=uncleaned-key\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		nested := filepath.Join(repo, "a", "b", "..", "c")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		t.Setenv(apiKeyName, "")
+		t.Chdir(nested)
+		key, source, err := ResolveEnvValue(apiKeyName)
+		if err != nil {
+			t.Fatalf("ResolveEnvValue error = %v", err)
+		}
+		if key != "uncleaned-key" {
+			t.Errorf("key = %q, want uncleaned-key", key)
+		}
+		assertSameDotEnvSource(t, source, repo)
+
+		// Also test with explicit uncleaned projDir
+		uncleanedRepo := filepath.Join(repo, "sub", "..")
+		keyDir, sourceDir, err := ResolveEnvValueWithDir(uncleanedRepo, apiKeyName)
+		if err != nil {
+			t.Fatalf("ResolveEnvValueWithDir error = %v", err)
+		}
+		if keyDir != "uncleaned-key" {
+			t.Errorf("keyDir = %q, want uncleaned-key", keyDir)
+		}
+		assertSameDotEnvSource(t, sourceDir, repo)
+	})
+
+	t.Run("windows case differences", func(t *testing.T) {
+		repo := t.TempDir()
+		if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("NVIDIA_API_KEY=case-key\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		sub := filepath.Join(repo, "SubDir")
+		if err := os.Mkdir(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		var testDir string
+		if runtime.GOOS == "windows" {
+			testDir = filepath.Join(repo, "subdir")
+		} else {
+			testDir = sub
+		}
+
+		t.Setenv(apiKeyName, "")
+		t.Chdir(testDir)
+		key, source, err := ResolveEnvValue(apiKeyName)
+		if err != nil {
+			t.Fatalf("ResolveEnvValue error = %v", err)
+		}
+		if key != "case-key" {
+			t.Errorf("key = %q, want case-key", key)
+		}
+		assertSameDotEnvSource(t, source, repo)
+	})
+
+	t.Run("macOS /var vs /private/var or symlink alias equivalence", func(t *testing.T) {
+		repo := t.TempDir()
+		if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("NVIDIA_API_KEY=symlink-alias-key\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		nested := filepath.Join(repo, "pkg")
+		if err := os.Mkdir(nested, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		symlinkRepo := filepath.Join(t.TempDir(), "repo-alias")
+		if err := os.Symlink(repo, symlinkRepo); err != nil {
+			t.Skipf("symlinks unavailable on this platform/privilege: %v", err)
+		}
+
+		t.Setenv(apiKeyName, "")
+		t.Chdir(filepath.Join(symlinkRepo, "pkg"))
+		key, source, err := ResolveEnvValue(apiKeyName)
+		if err != nil {
+			t.Fatalf("ResolveEnvValue error = %v", err)
+		}
+		if key != "symlink-alias-key" {
+			t.Errorf("key = %q, want symlink-alias-key", key)
+		}
+		assertSameDotEnvSource(t, source, repo)
+	})
+
+	t.Run("windows short-name vs long-name", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("Windows 8.3 short names are specific to Windows hosts")
+		}
+		repo := t.TempDir()
+		if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("NVIDIA_API_KEY=shortname-key\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		shortRepo, err := windowsShortPath(repo)
+		if err != nil {
+			t.Skipf("short path unavailable: %v", err)
+		}
+
+		t.Setenv(apiKeyName, "")
+		key, source, err := ResolveEnvValueWithDir(shortRepo, apiKeyName)
+		if err != nil {
+			t.Fatalf("ResolveEnvValueWithDir error = %v", err)
+		}
+		if key != "shortname-key" {
+			t.Errorf("key = %q, want shortname-key", key)
+		}
+		assertSameDotEnvSource(t, source, repo)
+	})
+
+	t.Run("genuine path outside git boundary", func(t *testing.T) {
+		outside := t.TempDir()
+		if err := os.WriteFile(filepath.Join(outside, ".env"), []byte("NVIDIA_API_KEY=forbidden-parent-key\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		repo := filepath.Join(outside, "repo")
+		nested := filepath.Join(repo, "pkg", "inner")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		t.Setenv(apiKeyName, "")
+		t.Chdir(nested)
+		key, _, err := ResolveEnvValue(apiKeyName)
+		if err != nil {
+			t.Fatalf("ResolveEnvValue error = %v", err)
+		}
+		if key != "" {
+			t.Fatalf("security violation: upward discovery crossed Git root: got %q", key)
+		}
+	})
+
+	t.Run("parent directory traversal outside git repository", func(t *testing.T) {
+		outside := t.TempDir()
+		if err := os.WriteFile(filepath.Join(outside, ".env"), []byte("NVIDIA_API_KEY=outside-git-key\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		notGit := filepath.Join(outside, "notgit", "sub")
+		if err := os.MkdirAll(notGit, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		t.Setenv(apiKeyName, "")
+		t.Chdir(notGit)
+		key, _, err := ResolveEnvValue(apiKeyName)
+		if err != nil {
+			t.Fatalf("ResolveEnvValue error = %v", err)
+		}
+		if key != "" {
+			t.Fatalf("security violation: upward discovery escaped non-git directory: got %q", key)
+		}
+	})
 }
