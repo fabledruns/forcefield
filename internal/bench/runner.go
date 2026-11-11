@@ -196,6 +196,8 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 	taskCfg.Permissions.Tools = nil
 	// Enable orchestration so the delegate tool is registered for multi-agent / parallel tasks.
 	taskCfg.Orchestration.Enabled = true
+	// Disable host MCP servers in isolated benchmark workspaces.
+	taskCfg.MCP.Servers = nil
 
 	// 4. Determine execution timeout.
 	taskTimeout := task.ParsedTimeout()
@@ -281,6 +283,7 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 				metrics.Status = "cancelled"
 			case runtime.EventError:
 				metrics.Status = "error"
+				metrics.FailureType = FailureInfra
 				if ev.Err != nil {
 					metrics.FailureReason = ev.Err.Error()
 				}
@@ -332,6 +335,11 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 	// 12. Evaluate final task verdict.
 	if metrics.Status == "timeout" {
 		metrics.Passed = false
+	} else if metrics.Status == "error" {
+		metrics.Passed = false
+		if metrics.FailureType == "" {
+			metrics.FailureType = FailureInfra
+		}
 	} else if task.Scoring.RequireDelegation && metrics.Delegations == 0 {
 		metrics.Passed = false
 		metrics.FailureType = FailureAgent
