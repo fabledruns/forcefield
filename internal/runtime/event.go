@@ -61,6 +61,14 @@ type ToolResult struct {
 	Attempt    int // 1-based retry attempt that produced this result
 	Err        error
 
+	// CommandFailure indicates that a process ran to completion and exited
+	// with a non-zero exit code.
+	CommandFailure bool
+
+	// ExecutionFailure indicates an execution-level error (process failed to
+	// launch, permission denied, timeout, backend failure, or panic).
+	ExecutionFailure bool
+
 	// Structured output passthrough for tools that provide it (e.g. the
 	// shell tool's separate stdout/stderr streams and exit code), so
 	// consumers like the TUI's expanded tool view can show them without

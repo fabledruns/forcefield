@@ -458,7 +458,7 @@ func (r *Runtime) run(ctx context.Context, messages []providers.Message, emit fu
 
 		for i, tc := range response.ToolCalls {
 			result := results[i]
-			state.RecordTool(tc.Name, result.Success)
+			state.RecordToolOutcome(tc.Name, result.Success, result.CommandFailure)
 			if skipHistory[i] {
 				continue
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -24,7 +25,26 @@ func (failingTool) InputSchema() map[string]any {
 	return map[string]any{"type": "object"}
 }
 func (failingTool) Execute(_ context.Context, _ map[string]any) (tools.Result, error) {
-	return tools.Result{IsError: true, Content: "boom"}, nil
+	return tools.Result{IsError: true, ExecutionFailure: true, Content: "boom"}, nil
+}
+
+// commandFailingTool simulates a command tool (like shell executing go test)
+// where the process ran to completion and returned a non-zero exit code.
+type commandFailingTool struct{}
+
+func (commandFailingTool) Name() string        { return "command_failing" }
+func (commandFailingTool) Description() string { return "simulates non-zero exit code" }
+func (commandFailingTool) InputSchema() map[string]any {
+	return map[string]any{"type": "object"}
+}
+func (commandFailingTool) Execute(_ context.Context, args map[string]any) (tools.Result, error) {
+	testName, _ := args["test"].(string)
+	return tools.Result{
+		IsError:        true,
+		CommandFailure: true,
+		ExitCode:       1,
+		Content:        fmt.Sprintf("command exited with code 1\n--- FAIL: %s", testName),
+	}, nil
 }
 
 // countingTool records how many times it actually ran, so tests can assert
@@ -46,6 +66,13 @@ func (t *countingTool) Execute(_ context.Context, _ map[string]any) (tools.Resul
 func toolCallTurn(id, name string) []providers.StreamEvent {
 	return []providers.StreamEvent{
 		{ToolCalls: []providers.ToolCall{{ID: id, Name: name, Arguments: map[string]any{}}}},
+		{Done: true},
+	}
+}
+
+func toolCallTurnArgs(id, name string, args map[string]any) []providers.StreamEvent {
+	return []providers.StreamEvent{
+		{ToolCalls: []providers.ToolCall{{ID: id, Name: name, Arguments: args}}},
 		{Done: true},
 	}
 }
@@ -116,6 +143,75 @@ func TestRun_ConsecutiveFailuresStopAsBlocked(t *testing.T) {
 	// the failure streak hits the limit, not keep going.
 	if provider.calls != 3 {
 		t.Errorf("provider.calls = %d, want 3 (loop should stop right at the limit)", provider.calls)
+	}
+}
+
+func TestRun_CommandFailuresDoNotTriggerConsecutiveFailuresCutoff(t *testing.T) {
+	// 5 consecutive command non-zero exits (e.g. repeated test failures during debugging),
+	// followed by a successful completion.
+	turns := make([][]providers.StreamEvent, 6)
+	for i := 0; i < 5; i++ {
+		turns[i] = toolCallTurnArgs(fmt.Sprintf("call-%d", i), "command_failing", map[string]any{
+			"test": fmt.Sprintf("TestUnit_%d", i),
+		})
+	}
+	turns[5] = []providers.StreamEvent{
+		{Text: "Fixed bug after observing test failure diagnostics."},
+		{Done: true},
+	}
+	provider := &scriptedProvider{turns: turns}
+	rt := newTestRuntimeWithLimits(provider, Limits{MaxConsecutiveFailures: 3}, commandFailingTool{})
+
+	events, err := rt.StreamChat(context.Background(), []providers.Message{{Role: providers.UserRole, Content: "debug tests"}})
+	if err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
+	}
+
+	_, done, blocked := collect(events)
+	if blocked != nil {
+		t.Fatalf("got EventBlocked unexpectedly (err: %v); command failures must not trigger consecutive failure cutoff: %#v", blocked.Err, blocked)
+	}
+	if done == nil {
+		t.Fatalf("expected EventDone after completing turns")
+	}
+	if provider.calls != 6 {
+		t.Errorf("provider.calls = %d, want 6 turns executed", provider.calls)
+	}
+}
+
+func TestRun_InterleavedCommandFailuresDoNotPreventExecutionFailureCutoff(t *testing.T) {
+	// Interleave execution failures (failingTool) with command non-zero exits (commandFailingTool).
+	// MaxConsecutiveFailures is 3.
+	// Turn 1: failingTool (execution failure 1)
+	// Turn 2: commandFailingTool (command failure; counter remains 1)
+	// Turn 3: failingTool (execution failure 2)
+	// Turn 4: commandFailingTool (command failure; counter remains 2)
+	// Turn 5: failingTool (execution failure 3 -> triggers cutoff)
+	turns := [][]providers.StreamEvent{
+		toolCallWithArgsTurn("c1", "failing", map[string]any{"i": 1}),
+		toolCallWithArgsTurn("c2", "command_failing", map[string]any{"test": "t1"}),
+		toolCallWithArgsTurn("c3", "failing", map[string]any{"i": 2}),
+		toolCallWithArgsTurn("c4", "command_failing", map[string]any{"test": "t2"}),
+		toolCallWithArgsTurn("c5", "failing", map[string]any{"i": 3}),
+		{{Text: "should not reach here"}, {Done: true}},
+	}
+	provider := &scriptedProvider{turns: turns}
+	rt := newTestRuntimeWithLimits(provider, Limits{MaxConsecutiveFailures: 3}, failingTool{}, commandFailingTool{})
+
+	events, err := rt.StreamChat(context.Background(), []providers.Message{{Role: providers.UserRole, Content: "run"}})
+	if err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
+	}
+
+	_, done, blocked := collect(events)
+	if done != nil {
+		t.Fatalf("got EventDone unexpectedly; expected EventBlocked: %#v", done)
+	}
+	if blocked == nil {
+		t.Fatalf("expected EventBlocked after 3 execution failures despite interleaved command failures")
+	}
+	if !strings.Contains(blocked.Err.Error(), "consecutive tool failures") {
+		t.Errorf("expected consecutive tool failures error, got: %v", blocked.Err)
 	}
 }
 

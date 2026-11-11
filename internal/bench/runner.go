@@ -309,7 +309,11 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 					metrics.ToolCallBreakdown[ev.ToolCall.Name]++
 				}
 			case runtime.EventToolFailed:
-				metrics.ToolFailures++
+				if ev.ToolResult != nil && ev.ToolResult.CommandFailure {
+					metrics.CommandFailures++
+				} else {
+					metrics.ToolFailures++
+				}
 			case runtime.EventToolDenied:
 				metrics.ToolFailures++
 			case runtime.EventDone:

@@ -6,33 +6,35 @@ import (
 
 // CategoryScore summarizes metrics within a single benchmark category.
 type CategoryScore struct {
-	TotalTasks     int     `json:"total_tasks"`
-	PassedTasks    int     `json:"passed_tasks"`
-	FailedTasks    int     `json:"failed_tasks"`
-	PassRate       float64 `json:"pass_rate"` // 0.0 to 100.0
-	DurationMS     int64   `json:"duration_ms"`
-	AvgDurationMS  int64   `json:"avg_duration_ms"`
-	ToolCalls      int     `json:"tool_calls"`
-	ToolFailures   int     `json:"tool_failures"`
-	PromptTokens   int     `json:"prompt_tokens,omitempty"`
-	CompleteTokens int     `json:"complete_tokens,omitempty"`
-	TotalTokens    int     `json:"total_tokens,omitempty"`
-	HasTokens      bool    `json:"has_tokens"`
+	TotalTasks      int     `json:"total_tasks"`
+	PassedTasks     int     `json:"passed_tasks"`
+	FailedTasks     int     `json:"failed_tasks"`
+	PassRate        float64 `json:"pass_rate"` // 0.0 to 100.0
+	DurationMS      int64   `json:"duration_ms"`
+	AvgDurationMS   int64   `json:"avg_duration_ms"`
+	ToolCalls       int     `json:"tool_calls"`
+	ToolFailures    int     `json:"tool_failures"`
+	CommandFailures int     `json:"command_failures"`
+	PromptTokens    int     `json:"prompt_tokens,omitempty"`
+	CompleteTokens  int     `json:"complete_tokens,omitempty"`
+	TotalTokens     int     `json:"total_tokens,omitempty"`
+	HasTokens       bool    `json:"has_tokens"`
 }
 
 // Summary summarizes the entire benchmark run.
 type Summary struct {
-	TotalTasks        int                      `json:"total_tasks"`
-	PassedTasks       int                      `json:"passed_tasks"`
-	FailedTasks       int                      `json:"failed_tasks"`
-	PassRate          float64                  `json:"pass_rate"` // 0.0 to 100.0
-	TotalDurationMS   int64                    `json:"total_duration_ms"`
-	AvgDurationMS     int64                    `json:"avg_duration_ms"`
-	TotalToolCalls    int                      `json:"total_tool_calls"`
-	TotalToolFailures int                      `json:"total_tool_failures"`
-	TotalDelegations  int                      `json:"total_delegations"`
-	Tokens            TokenUsage               `json:"tokens"`
-	Categories        map[string]CategoryScore `json:"categories"`
+	TotalTasks           int                      `json:"total_tasks"`
+	PassedTasks          int                      `json:"passed_tasks"`
+	FailedTasks          int                      `json:"failed_tasks"`
+	PassRate             float64                  `json:"pass_rate"` // 0.0 to 100.0
+	TotalDurationMS      int64                    `json:"total_duration_ms"`
+	AvgDurationMS        int64                    `json:"avg_duration_ms"`
+	TotalToolCalls       int                      `json:"total_tool_calls"`
+	TotalToolFailures    int                      `json:"total_tool_failures"`
+	TotalCommandFailures int                      `json:"total_command_failures"`
+	TotalDelegations     int                      `json:"total_delegations"`
+	Tokens               TokenUsage               `json:"tokens"`
+	Categories           map[string]CategoryScore `json:"categories"`
 }
 
 // CalculateSummary aggregates task metrics into a structured benchmark summary.
@@ -60,6 +62,7 @@ func CalculateSummary(results []TaskMetrics) Summary {
 		s.TotalDurationMS += r.DurationMS
 		s.TotalToolCalls += r.ToolCalls
 		s.TotalToolFailures += r.ToolFailures
+		s.TotalCommandFailures += r.CommandFailures
 		s.TotalDelegations += r.Delegations
 
 		if r.Tokens.Available {
@@ -103,6 +106,7 @@ func CalculateSummary(results []TaskMetrics) Summary {
 			cs.DurationMS += item.DurationMS
 			cs.ToolCalls += item.ToolCalls
 			cs.ToolFailures += item.ToolFailures
+			cs.CommandFailures += item.CommandFailures
 
 			if item.Tokens.Available {
 				catHasTokens = true

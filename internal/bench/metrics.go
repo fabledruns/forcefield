@@ -40,6 +40,7 @@ type TaskMetrics struct {
 	ToolCalls               int              `json:"tool_calls"`
 	ToolCallBreakdown       map[string]int   `json:"tool_call_breakdown,omitempty"`
 	ToolFailures            int              `json:"tool_failures"`
+	CommandFailures         int              `json:"command_failures"`
 	Tokens                  TokenUsage       `json:"tokens"`
 	Delegations             int              `json:"delegations"`
 	FilesChanged            []string         `json:"files_changed,omitempty"`

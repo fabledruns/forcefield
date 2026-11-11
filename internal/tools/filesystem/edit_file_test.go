@@ -621,3 +621,786 @@ func TestEditFile_SymlinkRejection(t *testing.T) {
 		t.Errorf("expected 'is a symlink' in error, got: %s", res.Content)
 	}
 }
+
+func TestEditFile_IndentationMatching_Suite(t *testing.T) {
+	// 1. Exact matching still taking precedence
+	t.Run("ExactPrecedence", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "precedence.go")
+		initial := "package main\n\nfunc A() {\n    val := 1\n}\nfunc B() {\n\tval := 1\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    val := 1",
+					"replace": "    val := 100",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\n\nfunc A() {\n    val := 100\n}\nfunc B() {\n\tval := 1\n}\n"
+		if string(got) != expected {
+			t.Errorf("exact match should take precedence;\ngot:\n%s\nwant:\n%s", string(got), expected)
+		}
+	})
+
+	// 2. Tab-indented file matched by space-indented search input
+	t.Run("TabIndentedFile_SpaceSearch", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "payload.go")
+		initial := "package payload\n\nfunc Unmarshal() {\n\tdoc.Author = doc.Meta.Author\n\treturn &doc, nil\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    doc.Author = doc.Meta.Author\n    return &doc, nil",
+					"replace": "    if doc.Meta != nil {\n        doc.Author = doc.Meta.Author\n    }\n    return &doc, nil",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package payload\n\nfunc Unmarshal() {\n\tif doc.Meta != nil {\n\t\tdoc.Author = doc.Meta.Author\n\t}\n\treturn &doc, nil\n}\n"
+		if string(got) != expected {
+			t.Errorf("tab-indented file replacement mismatch;\ngot:\n%s\nwant:\n%s", string(got), expected)
+		}
+	})
+
+	// 3. Space-indented file matched by tab-indented search input
+	t.Run("SpaceIndentedFile_TabSearch", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "app.py")
+		initial := "def calc():\n    a = 1\n    b = 2\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "\ta = 1\n\tb = 2",
+					"replace": "\ta = 10\n\tb = 20",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "def calc():\n    a = 10\n    b = 20\n"
+		if string(got) != expected {
+			t.Errorf("space-indented file replacement mismatch;\ngot:\n%s\nwant:\n%s", string(got), expected)
+		}
+	})
+
+	// 4. Mixed indentation
+	t.Run("MixedIndentation", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "mixed.txt")
+		initial := "header\n\t    flag = true\nfooter\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "        flag = true",
+					"replace": "        flag = false",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		if !strings.Contains(string(got), "flag = false") {
+			t.Errorf("expected mixed indentation replacement, got:\n%s", string(got))
+		}
+	})
+
+	// 5. Whitespace inside string literals remains significant
+	t.Run("WhitespaceInStrings_Significant", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "strings.go")
+		initial := "package main\n\nfunc msg() {\n\ts := \"hello   world\"\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    s := \"hello world\"", // single space instead of three
+					"replace": "    s := \"goodbye\"",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError {
+			t.Fatal("expected search failure when whitespace inside string literal differs")
+		}
+	})
+
+	// 6. Whitespace inside expressions remains significant
+	t.Run("WhitespaceInExpressions_Significant", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "expr.go")
+		initial := "package main\n\nfunc sum() {\n\tres := a + b\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    res := a+b", // collapsed spaces inside expression
+					"replace": "    res := a + b + c",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError {
+			t.Fatal("expected search failure when whitespace inside expression differs")
+		}
+	})
+
+	// 7. Multiple normalized matches are rejected
+	t.Run("MultipleNormalizedMatches_Rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "dup.go")
+		initial := "package main\n\nfunc F1() error {\n\treturn nil\n}\n\nfunc F2() error {\n\treturn nil\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    return nil",
+					"replace": "    return errors.New(\"fail\")",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError {
+			t.Fatal("expected error for multiple normalized matches")
+		}
+		if !strings.Contains(res.Content, "matched 2 times") {
+			t.Errorf("expected 'matched 2 times' in error message, got: %s", res.Content)
+		}
+	})
+
+	// 8. No normalized match is rejected
+	t.Run("NoNormalizedMatch_Rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "none.go")
+		initial := "package main\n\nfunc F() {\n\tval := 1\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    nonExistentCall()",
+					"replace": "    replacement()",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError {
+			t.Fatal("expected error when search block does not exist")
+		}
+		if !strings.Contains(res.Content, "search block not found") {
+			t.Errorf("expected 'search block not found', got: %s", res.Content)
+		}
+	})
+
+	// 9. Original indentation is preserved after replacement
+	t.Run("OriginalIndentation_Preserved", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "tabs.go")
+		initial := "package main\n\nfunc Scope() {\n\tinitialCall()\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    initialCall()",
+					"replace": "    if true {\n        deepCall()\n    }",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		// Must preserve tab indentation of the original file
+		expected := "package main\n\nfunc Scope() {\n\tif true {\n\t\tdeepCall()\n\t}\n}\n"
+		if string(got) != expected {
+			t.Errorf("original tab indentation was not preserved;\ngot:\n%s\nwant:\n%s", string(got), expected)
+		}
+	})
+
+	// 10. CRLF and LF handling remains correct
+	t.Run("CRLF_LF_Handling", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "crlf.go")
+		initial := "package main\r\n\r\nfunc F() {\r\n\tx := 1\r\n}\r\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    x := 1", // LF and space
+					"replace": "    x := 10",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\r\n\r\nfunc F() {\r\n\tx := 10\r\n}\r\n"
+		if string(got) != expected {
+			t.Errorf("CRLF line endings were not preserved;\ngot: %q, want: %q", string(got), expected)
+		}
+	})
+
+	// 11. A failed edit does not partially modify the file
+	t.Run("AtomicFailure_NoPartialModification", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "atomic.go")
+		initial := "package main\n\nfunc F() {\n\tstep1 := true\n\tstep2 := true\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    step1 := true",
+					"replace": "    step1 := false",
+				},
+				map[string]any{
+					"search":  "    nonExistentTarget := true",
+					"replace": "    step2 := false",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError {
+			t.Fatal("expected error on second failing edit")
+		}
+
+		got, _ := os.ReadFile(path)
+		if string(got) != initial {
+			t.Errorf("file was partially modified despite failure;\ngot:\n%s\nwant:\n%s", string(got), initial)
+		}
+	})
+
+	// 12. Existing path traversal and symlink protections still work
+	t.Run("PathTraversalAndSymlinks_Protected", func(t *testing.T) {
+		dir := t.TempDir()
+		outside := filepath.Join(t.TempDir(), "outside.txt")
+		_ = os.WriteFile(outside, []byte("secret"), 0o644)
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": outside,
+			"edits": []any{
+				map[string]any{
+					"search":  "secret",
+					"replace": "hacked",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError {
+			t.Fatal("expected workspace escape error")
+		}
+		if !strings.Contains(res.Content, "escapes the authorized workspace") {
+			t.Errorf("expected escape error message, got: %s", res.Content)
+		}
+	})
+}
+
+func TestEditFile_ReviewFindings_Suite(t *testing.T) {
+	// 1. HIGH-01 Reproduction: Search block ending in LF matches in middle of file
+	t.Run("High01_Reproduction_SearchEndingInLF", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "middle.go")
+		initial := "package main\n\nfunc foo() {\n\ta := 1\n\tb := 2\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    a := 1\n",
+					"replace": "    a := 10\n",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\n\nfunc foo() {\n\ta := 10\n\tb := 2\n}\n"
+		if string(got) != expected {
+			t.Errorf("mismatch;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 2. HIGH-02 Reproduction: Replace block ending in LF does not add duplicate blank line
+	t.Run("High02_Reproduction_ReplaceEndingInLF_NoDuplicateNewline", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "nodupe.go")
+		initial := "package main\n\nfunc foo() {\n\ta := 1\n\tb := 2\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    a := 1\n",
+					"replace": "    a := 20\n",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\n\nfunc foo() {\n\ta := 20\n\tb := 2\n}\n"
+		if string(got) != expected {
+			t.Errorf("duplicate newline introduced;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 3. LOW-01: Indentation style detection with mixed comment and tabs
+	t.Run("Low01_IndentationStyleDetection_MixedCommentAndTabs", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "mixed_comment.go")
+		initial := "package main\n\nfunc foo() {\n  // leading space comment\n\ta := 1\n\tb := 2\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "  // leading space comment\n    a := 1\n    b := 2\n",
+					"replace": "  // leading space comment\n    a := 10\n    b := 20\n",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\n\nfunc foo() {\n  // leading space comment\n\ta := 10\n\tb := 20\n}\n"
+		if string(got) != expected {
+			t.Errorf("dominant indentation style mismatch;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 4. Search block ending in CRLF
+	t.Run("SearchEndingInCRLF", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "crlf_search.go")
+		initial := "package main\r\n\r\nfunc foo() {\r\n\ta := 1\r\n\tb := 2\r\n}\r\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    a := 1\r\n",
+					"replace": "    a := 10\r\n",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\r\n\r\nfunc foo() {\r\n\ta := 10\r\n\tb := 2\r\n}\r\n"
+		if string(got) != expected {
+			t.Errorf("CRLF mismatch;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 5. Search block without terminal newline
+	t.Run("SearchWithoutTerminalNewline", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "noterm.go")
+		initial := "package main\n\nfunc foo() {\n\ta := 1\n\tb := 2\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    a := 1",
+					"replace": "    a := 10",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\n\nfunc foo() {\n\ta := 10\n\tb := 2\n}\n"
+		if string(got) != expected {
+			t.Errorf("mismatch;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 6. Replacement block ending in LF
+	t.Run("ReplacementEndingInLF", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "multiline_replace.go")
+		initial := "package main\n\nfunc foo() {\n\ta := 1\n\tb := 2\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    a := 1\n",
+					"replace": "    a := 10\n    extra := true\n",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\n\nfunc foo() {\n\ta := 10\n\textra := true\n\tb := 2\n}\n"
+		if string(got) != expected {
+			t.Errorf("mismatch;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 7. Replacement block ending in CRLF
+	t.Run("ReplacementEndingInCRLF", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "multiline_crlf.go")
+		initial := "package main\r\n\r\nfunc foo() {\r\n\ta := 1\r\n\tb := 2\r\n}\r\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    a := 1\r\n",
+					"replace": "    a := 10\r\n    extra := true\r\n",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\r\n\r\nfunc foo() {\r\n\ta := 10\r\n\textra := true\r\n\tb := 2\r\n}\r\n"
+		if string(got) != expected {
+			t.Errorf("mismatch;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 8. Replacement block without terminal newline
+	t.Run("ReplacementWithoutTerminalNewline", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "multiline_noterm.go")
+		initial := "package main\n\nfunc foo() {\n\ta := 1\n\tb := 2\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    a := 1\n    b := 2",
+					"replace": "    a := 10\n    b := 20",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\n\nfunc foo() {\n\ta := 10\n\tb := 20\n}\n"
+		if string(got) != expected {
+			t.Errorf("mismatch;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 9. Intentional blank line inside search block
+	t.Run("IntentionalBlankLineInsideSearchBlock", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "blank_in_search.go")
+		initial := "package main\n\nfunc foo() {\n\ta := 1\n\n\tb := 2\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    a := 1\n\n    b := 2\n",
+					"replace": "    a := 10\n\n    b := 20\n",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\n\nfunc foo() {\n\ta := 10\n\n\tb := 20\n}\n"
+		if string(got) != expected {
+			t.Errorf("intentional blank line mismatch;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 10. Intentional blank line inside replacement block
+	t.Run("IntentionalBlankLineInsideReplacementBlock", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "blank_in_replace.go")
+		initial := "package main\n\nfunc foo() {\n\ta := 1\n\tb := 2\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    a := 1\n    b := 2\n",
+					"replace": "    a := 10\n\n    b := 20\n",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\n\nfunc foo() {\n\ta := 10\n\n\tb := 20\n}\n"
+		if string(got) != expected {
+			t.Errorf("intentional blank line in replace mismatch;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 11. Replacement of final file line when original file has final newline
+	t.Run("ReplacementOfFinalFileLine_FileWithFinalNewline", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "eof_nl.txt")
+		initial := "first line\nlast line\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "last line\n",
+					"replace": "updated last line\n",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "first line\nupdated last line\n"
+		if string(got) != expected {
+			t.Errorf("final line with newline mismatch;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 12. Replacement of final file line when original file has NO final newline
+	t.Run("ReplacementOfFinalFileLine_FileWithoutFinalNewline", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "eof_nonl.txt")
+		initial := "first line\nlast line"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "last line",
+					"replace": "updated last line",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "first line\nupdated last line"
+		if string(got) != expected {
+			t.Errorf("final line without newline mismatch;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 13. Middle-of-file replacement does NOT delete adjacent blank line
+	t.Run("MiddleOfFileReplacement_DoesNotDeleteAdjacentBlankLine", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "preserve_blank.go")
+		initial := "package main\n\nfunc foo() {\n\ta := 1\n\n\tb := 2\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "    a := 1\n",
+					"replace": "    a := 10\n",
+				},
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, content: %s", err, res.Content)
+		}
+
+		got, _ := os.ReadFile(path)
+		expected := "package main\n\nfunc foo() {\n\ta := 10\n\n\tb := 2\n}\n"
+		if string(got) != expected {
+			t.Errorf("adjacent blank line was consumed/corrupted;\ngot:\n%q\nwant:\n%q", string(got), expected)
+		}
+	})
+
+	// 14. Failed edits preserve original file byte-for-byte
+	t.Run("FailedEdits_PreserveOriginalByteForByte", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "immutable.go")
+		initial := "package main\n\nfunc foo() {\n\ta := 1\n}\n"
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: dir})
+		res, err := tool.Execute(context.Background(), map[string]any{
+			"path": path,
+			"edits": []any{
+				map[string]any{
+					"search":  "nonexistent target string\n",
+					"replace": "broken",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError {
+			t.Fatal("expected failure on nonexistent target")
+		}
+
+		got, _ := os.ReadFile(path)
+		if string(got) != initial {
+			t.Errorf("file modified despite failure;\ngot:\n%q\nwant:\n%q", string(got), initial)
+		}
+	})
+}

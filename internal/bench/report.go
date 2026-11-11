@@ -111,7 +111,8 @@ func GenerateMarkdownReport(res *RunResult) string {
 	b.WriteString(fmt.Sprintf("| **Total Duration** | %.2fs |\n", float64(res.Summary.TotalDurationMS)/1000.0))
 	b.WriteString(fmt.Sprintf("| **Average Duration** | %.2fs |\n", float64(res.Summary.AvgDurationMS)/1000.0))
 	b.WriteString(fmt.Sprintf("| **Total Tool Calls** | %d |\n", res.Summary.TotalToolCalls))
-	b.WriteString(fmt.Sprintf("| **Tool Failures** | %d |\n", res.Summary.TotalToolFailures))
+	b.WriteString(fmt.Sprintf("| **Tool Failures (Execution)** | %d |\n", res.Summary.TotalToolFailures))
+	b.WriteString(fmt.Sprintf("| **Command Failures (Non-Zero Exit)** | %d |\n", res.Summary.TotalCommandFailures))
 	b.WriteString(fmt.Sprintf("| **Delegations** | %d |\n", res.Summary.TotalDelegations))
 
 	if res.Summary.Tokens.Available {

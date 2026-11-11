@@ -23,6 +23,16 @@ type Result struct {
 	Content string
 	IsError bool
 
+	// CommandFailure indicates that a command process launched and executed
+	// to completion, but returned a non-zero exit code. Genuine execution
+	// failures (cannot launch, permission denied, timeout, infra errors)
+	// leave CommandFailure false.
+	CommandFailure bool
+
+	// ExecutionFailure indicates an infrastructure, permission, launch,
+	// timeout, or cancellation failure preventing normal tool completion.
+	ExecutionFailure bool
+
 	// Structured fields. Tools that don't have a meaningful value for one
 	// of these simply leave it unset.
 	ExitCode   int

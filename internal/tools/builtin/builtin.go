@@ -72,7 +72,7 @@ func Register(m *tools.Manager, opts ...Option) error {
 		newWriteFile(o),
 		newEditFile(o),
 		newListFiles(o),
-		shell.NewPWD(),
+		newPWD(o),
 		newShell(o),
 		newShellJob(o),
 		newSearchFiles(o),
@@ -106,6 +106,10 @@ func newEditFile(o options) tools.Tool {
 
 func newListFiles(o options) tools.Tool {
 	return filesystem.NewListFilesWithPolicy(o.policy)
+}
+
+func newPWD(o options) tools.Tool {
+	return shell.NewPWDWithPolicy(o.policy)
 }
 
 // newShell picks the shell constructor matching the options.

@@ -186,14 +186,15 @@ func (s *scheduler) runWithConcurrency(ctx context.Context, calls []providers.To
 			defer func() {
 				if p := recover(); p != nil {
 					res := ToolResult{
-						ToolCallID: call.ID,
-						Name:       call.Name,
-						Arguments:  call.Arguments,
-						Success:    false,
-						IsError:    true,
-						Content:    session.ScrubContent(fmt.Sprintf("tool %q panicked: %v", call.Name, p)),
-						Attempt:    1,
-						Err:        fmt.Errorf("tool %q panicked: %v", call.Name, p),
+						ToolCallID:       call.ID,
+						Name:             call.Name,
+						Arguments:        call.Arguments,
+						Success:          false,
+						IsError:          true,
+						ExecutionFailure: true,
+						Content:          session.ScrubContent(fmt.Sprintf("tool %q panicked: %v", call.Name, p)),
+						Attempt:          1,
+						Err:              fmt.Errorf("tool %q panicked: %v", call.Name, p),
 					}
 					results[i] = res
 					func() {
@@ -240,15 +241,16 @@ func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCa
 
 	if manager == nil {
 		result := ToolResult{
-			ToolCallID: call.ID,
-			Name:       call.Name,
-			Arguments:  call.Arguments,
-			Success:    false,
-			IsError:    true,
-			Content:    "tool not found: " + call.Name,
-			Duration:   time.Since(started),
-			Attempt:    1,
-			Err:        tools.ErrNotFound,
+			ToolCallID:       call.ID,
+			Name:             call.Name,
+			Arguments:        call.Arguments,
+			Success:          false,
+			IsError:          true,
+			ExecutionFailure: true,
+			Content:          "tool not found: " + call.Name,
+			Duration:         time.Since(started),
+			Attempt:          1,
+			Err:              tools.ErrNotFound,
 		}
 		emit(Event{Type: EventToolFailed, ToolResult: &result})
 		return result
@@ -256,15 +258,16 @@ func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCa
 	tool, ok := manager.Lookup(call.Name)
 	if !ok {
 		result := ToolResult{
-			ToolCallID: call.ID,
-			Name:       call.Name,
-			Arguments:  call.Arguments,
-			Success:    false,
-			IsError:    true,
-			Content:    "tool not found: " + call.Name,
-			Duration:   time.Since(started),
-			Attempt:    1,
-			Err:        tools.ErrNotFound,
+			ToolCallID:       call.ID,
+			Name:             call.Name,
+			Arguments:        call.Arguments,
+			Success:          false,
+			IsError:          true,
+			ExecutionFailure: true,
+			Content:          "tool not found: " + call.Name,
+			Duration:         time.Since(started),
+			Attempt:          1,
+			Err:              tools.ErrNotFound,
 		}
 		emit(Event{Type: EventToolFailed, ToolResult: &result})
 		return result
@@ -274,15 +277,16 @@ func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCa
 	// behind a lenient default (e.g. {"path":12345} silently becoming ".").
 	if err := tools.ValidateArgs(tools.Definition{Name: tool.Name(), InputSchema: tool.InputSchema()}, call.Arguments); err != nil {
 		result := ToolResult{
-			ToolCallID: call.ID,
-			Name:       call.Name,
-			Arguments:  call.Arguments,
-			Success:    false,
-			IsError:    true,
-			Content:    err.Error(),
-			Duration:   time.Since(started),
-			Attempt:    1,
-			Err:        err,
+			ToolCallID:       call.ID,
+			Name:             call.Name,
+			Arguments:        call.Arguments,
+			Success:          false,
+			IsError:          true,
+			ExecutionFailure: true,
+			Content:          err.Error(),
+			Duration:         time.Since(started),
+			Attempt:          1,
+			Err:              err,
 		}
 		emit(Event{Type: EventToolFailed, ToolResult: &result})
 		return result
@@ -351,18 +355,20 @@ func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCa
 			stdout := session.ScrubContent(res.Stdout)
 			stderr := session.ScrubContent(res.Stderr)
 			result := ToolResult{
-				ToolCallID:  call.ID,
-				Name:        call.Name,
-				Arguments:   call.Arguments,
-				Content:     content,
-				IsError:     res.IsError,
-				Success:     !res.IsError,
-				Duration:    time.Since(started),
-				Attempt:     attempt,
-				Stdout:      stdout,
-				Stderr:      stderr,
-				ExitCode:    res.ExitCode,
-				HasExitCode: res.ExitCode != 0 || res.Tool == "shell",
+				ToolCallID:       call.ID,
+				Name:             call.Name,
+				Arguments:        call.Arguments,
+				Content:          content,
+				IsError:          res.IsError,
+				Success:          !res.IsError,
+				CommandFailure:   res.CommandFailure,
+				ExecutionFailure: res.ExecutionFailure,
+				Duration:         time.Since(started),
+				Attempt:          attempt,
+				Stdout:           stdout,
+				Stderr:           stderr,
+				ExitCode:         res.ExitCode,
+				HasExitCode:      res.ExitCode != 0 || res.Tool == "shell",
 			}
 			if res.IsError {
 				emit(Event{Type: EventToolFailed, ToolResult: &result})
@@ -405,15 +411,16 @@ func (s *scheduler) runOneWithManager(ctx context.Context, call providers.ToolCa
 	}
 	content = session.ScrubContent(content)
 	result := ToolResult{
-		ToolCallID: call.ID,
-		Name:       call.Name,
-		Arguments:  call.Arguments,
-		Content:    content,
-		IsError:    true,
-		Success:    false,
-		Duration:   time.Since(started),
-		Attempt:    maxAttempts,
-		Err:        lastErr,
+		ToolCallID:       call.ID,
+		Name:             call.Name,
+		Arguments:        call.Arguments,
+		Content:          content,
+		IsError:          true,
+		Success:          false,
+		ExecutionFailure: true,
+		Duration:         time.Since(started),
+		Attempt:          maxAttempts,
+		Err:              lastErr,
 	}
 	emit(Event{Type: EventToolFailed, ToolResult: &result})
 	return result
@@ -818,12 +825,13 @@ func (s *scheduler) resolveAskWithManager(ctx context.Context, call providers.To
 
 func (s *scheduler) deniedResult(call providers.ToolCall, reason string) *ToolResult {
 	result := &ToolResult{
-		ToolCallID: call.ID,
-		Name:       call.Name,
-		Arguments:  call.Arguments,
-		Success:    false,
-		IsError:    true,
-		Content:    reason,
+		ToolCallID:       call.ID,
+		Name:             call.Name,
+		Arguments:        call.Arguments,
+		Success:          false,
+		IsError:          true,
+		ExecutionFailure: true,
+		Content:          reason,
 	}
 	return result
 }
@@ -865,13 +873,14 @@ func effectiveTimeout(tool tools.Tool, meta tools.Metadata) time.Duration {
 
 func (s *scheduler) cancelledResult(call providers.ToolCall) ToolResult {
 	return ToolResult{
-		ToolCallID: call.ID,
-		Name:       call.Name,
-		Arguments:  call.Arguments,
-		Success:    false,
-		IsError:    true,
-		Content:    "tool execution cancelled before it started",
-		Attempt:    0,
-		Err:        context.Canceled,
+		ToolCallID:       call.ID,
+		Name:             call.Name,
+		Arguments:        call.Arguments,
+		Success:          false,
+		IsError:          true,
+		ExecutionFailure: true,
+		Content:          "tool execution cancelled before it started",
+		Attempt:          0,
+		Err:              context.Canceled,
 	}
 }

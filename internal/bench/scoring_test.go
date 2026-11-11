@@ -81,3 +81,48 @@ func TestCalculateSummary_Empty(t *testing.T) {
 		t.Fatalf("unexpected summary for empty input: %+v", summary)
 	}
 }
+
+func TestCalculateSummary_DistinguishesCommandFailuresFromExecutionFailures(t *testing.T) {
+	metrics := []TaskMetrics{
+		{
+			TaskID:          "T-1",
+			Category:        CategoryDebugging,
+			Passed:          true,
+			DurationMS:      1000,
+			ToolCalls:       5,
+			ToolFailures:    1, // 1 genuine execution failure
+			CommandFailures: 3, // 3 non-zero test exits (e.g. go test exit 1)
+		},
+		{
+			TaskID:          "T-2",
+			Category:        CategoryParallelDelegation,
+			Passed:          true,
+			DurationMS:      2000,
+			ToolCalls:       8,
+			ToolFailures:    0,
+			CommandFailures: 2,
+		},
+	}
+
+	summary := CalculateSummary(metrics)
+
+	if summary.TotalToolCalls != 13 {
+		t.Fatalf("TotalToolCalls = %d, want 13", summary.TotalToolCalls)
+	}
+	if summary.TotalToolFailures != 1 {
+		t.Fatalf("TotalToolFailures = %d, want 1", summary.TotalToolFailures)
+	}
+	if summary.TotalCommandFailures != 5 {
+		t.Fatalf("TotalCommandFailures = %d, want 5", summary.TotalCommandFailures)
+	}
+
+	catDebug := summary.Categories[CategoryDebugging]
+	if catDebug.ToolFailures != 1 || catDebug.CommandFailures != 3 {
+		t.Fatalf("CategoryDebugging mismatch: %+v", catDebug)
+	}
+
+	catDeleg := summary.Categories[CategoryParallelDelegation]
+	if catDeleg.ToolFailures != 0 || catDeleg.CommandFailures != 2 {
+		t.Fatalf("CategoryParallelDelegation mismatch: %+v", catDeleg)
+	}
+}

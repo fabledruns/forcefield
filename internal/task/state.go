@@ -112,6 +112,18 @@ func (t *State) BeginIteration() int {
 // failures accumulate ConsecutiveFailures, which the runtime uses to
 // detect a stuck agent; any success resets the streak.
 func (t *State) RecordTool(name string, success bool) {
+	t.RecordToolOutcome(name, success, false)
+}
+
+// RecordToolOutcome logs one completed tool call outcome.
+// ConsecutiveFailures tracks consecutive execution failures (such as tool start errors,
+// missing tools, invalid arguments, timeouts, or unhandled panics).
+// A successful tool invocation resets ConsecutiveFailures to zero.
+// A completed command that exits with a non-zero exit code (CommandFailure, e.g. `go test` exit 1)
+// delivers actionable diagnostics to the model, so it neither increments nor resets
+// ConsecutiveFailures, ensuring that alternating between execution failures and command exits
+// does not defeat the execution-failure cutoff.
+func (t *State) RecordToolOutcome(name string, success bool, isCommandFailure bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -123,11 +135,16 @@ func (t *State) RecordTool(name string, success bool) {
 		t.activity[name] = a
 	}
 	a.Calls++
-	if !success {
+	if success {
+		t.s.ConsecutiveFailures = 0
+	} else if isCommandFailure {
+		// Command failure: process executed to completion with a non-zero exit code.
+		// Actionable diagnostics were delivered to the agent, so this is not a
+		// harness-level execution failure. Consecutive execution failures are
+		// neither incremented nor reset.
+	} else {
 		a.Failures++
 		t.s.ConsecutiveFailures++
-	} else {
-		t.s.ConsecutiveFailures = 0
 	}
 }
 
