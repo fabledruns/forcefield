@@ -644,12 +644,22 @@ func TestEditFile_BoundaryChecker_Regression(t *testing.T) {
 		if err != nil {
 			t.Skipf("short path unavailable: %v", err)
 		}
+		dirInfo, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat long workspace path: %v", err)
+		}
+		shortDirInfo, err := os.Stat(shortDir)
+		if err != nil {
+			t.Fatalf("stat short workspace path: %v", err)
+		}
+		if !os.SameFile(dirInfo, shortDirInfo) {
+			t.Fatalf("expected long and short workspace paths to reference the same directory: %q vs %q", dir, shortDir)
+		}
 		tool := NewEditFileWithPolicy(sandbox.Policy{Workspace: shortDir})
 		resPath, err := tool.CheckBoundary(map[string]any{"path": "short/test.txt"})
 		if err != nil {
 			t.Fatalf("CheckBoundary failed for 8.3 short-name workspace: %v", err)
 		}
-		assertWithinWorkspace(t, dir, resPath)
 		assertWithinWorkspace(t, shortDir, resPath)
 	})
 
