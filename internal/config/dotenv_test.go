@@ -348,15 +348,10 @@ func assertSameDotEnvSource(t *testing.T, source, expectedDir string) {
 	}
 	canonSource := canonicalizeTestPath(sourcePath)
 	canonExpectedFile := canonicalizeTestPath(expectedFile)
-	if canonSource == canonExpectedFile {
-		return
+	if canonSource != canonExpectedFile {
+		t.Fatalf("dotenv source mismatch:\n got:  %q (path: %q, canon: %q)\n want exact file: %q (canon: %q)",
+			source, sourcePath, canonSource, expectedFile, canonExpectedFile)
 	}
-	canonExpectedDir := canonicalizeTestPath(expectedDir)
-	if pathContains(canonSource, canonExpectedDir) {
-		return
-	}
-	t.Fatalf("dotenv source mismatch:\n got:  %q (path: %q, canon: %q)\n want inside: %q (canon: %q)\n or exact file: %q (canon: %q)",
-		source, sourcePath, canonSource, expectedDir, canonExpectedDir, expectedFile, canonExpectedFile)
 }
 
 func TestResolveEnvValue_PathCanonicalizationRegression(t *testing.T) {
