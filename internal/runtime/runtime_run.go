@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"forcefield/internal/agent"
+	"forcefield/internal/config"
 	"forcefield/internal/providers"
 	"forcefield/internal/session"
 	"forcefield/internal/task"
@@ -37,6 +38,7 @@ type runSnapshot struct {
 	authEnvVar   string
 	providerName string
 	modelName    string
+	cfg          *config.Config
 	// mode selects the tool and prompt policy for this run (see
 	// planmode.go). It is fixed at StreamChat entry, like the rest of
 	// the snapshot, so a run can never change policy mid-turn.
@@ -65,6 +67,7 @@ func (r *Runtime) snapshotRunState() runSnapshot {
 		snap.limits = limitsFromConfig(r.cfg)
 	}
 	snap.baseLimits = snap.limits
+	snap.cfg = r.cfg
 	snap.authRequired = r.authRequired
 	snap.authEnvVar = r.authEnvVar
 	// Capabilities negotiate independently of configuration: even a

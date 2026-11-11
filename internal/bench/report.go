@@ -29,8 +29,20 @@ type JSONReport struct {
 // scrubMetrics ensures no credentials leak into structured reports.
 func scrubMetrics(m TaskMetrics) TaskMetrics {
 	m.FailureReason = redact.Scrub(m.FailureReason)
+	m.Diff = redact.Scrub(m.Diff)
+	m.Validation.Error = redact.Scrub(m.Validation.Error)
 	m.Validation.Stderr = redact.Scrub(m.Validation.Stderr)
 	m.Validation.Stdout = redact.Scrub(m.Validation.Stdout)
+	if len(m.Validation.CommandRuns) > 0 {
+		runs := make([]CommandRun, len(m.Validation.CommandRuns))
+		for i, cr := range m.Validation.CommandRuns {
+			cr.Error = redact.Scrub(cr.Error)
+			cr.Stderr = redact.Scrub(cr.Stderr)
+			cr.Stdout = redact.Scrub(cr.Stdout)
+			runs[i] = cr
+		}
+		m.Validation.CommandRuns = runs
+	}
 	return m
 }
 
@@ -199,6 +211,12 @@ func SaveMarkdownReport(res *RunResult, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	content := GenerateMarkdownReport(res)
+	tasks := make([]TaskMetrics, len(res.Tasks))
+	for i, t := range res.Tasks {
+		tasks[i] = scrubMetrics(t)
+	}
+	scrubbedRes := *res
+	scrubbedRes.Tasks = tasks
+	content := GenerateMarkdownReport(&scrubbedRes)
 	return os.WriteFile(path, []byte(content), 0644)
 }

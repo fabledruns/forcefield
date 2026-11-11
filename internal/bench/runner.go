@@ -70,13 +70,13 @@ func NewRunner(opts RunnerOptions) *Runner {
 		opts.RuntimeFactory = runtime.NewFromConfig
 	}
 
-	// Ensure project environment directory is preserved for credential resolution
-	// across isolated task workspaces.
-	if config.ProjectEnvDir() == "" {
-		if opts.BaseConfig != nil && opts.BaseConfig.Workspace.Root != "" {
-			config.SetProjectEnvDir(opts.BaseConfig.Workspace.Root)
+	// Ensure project environment directory is preserved on BaseConfig for credential resolution
+	// across isolated task workspaces without using global state.
+	if opts.BaseConfig != nil && opts.BaseConfig.ProjectDir == "" {
+		if opts.BaseConfig.Workspace.Root != "" {
+			opts.BaseConfig.ProjectDir = opts.BaseConfig.Workspace.Root
 		} else if wd, err := os.Getwd(); err == nil {
-			config.SetProjectEnvDir(wd)
+			opts.BaseConfig.ProjectDir = wd
 		}
 	}
 
@@ -132,12 +132,12 @@ func (r *Runner) Run(ctx context.Context) (*RunResult, error) {
 		baseCfg = loaded
 	}
 
-	// Ensure project environment directory is preserved for credential resolution.
-	if config.ProjectEnvDir() == "" {
+	// Ensure project environment directory is preserved on baseCfg.
+	if baseCfg.ProjectDir == "" {
 		if baseCfg.Workspace.Root != "" {
-			config.SetProjectEnvDir(baseCfg.Workspace.Root)
+			baseCfg.ProjectDir = baseCfg.Workspace.Root
 		} else if wd, err := os.Getwd(); err == nil {
-			config.SetProjectEnvDir(wd)
+			baseCfg.ProjectDir = wd
 		}
 	}
 
@@ -216,7 +216,7 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 		metrics.Status = "error"
 		metrics.Passed = false
 		metrics.FailureType = FailureInvalidTask
-		metrics.FailureReason = fmt.Sprintf("invalid task manifest: %v", err)
+		metrics.FailureReason = redact.Scrub(fmt.Sprintf("invalid task manifest: %v", err))
 		metrics.DurationMS = time.Since(start).Milliseconds()
 		return metrics
 	}
@@ -227,7 +227,7 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 		metrics.Status = "error"
 		metrics.Passed = false
 		metrics.FailureType = FailureInfra
-		metrics.FailureReason = fmt.Sprintf("workspace setup failed: %v", err)
+		metrics.FailureReason = redact.Scrub(fmt.Sprintf("workspace setup failed: %v", err))
 		metrics.DurationMS = time.Since(start).Milliseconds()
 		return metrics
 	}
@@ -260,7 +260,7 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 		metrics.Status = "error"
 		metrics.Passed = false
 		metrics.FailureType = FailureInfra
-		metrics.FailureReason = fmt.Sprintf("runtime construction failed: %v", err)
+		metrics.FailureReason = redact.Scrub(fmt.Sprintf("runtime construction failed: %v", err))
 		metrics.DurationMS = time.Since(start).Milliseconds()
 		return metrics
 	}
@@ -271,7 +271,7 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 		metrics.Status = "error"
 		metrics.Passed = false
 		metrics.FailureType = FailureInfra
-		metrics.FailureReason = fmt.Sprintf("set agent %q failed: %v", r.opts.AgentName, err)
+		metrics.FailureReason = redact.Scrub(fmt.Sprintf("set agent %q failed: %v", r.opts.AgentName, err))
 		metrics.DurationMS = time.Since(start).Milliseconds()
 		return metrics
 	}
@@ -366,7 +366,7 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 			metrics.Status = "error"
 			metrics.Passed = false
 			metrics.FailureType = FailureInfra
-			metrics.FailureReason = fmt.Sprintf("failed to restore canonical test files: %v", err)
+			metrics.FailureReason = redact.Scrub(fmt.Sprintf("failed to restore canonical test files: %v", err))
 			metrics.DurationMS = time.Since(start).Milliseconds()
 			_ = r.wsManager.Cleanup(ws, false)
 			return metrics

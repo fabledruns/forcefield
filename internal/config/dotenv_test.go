@@ -127,23 +127,28 @@ func TestResolveEnvValueReadsProjectEnvDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	SetProjectEnvDir(projectDir)
-	t.Cleanup(func() { SetProjectEnvDir("") })
+	cfg := &Config{ProjectDir: projectDir}
 
 	// Change to another directory that has no .env
 	otherDir := t.TempDir()
 	t.Chdir(otherDir)
 	t.Setenv(apiKeyName, "")
 
-	key, source, err := ResolveEnvValue(apiKeyName)
+	key, source, err := cfg.ResolveEnvValue(apiKeyName)
 	if err != nil {
-		t.Fatalf("ResolveEnvValue error = %v", err)
+		t.Fatalf("cfg.ResolveEnvValue error = %v", err)
 	}
 	if key != "nvapi-from-project-dir" {
 		t.Errorf("key = %q, want nvapi-from-project-dir", key)
 	}
 	if !strings.Contains(source, projectDir) {
 		t.Errorf("source = %q, want it to contain %s", source, projectDir)
+	}
+
+	// Also test ResolveEnvValueWithDir directly
+	key2, source2, err := ResolveEnvValueWithDir(projectDir, apiKeyName)
+	if err != nil || key2 != "nvapi-from-project-dir" || !strings.Contains(source2, projectDir) {
+		t.Errorf("ResolveEnvValueWithDir failed: key=%q, source=%q, err=%v", key2, source2, err)
 	}
 }
 
@@ -163,9 +168,6 @@ func TestResolveEnvValueUpwardDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	SetProjectEnvDir("")
-	t.Cleanup(func() { SetProjectEnvDir("") })
-
 	t.Chdir(nested)
 	t.Setenv(apiKeyName, "")
 
@@ -178,5 +180,49 @@ func TestResolveEnvValueUpwardDiscovery(t *testing.T) {
 	}
 	if !strings.Contains(source, repoDir) {
 		t.Errorf("source = %q, want it to contain %s", source, repoDir)
+	}
+}
+
+func TestResolveEnvValueUpwardStopsAtGitBoundary(t *testing.T) {
+	isolateHome(t)
+
+	parentDir := t.TempDir()
+	// Foreign .env outside the git repo
+	if err := os.WriteFile(filepath.Join(parentDir, ".env"), []byte("NVIDIA_API_KEY=foreign-parent-key\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Non-git directory inside parentDir must NOT discover parentDir/.env
+	nonGitDir := filepath.Join(parentDir, "nongit")
+	if err := os.Mkdir(nonGitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(nonGitDir)
+	t.Setenv(apiKeyName, "")
+
+	key, _, err := ResolveEnvValue(apiKeyName)
+	if err != nil {
+		t.Fatalf("ResolveEnvValue error = %v", err)
+	}
+	if key != "" {
+		t.Fatalf("security violation: upward discovery escaped non-git directory into parent: got %q", key)
+	}
+
+	// 2. Git repo inside parentDir must NOT discover parentDir/.env
+	gitRepo := filepath.Join(parentDir, "gitrepo")
+	if err := os.MkdirAll(filepath.Join(gitRepo, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(gitRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Join(gitRepo, "sub"))
+
+	key, _, err = ResolveEnvValue(apiKeyName)
+	if err != nil {
+		t.Fatalf("ResolveEnvValue error = %v", err)
+	}
+	if key != "" {
+		t.Fatalf("security violation: upward discovery crossed .git boundary into parent: got %q", key)
 	}
 }

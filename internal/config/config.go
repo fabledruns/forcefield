@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -305,6 +304,10 @@ type Config struct {
 	Workspace     Workspace                 `yaml:"workspace,omitempty"`
 	Tracing       Tracing                   `yaml:"tracing,omitempty"`
 	Orchestration Orchestration             `yaml:"orchestration,omitempty"`
+	// ProjectDir optionally specifies the directory containing the project's
+	// .env file. When unset, credential resolution falls back to Workspace.Root
+	// or the working directory and its enclosing Git repository.
+	ProjectDir string `yaml:"project_dir,omitempty"`
 	// MCP holds local stdio MCP server definitions. The shape and
 	// per-server bounds live in internal/mcp (the sole MCP owner); this
 	// package owns file I/O, error wording, and persistence. Omitted
@@ -465,49 +468,52 @@ func Load() (*Config, error) {
 // per-provider keys are resolved through ResolveProvider instead.
 const apiKeyName = "NVIDIA_API_KEY"
 
-var (
-	projectEnvDirMu sync.RWMutex
-	projectEnvDir   string
-)
-
-// SetProjectEnvDir configures the directory used to locate the project's .env file.
-// When set, ResolveEnvValue prioritizes .env in this directory (and upward search from it)
-// before falling back to the working directory, repository root, and ~/.forcefield/.env.
-func SetProjectEnvDir(dir string) {
-	projectEnvDirMu.Lock()
-	defer projectEnvDirMu.Unlock()
-	projectEnvDir = dir
-}
-
-// ProjectEnvDir returns the currently configured project environment directory, or empty if unset.
-func ProjectEnvDir() string {
-	projectEnvDirMu.RLock()
-	defer projectEnvDirMu.RUnlock()
-	return projectEnvDir
-}
-
 // findUpwardDotEnv searches upward starting from startDir for a .env file,
-// terminating when a .git marker or the filesystem root is reached.
+// stopping at the enclosing Git repository root (.git). If startDir is not
+// within a Git repository, upward traversal does not occur to prevent escaping
+// into unrelated parent directories.
 func findUpwardDotEnv(startDir string) string {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
 		return ""
 	}
+
+	// 1. Locate enclosing Git repository root, if any.
+	gitRoot := ""
+	curr := dir
 	for {
-		candidate := filepath.Join(dir, ".env")
+		gitMarker := filepath.Join(curr, ".git")
+		if _, err := os.Stat(gitMarker); err == nil {
+			gitRoot = curr
+			break
+		}
+		parent := filepath.Dir(curr)
+		if parent == curr {
+			break
+		}
+		curr = parent
+	}
+
+	// If startDir is not inside a Git repository, do not search parent directories.
+	if gitRoot == "" {
+		return ""
+	}
+
+	// 2. Walk upward from startDir to gitRoot (inclusive).
+	curr = dir
+	for {
+		candidate := filepath.Join(curr, ".env")
 		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
 			return candidate
 		}
-		// Stop if we see a .git directory or file (repo root)
-		gitMarker := filepath.Join(dir, ".git")
-		if _, err := os.Stat(gitMarker); err == nil {
+		if curr == gitRoot {
 			break
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
+		parent := filepath.Dir(curr)
+		if parent == curr {
 			break
 		}
-		dir = parent
+		curr = parent
 	}
 	return ""
 }
@@ -517,6 +523,27 @@ func findUpwardDotEnv(startDir string) string {
 // so shell children cannot inherit them. Malformed .env fails closed.
 // See docs/Config.md.
 func ResolveEnvValue(name string) (value, source string, err error) {
+	return ResolveEnvValueWithDir("", name)
+}
+
+// ResolveEnvValue resolves a credential value using the config instance's
+// ProjectDir or Workspace.Root as the project context directory.
+func (c *Config) ResolveEnvValue(name string) (value, source string, err error) {
+	projDir := ""
+	if c != nil {
+		if c.ProjectDir != "" {
+			projDir = c.ProjectDir
+		} else if c.Workspace.Root != "" {
+			projDir = c.Workspace.Root
+		}
+	}
+	return ResolveEnvValueWithDir(projDir, name)
+}
+
+// ResolveEnvValueWithDir returns a credential value searching projDir/.env first
+// (if specified), then the working directory .env, then upward to the enclosing
+// Git repository root, and finally ~/.forcefield/.env.
+func ResolveEnvValueWithDir(projDir, name string) (value, source string, err error) {
 	if v := os.Getenv(name); v != "" {
 		v = strings.TrimSpace(v)
 		// This lookup exists only for credential variables (api_key_env
@@ -529,8 +556,8 @@ func ResolveEnvValue(name string) (value, source string, err error) {
 
 	var rawCandidates []string
 
-	// 1. Explicit project environment directory (e.g. from runner/CLI context)
-	if projDir := ProjectEnvDir(); projDir != "" {
+	// 1. Explicit project directory (from config instance context)
+	if projDir != "" {
 		rawCandidates = append(rawCandidates, filepath.Join(projDir, ".env"))
 		if upward := findUpwardDotEnv(projDir); upward != "" {
 			rawCandidates = append(rawCandidates, upward)

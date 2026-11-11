@@ -391,10 +391,6 @@ func TestBenchmark_ProjectDotEnvCredentialResolution(t *testing.T) {
 		t.Fatalf("write project .env: %v", err)
 	}
 
-	// Explicitly set project environment directory.
-	config.SetProjectEnvDir(projectDir)
-	t.Cleanup(func() { config.SetProjectEnvDir("") })
-
 	// Ensure process environment does not have the key.
 	t.Setenv(envKey, "")
 
@@ -406,6 +402,7 @@ func TestBenchmark_ProjectDotEnvCredentialResolution(t *testing.T) {
 	defer server.Close()
 
 	baseCfg := &config.Config{
+		ProjectDir: projectDir,
 		Model: config.Model{
 			Provider: "nim-mock",
 			Name:     "test-model",
@@ -469,7 +466,7 @@ func TestBenchmark_ProjectDotEnvCredentialResolution(t *testing.T) {
 
 	// 6. Negative preflight test: remove project .env and ensure preflight fails closed with guidance.
 	emptyDir := t.TempDir()
-	config.SetProjectEnvDir(emptyDir)
+	baseCfg.ProjectDir = emptyDir
 
 	_, err = runner.Preflight(baseCfg)
 	if err == nil {
@@ -480,8 +477,81 @@ func TestBenchmark_ProjectDotEnvCredentialResolution(t *testing.T) {
 	}
 }
 
+// TestAdversarial_ConcurrentRuntimesIndependentDotEnv proves that multiple concurrent runtimes
+// configured with distinct project directories do not contaminate each other or race.
+func TestAdversarial_ConcurrentRuntimesIndependentDotEnv(t *testing.T) {
+	proj1 := t.TempDir()
+	proj2 := t.TempDir()
+
+	keyName := "CONCURRENT_TEST_AUTH_KEY"
+	val1 := "key-project-1-token"
+	val2 := "key-project-2-token"
+
+	if err := os.WriteFile(filepath.Join(proj1, ".env"), []byte(fmt.Sprintf("%s=%s\n", keyName, val1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj2, ".env"), []byte(fmt.Sprintf("%s=%s\n", keyName, val2)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(keyName, "")
+
+	cfg1 := &config.Config{
+		ProjectDir: proj1,
+		Model:      config.Model{Provider: "p1", Name: "m"},
+		Providers: map[string]config.ProviderConfig{
+			"p1": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:8001/v1", APIKeyEnv: keyName},
+		},
+	}
+
+	cfg2 := &config.Config{
+		ProjectDir: proj2,
+		Model:      config.Model{Provider: "p2", Name: "m"},
+		Providers: map[string]config.ProviderConfig{
+			"p2": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:8002/v1", APIKeyEnv: keyName},
+		},
+	}
+
+	// Concurrently resolve providers across many iterations
+	const iterations = 50
+	errCh := make(chan error, iterations*2)
+
+	for i := 0; i < iterations; i++ {
+		go func() {
+			r1, err := cfg1.ResolveProvider("p1", "m")
+			if err != nil {
+				errCh <- fmt.Errorf("cfg1 error: %w", err)
+				return
+			}
+			if r1.APIKey != val1 {
+				errCh <- fmt.Errorf("cross-contamination: cfg1 got %q, want %q", r1.APIKey, val1)
+				return
+			}
+			errCh <- nil
+		}()
+
+		go func() {
+			r2, err := cfg2.ResolveProvider("p2", "m")
+			if err != nil {
+				errCh <- fmt.Errorf("cfg2 error: %w", err)
+				return
+			}
+			if r2.APIKey != val2 {
+				errCh <- fmt.Errorf("cross-contamination: cfg2 got %q, want %q", r2.APIKey, val2)
+				return
+			}
+			errCh <- nil
+		}()
+	}
+
+	for i := 0; i < iterations*2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // TestBenchmark_ReportsNeverLeakCredentials verifies that credentials
-// are scrubbed from JSON and Markdown reports.
+// are scrubbed from JSON and Markdown reports including diffs and nested command runs.
 func TestBenchmark_ReportsNeverLeakCredentials(t *testing.T) {
 	secretVal := "super-secret-api-key-xyz-987"
 	redact.AddSecret(secretVal)
@@ -501,9 +571,19 @@ func TestBenchmark_ReportsNeverLeakCredentials(t *testing.T) {
 				Passed:        false,
 				FailureType:   FailureInfra,
 				FailureReason: fmt.Sprintf("failed connecting with key %s: unauthorized", secretVal),
+				Diff:          fmt.Sprintf("--- a/f\n+++ b/f\n+Authorization: Bearer %s\n", secretVal),
 				Validation: ValidationResult{
+					Error:  fmt.Sprintf("validation failed with key %s", secretVal),
 					Stderr: fmt.Sprintf("diagnostic dump: bearer %s failed", secretVal),
 					Stdout: fmt.Sprintf("echo %s", secretVal),
+					CommandRuns: []CommandRun{
+						{
+							Command: "go test",
+							Error:   fmt.Sprintf("error with %s", secretVal),
+							Stderr:  fmt.Sprintf("fatal: %s rejected", secretVal),
+							Stdout:  fmt.Sprintf("test output %s", secretVal),
+						},
+					},
 				},
 			},
 		},

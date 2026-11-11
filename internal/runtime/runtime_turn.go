@@ -124,7 +124,7 @@ func canRetryTurn(attempt int, emitted bool, err error, ctx context.Context) boo
 // turn succeeds), so a retried request cannot duplicate tool calls or
 // persist inconsistent state.
 func (r *Runtime) runModelTurn(ctx context.Context, messages []providers.Message, emit func(Event) bool, snap runSnapshot) (providers.Response, error) {
-	if err := checkAuthWithSnapshot(snap.authRequired, snap.authEnvVar, snap.providerName); err != nil {
+	if err := checkAuthWithSnapshot(snap.cfg, snap.authRequired, snap.authEnvVar, snap.providerName); err != nil {
 		return providers.Response{}, err
 	}
 
