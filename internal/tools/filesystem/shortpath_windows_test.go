@@ -16,14 +16,20 @@ func windowsShortPath(p string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	buf := make([]uint16, 1024)
-	n, _, _ := proc.Call(uintptr(unsafe.Pointer(u16)), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
-	if n == 0 {
-		return "", errors.New("GetShortPathNameW returned 0")
+	bufLen := uint32(1024)
+	for {
+		buf := make([]uint16, bufLen)
+		n, _, _ := proc.Call(uintptr(unsafe.Pointer(u16)), uintptr(unsafe.Pointer(&buf[0])), uintptr(bufLen))
+		if n == 0 {
+			return "", errors.New("GetShortPathNameW returned 0")
+		}
+		if n < uintptr(bufLen) {
+			short := syscall.UTF16ToString(buf[:n])
+			if strings.EqualFold(short, p) {
+				return "", errors.New("short name identical to long name")
+			}
+			return short, nil
+		}
+		bufLen = uint32(n) + 1
 	}
-	short := syscall.UTF16ToString(buf[:n])
-	if strings.EqualFold(short, p) {
-		return "", errors.New("short name identical to long name")
-	}
-	return short, nil
 }
