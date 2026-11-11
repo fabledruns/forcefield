@@ -1,0 +1,142 @@
+id: "MULTI-005"
+name: "Event Bus with Consumer Groups"
+category: "multi_file_changes"
+difficulty: "medium"
+description: "Implement load-balanced event distribution across consumer groups."
+instructions: "Extend the event bus in eventbus/bus.go and eventbus/group.go to support SubscribeGroup(topic, group, handler). When an event is published to a topic, exactly one handler in each consumer group should receive the event (e.g. round-robin). Ensure tests in eventbus/bus_test.go pass."
+timeout: "90s"
+expected_files:
+  - "eventbus/bus.go"
+  - "eventbus/group.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+fixtures:
+  "go.mod": |
+    module buspkg
+
+    go 1.21
+  "eventbus/bus.go": |
+    package eventbus
+
+    import "sync"
+
+    type Handler func(event any)
+
+    type EventBus struct {
+    	mu     sync.Mutex
+    	groups map[string]*GroupDispatcher
+    }
+
+    func New() *EventBus {
+    	return &EventBus{
+    		groups: make(map[string]*GroupDispatcher),
+    	}
+    }
+  "eventbus/group.go": |
+    package eventbus
+
+    import "sync"
+
+    type GroupDispatcher struct {
+    	mu       sync.Mutex
+    	handlers []Handler
+    	index    int
+    }
+
+    func NewGroupDispatcher() *GroupDispatcher {
+    	return &GroupDispatcher{}
+    }
+
+    func (g *GroupDispatcher) Add(h Handler) {
+    	g.mu.Lock()
+    	defer g.mu.Unlock()
+    	g.handlers = append(g.handlers, h)
+    }
+
+    // Dispatch sends event to one handler in round-robin fashion.
+    func (g *GroupDispatcher) Dispatch(event any) {
+    	g.mu.Lock()
+    	defer g.mu.Unlock()
+    	if len(g.handlers) == 0 {
+    		return
+    	}
+    	h := g.handlers[g.index%len(g.handlers)]
+    	g.index++
+    	h(event)
+    }
+  "eventbus/bus_test.go": |
+    package eventbus_test
+
+    import (
+    	"sync/atomic"
+    	"testing"
+
+    	"buspkg/eventbus"
+    )
+
+    func TestConsumerGroupDispatch(t *testing.T) {
+    	bus := eventbus.New()
+
+    	var worker1Count, worker2Count int32
+    	bus.SubscribeGroup("orders", "workers", func(e any) {
+    		atomic.AddInt32(&worker1Count, 1)
+    	})
+    	bus.SubscribeGroup("orders", "workers", func(e any) {
+    		atomic.AddInt32(&worker2Count, 1)
+    	})
+
+    	for i := 0; i < 10; i++ {
+    		bus.Publish("orders", "order_data")
+    	}
+
+    	w1 := atomic.LoadInt32(&worker1Count)
+    	w2 := atomic.LoadInt32(&worker2Count)
+
+    	if w1+w2 != 10 {
+    		t.Fatalf("total events handled = %d, want 10", w1+w2)
+    	}
+    	if w1 != 5 || w2 != 5 {
+    		t.Fatalf("events not evenly distributed: w1=%d, w2=%d", w1, w2)
+    	}
+    }
+canonical_files:
+  "eventbus/bus_test.go": |
+    package eventbus_test
+
+    import (
+    	"sync/atomic"
+    	"testing"
+
+    	"buspkg/eventbus"
+    )
+
+    func TestConsumerGroupDispatch(t *testing.T) {
+    	bus := eventbus.New()
+
+    	var worker1Count, worker2Count int32
+    	bus.SubscribeGroup("orders", "workers", func(e any) {
+    		atomic.AddInt32(&worker1Count, 1)
+    	})
+    	bus.SubscribeGroup("orders", "workers", func(e any) {
+    		atomic.AddInt32(&worker2Count, 1)
+    	})
+
+    	for i := 0; i < 10; i++ {
+    		bus.Publish("orders", "order_data")
+    	}
+
+    	w1 := atomic.LoadInt32(&worker1Count)
+    	w2 := atomic.LoadInt32(&worker2Count)
+
+    	if w1+w2 != 10 {
+    		t.Fatalf("total events handled = %d, want 10", w1+w2)
+    	}
+    	if w1 != 5 || w2 != 5 {
+    		t.Fatalf("events not evenly distributed: w1=%d, w2=%d", w1, w2)
+    	}
+    }

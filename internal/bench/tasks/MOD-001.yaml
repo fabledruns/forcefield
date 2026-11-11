@@ -1,0 +1,80 @@
+id: "MOD-001"
+name: "String Slugify Utility"
+category: "simple_code_modifications"
+difficulty: "easy"
+description: "Implement Slugify utility converting strings into clean URL-friendly slugs."
+instructions: "Implement the Slugify(s string) string function in slug.go so all tests in slug_test.go pass. Non-alphanumeric characters should be converted to hyphens, duplicate hyphens collapsed, and leading/trailing hyphens trimmed."
+timeout: "60s"
+expected_files:
+  - "slug.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+fixtures:
+  "go.mod": |
+    module slugpkg
+
+    go 1.21
+  "slug.go": |
+    package slugpkg
+
+    import "strings"
+
+    // Slugify converts an input string into a URL-friendly slug.
+    // Stub: currently only lowercases without handling special characters or hyphens.
+    func Slugify(s string) string {
+    	return strings.ToLower(s)
+    }
+  "slug_test.go": |
+    package slugpkg
+
+    import "testing"
+
+    func TestSlugify(t *testing.T) {
+    	tests := []struct {
+    		in   string
+    		want string
+    	}{
+    		{"Hello World", "hello-world"},
+    		{"Hello, World!", "hello-world"},
+    		{"  Spaces   and -- dashes  ", "spaces-and-dashes"},
+    		{"Alpha & Beta / Gamma", "alpha-beta-gamma"},
+    		{"Already-a-slug", "already-a-slug"},
+    		{"", ""},
+    	}
+    	for _, tc := range tests {
+    		got := Slugify(tc.in)
+    		if got != tc.want {
+    			t.Errorf("Slugify(%q) = %q, want %q", tc.in, got, tc.want)
+    		}
+    	}
+    }
+canonical_files:
+  "slug_test.go": |
+    package slugpkg
+
+    import "testing"
+
+    func TestSlugify(t *testing.T) {
+    	tests := []struct {
+    		in   string
+    		want string
+    	}{
+    		{"Hello World", "hello-world"},
+    		{"Hello, World!", "hello-world"},
+    		{"  Spaces   and -- dashes  ", "spaces-and-dashes"},
+    		{"Alpha & Beta / Gamma", "alpha-beta-gamma"},
+    		{"Already-a-slug", "already-a-slug"},
+    		{"", ""},
+    	}
+    	for _, tc := range tests {
+    		got := Slugify(tc.in)
+    		if got != tc.want {
+    			t.Errorf("Slugify(%q) = %q, want %q", tc.in, got, tc.want)
+    		}
+    	}
+    }

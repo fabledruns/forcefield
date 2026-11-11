@@ -1,0 +1,106 @@
+id: "MULTI-004"
+name: "Config Parser with Environment Overrides"
+category: "multi_file_changes"
+difficulty: "medium"
+description: "Add database connection pool configuration and environment overrides."
+instructions: "In config/config.go, add DBMaxOpenConns and DBMaxIdleConns integer fields to Config. In config/env.go, parse DB_MAX_OPEN_CONNS and DB_MAX_IDLE_CONNS from environment map if present and populate Config. Ensure tests in config/config_test.go pass."
+timeout: "90s"
+expected_files:
+  - "config/config.go"
+  - "config/env.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+fixtures:
+  "go.mod": |
+    module cfgpkg
+
+    go 1.21
+  "config/config.go": |
+    package config
+
+    type Config struct {
+    	Host string
+    	Port int
+    }
+  "config/env.go": |
+    package config
+
+    import (
+    	"strconv"
+    )
+
+    // ApplyEnvOverrides applies environment variables to c.
+    func ApplyEnvOverrides(c *Config, getenv func(string) string) {
+    	if h := getenv("APP_HOST"); h != "" {
+    		c.Host = h
+    	}
+    	if p := getenv("APP_PORT"); p != "" {
+    		if v, err := strconv.Atoi(p); err == nil {
+    			c.Port = v
+    		}
+    	}
+    }
+  "config/config_test.go": |
+    package config_test
+
+    import (
+    	"testing"
+
+    	"cfgpkg/config"
+    )
+
+    func TestConfig_DBOverrides(t *testing.T) {
+    	cfg := &config.Config{
+    		Host: "localhost",
+    		Port: 8080,
+    	}
+
+    	env := map[string]string{
+    		"DB_MAX_OPEN_CONNS": "25",
+    		"DB_MAX_IDLE_CONNS": "5",
+    	}
+
+    	config.ApplyEnvOverrides(cfg, func(k string) string { return env[k] })
+
+    	if cfg.DBMaxOpenConns != 25 {
+    		t.Errorf("DBMaxOpenConns = %d, want 25", cfg.DBMaxOpenConns)
+    	}
+    	if cfg.DBMaxIdleConns != 5 {
+    		t.Errorf("DBMaxIdleConns = %d, want 5", cfg.DBMaxIdleConns)
+    	}
+    }
+canonical_files:
+  "config/config_test.go": |
+    package config_test
+
+    import (
+    	"testing"
+
+    	"cfgpkg/config"
+    )
+
+    func TestConfig_DBOverrides(t *testing.T) {
+    	cfg := &config.Config{
+    		Host: "localhost",
+    		Port: 8080,
+    	}
+
+    	env := map[string]string{
+    		"DB_MAX_OPEN_CONNS": "25",
+    		"DB_MAX_IDLE_CONNS": "5",
+    	}
+
+    	config.ApplyEnvOverrides(cfg, func(k string) string { return env[k] })
+
+    	if cfg.DBMaxOpenConns != 25 {
+    		t.Errorf("DBMaxOpenConns = %d, want 25", cfg.DBMaxOpenConns)
+    	}
+    	if cfg.DBMaxIdleConns != 5 {
+    		t.Errorf("DBMaxIdleConns = %d, want 5", cfg.DBMaxIdleConns)
+    	}
+    }

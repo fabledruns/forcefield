@@ -1,0 +1,100 @@
+id: "DELEG-001"
+name: "Security Hardening of Independent Packages"
+category: "parallel_delegation"
+difficulty: "medium"
+description: "Coordinate parallel security refactoring across crypto and auth packages."
+instructions: "Audit and harden two independent packages: (1) In crypto/hash.go, replace deprecated MD5 hashing with SHA-256 (ComputeHash(data []byte) string returning hex-encoded SHA-256). (2) In auth/token.go, remove the hardcoded secret and make GenerateToken(secret, userID string) accept the signing key. Run tests to confirm both packages satisfy audit_test.go."
+timeout: "90s"
+expected_files:
+  - "crypto/hash.go"
+  - "auth/token.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+fixtures:
+  "go.mod": |
+    module auditpkg
+
+    go 1.21
+  "crypto/hash.go": |
+    package crypto
+
+    import (
+    	"crypto/md5"
+    	"fmt"
+    )
+
+    // ComputeHash currently uses insecure MD5. Refactor to use SHA-256.
+    func ComputeHash(data []byte) string {
+    	sum := md5.Sum(data)
+    	return fmt.Sprintf("%x", sum)
+    }
+  "auth/token.go": |
+    package auth
+
+    import "fmt"
+
+    // GenerateToken currently uses a hardcoded secret. Refactor to accept secret parameter.
+    func GenerateToken(userID string) string {
+    	const hardcodedKey = "insecure_default_key"
+    	return fmt.Sprintf("token:%s:%s", userID, hardcodedKey)
+    }
+  "audit_test.go": |
+    package audit_test
+
+    import (
+    	"crypto/sha256"
+    	"fmt"
+    	"testing"
+
+    	"auditpkg/auth"
+    	"auditpkg/crypto"
+    )
+
+    func TestHardenedSecurity(t *testing.T) {
+    	data := []byte("confidential-payload")
+    	expectedSHA := fmt.Sprintf("%x", sha256.Sum256(data))
+
+    	gotHash := crypto.ComputeHash(data)
+    	if gotHash != expectedSHA {
+    		t.Fatalf("ComputeHash(%s) = %q, want SHA-256 %q", data, gotHash, expectedSHA)
+    	}
+
+    	tok := auth.GenerateToken("custom_secret_key", "user_123")
+    	expectedTok := "token:user_123:custom_secret_key"
+    	if tok != expectedTok {
+    		t.Fatalf("GenerateToken = %q, want %q", tok, expectedTok)
+    	}
+    }
+canonical_files:
+  "audit_test.go": |
+    package audit_test
+
+    import (
+    	"crypto/sha256"
+    	"fmt"
+    	"testing"
+
+    	"auditpkg/auth"
+    	"auditpkg/crypto"
+    )
+
+    func TestHardenedSecurity(t *testing.T) {
+    	data := []byte("confidential-payload")
+    	expectedSHA := fmt.Sprintf("%x", sha256.Sum256(data))
+
+    	gotHash := crypto.ComputeHash(data)
+    	if gotHash != expectedSHA {
+    		t.Fatalf("ComputeHash(%s) = %q, want SHA-256 %q", data, gotHash, expectedSHA)
+    	}
+
+    	tok := auth.GenerateToken("custom_secret_key", "user_123")
+    	expectedTok := "token:user_123:custom_secret_key"
+    	if tok != expectedTok {
+    		t.Fatalf("GenerateToken = %q, want %q", tok, expectedTok)
+    	}
+    }

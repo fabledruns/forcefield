@@ -1,0 +1,108 @@
+id: "MOD-004"
+name: "Token Bucket Rate Limiter"
+category: "simple_code_modifications"
+difficulty: "easy"
+description: "Implement a thread-safe token bucket rate limiter."
+instructions: "Complete Allow() bool in limiter.go. Calculate tokens to add based on elapsed time since last check, clamp tokens to Capacity, and consume 1 token if available."
+timeout: "60s"
+expected_files:
+  - "limiter.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+fixtures:
+  "go.mod": |
+    module limiterpkg
+
+    go 1.21
+  "limiter.go": |
+    package limiterpkg
+
+    import (
+    	"sync"
+    	"time"
+    )
+
+    type TokenBucket struct {
+    	mu       sync.Mutex
+    	rate     float64 // tokens per second
+    	capacity float64
+    	tokens   float64
+    	lastTime time.Time
+    }
+
+    func NewTokenBucket(rate float64, capacity float64) *TokenBucket {
+    	return &TokenBucket{
+    		rate:     rate,
+    		capacity: capacity,
+    		tokens:   capacity,
+    		lastTime: time.Now(),
+    	}
+    }
+
+    // Allow checks if a token can be consumed.
+    func (tb *TokenBucket) Allow() bool {
+    	tb.mu.Lock()
+    	defer tb.mu.Unlock()
+    	// Stub: currently rejects everything
+    	return false
+    }
+  "limiter_test.go": |
+    package limiterpkg
+
+    import (
+    	"testing"
+    	"time"
+    )
+
+    func TestTokenBucket(t *testing.T) {
+    	tb := NewTokenBucket(10.0, 2.0) // 10 tokens/sec, capacity 2
+
+    	if !tb.Allow() {
+    		t.Fatal("first token should be allowed")
+    	}
+    	if !tb.Allow() {
+    		t.Fatal("second token should be allowed")
+    	}
+    	if tb.Allow() {
+    		t.Fatal("third consecutive token should be denied (capacity 2 exhausted)")
+    	}
+
+    	// Wait 250ms -> should refill ~2.5 tokens, capped at 2.0
+    	time.Sleep(250 * time.Millisecond)
+    	if !tb.Allow() {
+    		t.Fatal("token should be allowed after refill")
+    	}
+    }
+canonical_files:
+  "limiter_test.go": |
+    package limiterpkg
+
+    import (
+    	"testing"
+    	"time"
+    )
+
+    func TestTokenBucket(t *testing.T) {
+    	tb := NewTokenBucket(10.0, 2.0) // 10 tokens/sec, capacity 2
+
+    	if !tb.Allow() {
+    		t.Fatal("first token should be allowed")
+    	}
+    	if !tb.Allow() {
+    		t.Fatal("second token should be allowed")
+    	}
+    	if tb.Allow() {
+    		t.Fatal("third consecutive token should be denied (capacity 2 exhausted)")
+    	}
+
+    	// Wait 250ms -> should refill ~2.5 tokens, capped at 2.0
+    	time.Sleep(250 * time.Millisecond)
+    	if !tb.Allow() {
+    		t.Fatal("token should be allowed after refill")
+    	}
+    }

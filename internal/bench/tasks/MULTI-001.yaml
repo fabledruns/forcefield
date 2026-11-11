@@ -1,0 +1,162 @@
+id: "MULTI-001"
+name: "Cache Store Interface & Implementation"
+category: "multi_file_changes"
+difficulty: "medium"
+description: "Add TTL support across store interface, memory store, and cache wrapper."
+instructions: "Extend the Store interface in store/store.go with SetWithTTL(key string, val any, ttl time.Duration) error. Implement this in memory/memory.go (evicting expired items on Get). Update cache/cache.go to expose Cache.SetWithTTL. Ensure all tests in cache/cache_test.go pass."
+timeout: "90s"
+expected_files:
+  - "store/store.go"
+  - "memory/memory.go"
+  - "cache/cache.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+fixtures:
+  "go.mod": |
+    module multipkg
+
+    go 1.21
+  "store/store.go": |
+    package store
+
+    type Store interface {
+    	Get(key string) (any, bool)
+    	Set(key string, val any) error
+    	Delete(key string) error
+    }
+  "memory/memory.go": |
+    package memory
+
+    import (
+    	"sync"
+    )
+
+    type MemoryStore struct {
+    	mu    sync.RWMutex
+    	items map[string]any
+    }
+
+    func NewMemoryStore() *MemoryStore {
+    	return &MemoryStore{
+    		items: make(map[string]any),
+    	}
+    }
+
+    func (m *MemoryStore) Get(key string) (any, bool) {
+    	m.mu.RLock()
+    	defer m.mu.RUnlock()
+    	v, ok := m.items[key]
+    	return v, ok
+    }
+
+    func (m *MemoryStore) Set(key string, val any) error {
+    	m.mu.Lock()
+    	defer m.mu.Unlock()
+    	m.items[key] = val
+    	return nil
+    }
+
+    func (m *MemoryStore) Delete(key string) error {
+    	m.mu.Lock()
+    	defer m.mu.Unlock()
+    	delete(m.items, key)
+    	return nil
+    }
+  "cache/cache.go": |
+    package cache
+
+    import "multipkg/store"
+
+    type Cache struct {
+    	store store.Store
+    }
+
+    func New(s store.Store) *Cache {
+    	return &Cache{store: s}
+    }
+
+    func (c *Cache) Get(key string) (any, bool) {
+    	return c.store.Get(key)
+    }
+
+    func (c *Cache) Set(key string, val any) error {
+    	return c.store.Set(key, val)
+    }
+  "cache/cache_test.go": |
+    package cache_test
+
+    import (
+    	"testing"
+    	"time"
+
+    	"multipkg/cache"
+    	"multipkg/memory"
+    )
+
+    func TestCache_TTL(t *testing.T) {
+    	mem := memory.NewMemoryStore()
+    	c := cache.New(mem)
+
+    	// Basic set/get
+    	if err := c.Set("k1", "v1"); err != nil {
+    		t.Fatalf("Set failed: %v", err)
+    	}
+    	if v, ok := c.Get("k1"); !ok || v != "v1" {
+    		t.Fatalf("Get = (%v, %v), want (v1, true)", v, ok)
+    	}
+
+    	// TTL set/get
+    	if err := c.SetWithTTL("temp", "fast", 50*time.Millisecond); err != nil {
+    		t.Fatalf("SetWithTTL failed: %v", err)
+    	}
+    	if v, ok := c.Get("temp"); !ok || v != "fast" {
+    		t.Fatalf("immediate Get = (%v, %v), want (fast, true)", v, ok)
+    	}
+
+    	time.Sleep(70 * time.Millisecond)
+    	if _, ok := c.Get("temp"); ok {
+    		t.Fatal("key should have expired after 50ms TTL")
+    	}
+    }
+canonical_files:
+  "cache/cache_test.go": |
+    package cache_test
+
+    import (
+    	"testing"
+    	"time"
+
+    	"multipkg/cache"
+    	"multipkg/memory"
+    )
+
+    func TestCache_TTL(t *testing.T) {
+    	mem := memory.NewMemoryStore()
+    	c := cache.New(mem)
+
+    	// Basic set/get
+    	if err := c.Set("k1", "v1"); err != nil {
+    		t.Fatalf("Set failed: %v", err)
+    	}
+    	if v, ok := c.Get("k1"); !ok || v != "v1" {
+    		t.Fatalf("Get = (%v, %v), want (v1, true)", v, ok)
+    	}
+
+    	// TTL set/get
+    	if err := c.SetWithTTL("temp", "fast", 50*time.Millisecond); err != nil {
+    		t.Fatalf("SetWithTTL failed: %v", err)
+    	}
+    	if v, ok := c.Get("temp"); !ok || v != "fast" {
+    		t.Fatalf("immediate Get = (%v, %v), want (fast, true)", v, ok)
+    	}
+
+    	time.Sleep(70 * time.Millisecond)
+    	if _, ok := c.Get("temp"); ok {
+    		t.Fatal("key should have expired after 50ms TTL")
+    	}
+    }

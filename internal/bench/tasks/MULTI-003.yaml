@@ -1,0 +1,116 @@
+id: "MULTI-003"
+name: "Metrics Collector & Prometheus Exporter"
+category: "multi_file_changes"
+difficulty: "medium"
+description: "Implement metric tracking and Prometheus exposition format."
+instructions: "Add Counter and Gauge metric types to metrics/collector.go. In metrics/export.go, implement FormatPrometheus() string to render registered metrics in standard Prometheus line format: '<name> <value>\\n'. Ensure tests in metrics/metrics_test.go pass."
+timeout: "90s"
+expected_files:
+  - "metrics/collector.go"
+  - "metrics/export.go"
+validation:
+  commands:
+    - ["go", "test", "-v", "./..."]
+  restore_canonical_tests: true
+scoring:
+  pass_on_zero_exit: true
+  require_files_modified: true
+fixtures:
+  "go.mod": |
+    module metricspkg
+
+    go 1.21
+  "metrics/collector.go": |
+    package metrics
+
+    import "sync"
+
+    type Registry struct {
+    	mu      sync.Mutex
+    	metrics map[string]float64
+    }
+
+    func NewRegistry() *Registry {
+    	return &Registry{
+    		metrics: make(map[string]float64),
+    	}
+    }
+
+    func (r *Registry) IncCounter(name string, delta float64) {
+    	r.mu.Lock()
+    	defer r.mu.Unlock()
+    	r.metrics[name] += delta
+    }
+
+    func (r *Registry) SetGauge(name string, val float64) {
+    	r.mu.Lock()
+    	defer r.mu.Unlock()
+    	r.metrics[name] = val
+    }
+
+    func (r *Registry) Snapshot() map[string]float64 {
+    	r.mu.Lock()
+    	defer r.mu.Unlock()
+    	cp := make(map[string]float64, len(r.metrics))
+    	for k, v := range r.metrics {
+    		cp[k] = v
+    	}
+    	return cp
+    }
+  "metrics/export.go": |
+    package metrics
+
+    // FormatPrometheus renders metrics in Prometheus text format.
+    func FormatPrometheus(r *Registry) string {
+    	// Stub: not implemented
+    	return ""
+    }
+  "metrics/metrics_test.go": |
+    package metrics_test
+
+    import (
+    	"strings"
+    	"testing"
+
+    	"metricspkg/metrics"
+    )
+
+    func TestMetricsExport(t *testing.T) {
+    	reg := metrics.NewRegistry()
+    	reg.IncCounter("http_requests_total", 5)
+    	reg.SetGauge("memory_usage_bytes", 1024)
+
+    	out := metrics.FormatPrometheus(reg)
+
+    	if !strings.Contains(out, "http_requests_total 5") {
+    		t.Errorf("output missing counter line, got:\n%s", out)
+    	}
+    	if !strings.Contains(out, "memory_usage_bytes 1024") {
+    		t.Errorf("output missing gauge line, got:\n%s", out)
+    	}
+    }
+canonical_files:
+  "metrics/metrics_test.go": |
+    package metrics_test
+
+    import (
+    	"strings"
+    	"testing"
+
+    	"metricspkg/metrics"
+    )
+
+    func TestMetricsExport(t *testing.T) {
+    	reg := metrics.NewRegistry()
+    	reg.IncCounter("http_requests_total", 5)
+    	reg.SetGauge("memory_usage_bytes", 1024)
+
+    	out := metrics.FormatPrometheus(reg)
+
+    	if !strings.Contains(out, "http_requests_total 5") {
+    		t.Errorf("output missing counter line, got:\n%s", out)
+    	}
+    	if !strings.Contains(out, "memory_usage_bytes 1024") {
+    		t.Errorf("output missing gauge line, got:\n%s", out)
+    	}
+    }
