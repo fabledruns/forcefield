@@ -36,13 +36,13 @@ available tool still passes permissions.
 
 | Name | Tools | Skills | Constraints |
 |---|---|---|---|
-| `coding` | read/write/list/pwd/shell/search/scan + runtime | intelligence, code-review, debugging, architecture, clean-code | scope discipline |
+| `coding` | read/write/edit/list/pwd/shell/search/scan + runtime | intelligence, code-review, debugging, architecture, clean-code | scope discipline |
 | `cyber` | read/list/pwd/shell/search/scan + runtime | intelligence, code-review | defensive-only (3 rules) |
 | `legal` | read/list/pwd/search + runtime | none assigned | not-a-lawyer (2 rules) |
-| `docs` | read/write/list/pwd/search + runtime | none assigned | don't change code behavior |
+| `docs` | read/write/edit/list/pwd/search + runtime | none assigned | don't change code behavior |
 | `research` | read/list/pwd/search + runtime | intelligence | facts-vs-interpretation |
-| `devops` | read/write/list/pwd/shell/search + runtime | intelligence, debugging | no destructive commands |
-| `general` | all 14 tools | **all** installed skills | none |
+| `devops` | read/write/edit/list/pwd/shell/search + runtime | intelligence, debugging | no destructive commands |
+| `general` | all 15 tools | **all** installed skills | none |
 
 "+ runtime" = `load_skill, update_task_state, add_project_memory`.
 Skill IDs reference the global store; IDs not installed degrade gracefully

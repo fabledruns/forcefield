@@ -152,6 +152,10 @@ func formatToolFinish(result *runtime.ToolResult, eventType runtime.EventType) s
 		if path, ok := result.Arguments["path"].(string); ok && path != "" {
 			message = fmt.Sprintf("%s Wrote %s", IconDiamond, sanitizeTerminalOutput(path))
 		}
+	case "edit_file":
+		if path, ok := result.Arguments["path"].(string); ok && path != "" {
+			message = fmt.Sprintf("%s Edited %s", IconDiamond, sanitizeTerminalOutput(path))
+		}
 	}
 	if message == "" {
 		message = fmt.Sprintf("%s %s completed", IconDiamond, result.Name)

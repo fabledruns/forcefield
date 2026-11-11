@@ -77,6 +77,8 @@ func DefaultLimitsFor(name string) Limits {
 		return Limits{MaxBytes: DefaultShellMaxBytes, Timeout: DefaultShellTimeout}
 	case "read_file":
 		return Limits{MaxBytes: DefaultReadMaxBytes, Timeout: DefaultToolTimeout}
+	case "write_file", "edit_file":
+		return Limits{MaxBytes: DefaultWriteMaxBytes, Timeout: DefaultToolTimeout}
 	case "list_files":
 		return Limits{MaxLines: DefaultListMaxLines, Timeout: DefaultToolTimeout}
 	case "search_files":

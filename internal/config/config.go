@@ -334,6 +334,7 @@ permissions:
     git: allow
     secret_scan: allow
     write_file: ask
+    edit_file: ask
     shell: ask
     shell_job: ask
     add_project_memory: ask
@@ -840,7 +841,7 @@ func validateAgents(agents map[string]AgentConfig) error {
 // address. Kept here (like knownAgents) so a typo fails fast at load
 // instead of silently never applying.
 var knownTools = map[string]struct{}{
-	"read_file": {}, "write_file": {}, "list_files": {}, "pwd": {},
+	"read_file": {}, "write_file": {}, "edit_file": {}, "list_files": {}, "pwd": {},
 	"shell": {}, "shell_job": {}, "search_files": {}, "search_code": {}, "find_files": {}, "git": {}, "secret_scan": {},
 	"load_skill": {}, "update_task_state": {}, "add_project_memory": {},
 	"delegate": {},

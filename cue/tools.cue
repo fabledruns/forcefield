@@ -63,6 +63,11 @@ tools: [
 		default_permission: "ask"
 	},
 	{
+		name:               "edit_file"
+		description:        "Surgically edit an existing file using exact search-and-replace blocks."
+		default_permission: "ask"
+	},
+	{
 		name:               "shell"
 		description:        "Execute a shell command through the sandbox executor and return its output and exit code."
 		default_permission: "ask"

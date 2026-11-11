@@ -22,7 +22,7 @@ Responsibilities: understand repository structure, edit code minimally, run test
 Behaviour: inspect before editing, prefer the smallest working change, verify with the narrowest relevant test, and stop when acceptance criteria pass.
 Use your tools to read, write, search, and execute. Prefer existing abstractions and conventions.
 Clearly state uncertainty and blockers rather than guessing.`,
-			Tools:       []string{"read_file", "write_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"},
+			Tools:       []string{"read_file", "write_file", "edit_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"},
 			Skills:      []string{"architecture", "clean-code", "code-review", "debugging", "intelligence"},
 			Constraints: []string{"Do not expand scope beyond the requested task."},
 		},
@@ -61,7 +61,7 @@ Responsibilities: locate existing docs, ensure consistency, write clear technica
 
 Behaviour: read before writing, preserve unrelated content, and keep changes focused. Prefer plain, precise language. If a claim needs verification, note it.
 Use read_file, write_file, search_files, list_files, and pwd to inspect and update documentation.`,
-			Tools:       []string{"read_file", "write_file", "list_files", "pwd", "search_files", "search_code", "find_files", "git", "load_skill", "update_task_state", "add_project_memory"},
+			Tools:       []string{"read_file", "write_file", "edit_file", "list_files", "pwd", "search_files", "search_code", "find_files", "git", "load_skill", "update_task_state", "add_project_memory"},
 			Skills:      []string{},
 			Constraints: []string{"Do not change code behavior while editing documentation."},
 		},
@@ -87,7 +87,7 @@ Responsibilities: inspect project configuration, run builds and test suites, tri
 
 Behaviour: verify at the real interface (build, run, inspect output). Keep changes narrow and reversible. Do not run destructive commands unless explicitly authorised.
 Use filesystem, search, and shell tools to inspect and verify operational state.`,
-			Tools:       []string{"read_file", "write_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "load_skill", "update_task_state", "add_project_memory"},
+			Tools:       []string{"read_file", "write_file", "edit_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "load_skill", "update_task_state", "add_project_memory"},
 			Skills:      []string{"debugging", "intelligence"},
 			Constraints: []string{"Do not run destructive commands without explicit authorisation."},
 		},
@@ -95,7 +95,7 @@ Use filesystem, search, and shell tools to inspect and verify operational state.
 			Name:         "general",
 			Description:  "General assistant — the default Forcefield experience",
 			SystemPrompt: `You are Forcefield, a local-first agent harness for running specialised AI tasks. Complete software tasks in real repositories: inspect, change, run, debug, and verify. Prefer a working, minimal result over advice or extra architecture.`,
-			Tools:        []string{"read_file", "write_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"},
+			Tools:        []string{"read_file", "write_file", "edit_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"},
 			AllSkills:    true,
 		},
 	}

@@ -307,7 +307,7 @@ func (p *permissionPrompt) describeAction() string {
 			fmt.Fprintf(&b, " in %s", cwd)
 		}
 		return b.String()
-	case "read_file", "write_file":
+	case "read_file", "write_file", "edit_file":
 		if path, ok := args["path"].(string); ok && path != "" {
 			return fmt.Sprintf("%s %s", p.request.Tool, path)
 		}
@@ -333,6 +333,8 @@ func riskNote(tool string) string {
 		return "runs a command on this machine with your user's permissions"
 	case "write_file":
 		return "creates or overwrites a file on disk (confined to the workspace)"
+	case "edit_file":
+		return "modifies an existing file on disk (confined to the workspace)"
 	default:
 		// MCP tools carry no Execution report; label them unsandboxed
 		// explicitly rather than showing no risk context at all.

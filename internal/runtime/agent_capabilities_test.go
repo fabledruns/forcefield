@@ -69,7 +69,7 @@ func keys(m map[string]bool) []string {
 }
 
 var (
-	fullSet  = []string{"read_file", "write_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
+	fullSet  = []string{"read_file", "write_file", "edit_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
 	cyberSet = []string{"read_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
 	legalSet = []string{"read_file", "list_files", "pwd", "search_files", "search_code", "find_files", "git", "load_skill", "update_task_state", "add_project_memory"}
 )
@@ -114,6 +114,7 @@ func TestCapabilityTransition(t *testing.T) {
 		t.Fatalf("cyber catalog = %v, want [intelligence]", ids)
 	}
 	assertToolRejected(t, rt, "write_file")
+	assertToolRejected(t, rt, "edit_file")
 	assertSkillRefused(t, rt, "alpha") // exists, unassigned to cyber
 
 	// coding: full 14 tools; catalog = intelligence only (rest missing).

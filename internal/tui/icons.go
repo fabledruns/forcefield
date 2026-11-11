@@ -56,7 +56,7 @@ func iconForTool(name string) Icon {
 	switch name {
 	case "shell", "pwd":
 		return IconShell
-	case "read_file", "write_file", "list_files":
+	case "read_file", "write_file", "edit_file", "list_files":
 		return IconFile
 	case "load_skill":
 		return IconSkill
@@ -85,7 +85,7 @@ func activityLabelForTool(name string) string {
 	switch name {
 	case "read_file", "list_files", "pwd":
 		return "Inspecting files..."
-	case "write_file":
+	case "write_file", "edit_file":
 		return "Writing files..."
 	case "shell":
 		return "Running command..."

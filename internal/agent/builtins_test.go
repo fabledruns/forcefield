@@ -28,31 +28,34 @@ func TestBuiltins_HaveDistinctTools(t *testing.T) {
 	if len(coding.Tools) != len(general.Tools) {
 		t.Fatalf("coding and general should have same tool count")
 	}
-	// cyber has shell but not write_file
+	if !contains(coding.Tools, "edit_file") {
+		t.Fatalf("coding should have edit_file")
+	}
+	// cyber has shell but neither write_file nor edit_file
 	if !contains(cyber.Tools, "shell") {
 		t.Fatalf("cyber should have shell")
 	}
-	if contains(cyber.Tools, "write_file") {
-		t.Fatalf("cyber should not have write_file")
+	if contains(cyber.Tools, "write_file") || contains(cyber.Tools, "edit_file") {
+		t.Fatalf("cyber should not have write_file or edit_file")
 	}
-	// legal has neither shell nor write_file
-	if contains(legal.Tools, "shell") || contains(legal.Tools, "write_file") {
-		t.Fatalf("legal should have neither shell nor write_file")
+	// legal has neither shell nor write_file nor edit_file
+	if contains(legal.Tools, "shell") || contains(legal.Tools, "write_file") || contains(legal.Tools, "edit_file") {
+		t.Fatalf("legal should have neither shell nor write_file nor edit_file")
 	}
-	// docs has write_file but not shell
-	if !contains(docs.Tools, "write_file") {
-		t.Fatalf("docs should have write_file")
+	// docs has write_file and edit_file but not shell
+	if !contains(docs.Tools, "write_file") || !contains(docs.Tools, "edit_file") {
+		t.Fatalf("docs should have write_file and edit_file")
 	}
 	if contains(docs.Tools, "shell") {
 		t.Fatalf("docs should not have shell")
 	}
-	// research has neither
-	if contains(research.Tools, "shell") || contains(research.Tools, "write_file") {
+	// research has none of them
+	if contains(research.Tools, "shell") || contains(research.Tools, "write_file") || contains(research.Tools, "edit_file") {
 		t.Fatalf("research should have neither")
 	}
-	// devops has both shell and write_file
-	if !contains(devops.Tools, "shell") || !contains(devops.Tools, "write_file") {
-		t.Fatalf("devops should have shell and write_file")
+	// devops has shell, write_file, and edit_file
+	if !contains(devops.Tools, "shell") || !contains(devops.Tools, "write_file") || !contains(devops.Tools, "edit_file") {
+		t.Fatalf("devops should have shell, write_file, and edit_file")
 	}
 }
 
