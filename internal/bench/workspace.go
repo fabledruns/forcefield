@@ -74,7 +74,17 @@ func (m *WorkspaceManager) Prepare(ctx context.Context, task *Task, runID string
 
 	// 2. Populate embedded fixtures defined in task manifest.
 	for relPath, content := range task.Fixtures {
-		target := filepath.Join(wsDir, filepath.FromSlash(relPath))
+		cleanRel := filepath.Clean(filepath.FromSlash(relPath))
+		if strings.HasPrefix(cleanRel, "..") || filepath.IsAbs(cleanRel) || filepath.VolumeName(cleanRel) != "" {
+			_ = os.RemoveAll(wsDir)
+			return nil, fmt.Errorf("fixture path %q escapes workspace boundary", relPath)
+		}
+		target := filepath.Join(wsDir, cleanRel)
+		relCheck, err := filepath.Rel(wsDir, target)
+		if err != nil || strings.HasPrefix(relCheck, "..") {
+			_ = os.RemoveAll(wsDir)
+			return nil, fmt.Errorf("fixture path %q resolves outside workspace", relPath)
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 			_ = os.RemoveAll(wsDir)
 			return nil, fmt.Errorf("create fixture parent directory for %s: %w", relPath, err)
@@ -142,7 +152,15 @@ func (m *WorkspaceManager) RestoreCanonical(ws *Workspace) error {
 
 	// Restore from embedded CanonicalFiles in task manifest.
 	for relPath, content := range task.CanonicalFiles {
-		target := filepath.Join(ws.Dir, filepath.FromSlash(relPath))
+		cleanRel := filepath.Clean(filepath.FromSlash(relPath))
+		if strings.HasPrefix(cleanRel, "..") || filepath.IsAbs(cleanRel) || filepath.VolumeName(cleanRel) != "" {
+			return fmt.Errorf("canonical path %q escapes workspace boundary", relPath)
+		}
+		target := filepath.Join(ws.Dir, cleanRel)
+		relCheck, err := filepath.Rel(ws.Dir, target)
+		if err != nil || strings.HasPrefix(relCheck, "..") {
+			return fmt.Errorf("canonical path %q resolves outside workspace", relPath)
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 			return fmt.Errorf("create canonical parent dir for %s: %w", relPath, err)
 		}
@@ -158,6 +176,11 @@ func (m *WorkspaceManager) Diff(ctx context.Context, ws *Workspace) (files []str
 	if ws == nil {
 		return nil, "", fmt.Errorf("workspace is nil")
 	}
+
+	// Mark untracked files with intent-to-add so git diff includes them.
+	cmdAddN := exec.CommandContext(ctx, "git", "add", "-N", ".")
+	cmdAddN.Dir = ws.Dir
+	_ = cmdAddN.Run()
 
 	// List modified and untracked files
 	cmdFiles := exec.CommandContext(ctx, "git", "status", "--porcelain")
@@ -210,6 +233,20 @@ func (m *WorkspaceManager) Cleanup(ws *Workspace, passed bool) error {
 		ws.Retained = true
 		return nil
 	}
+
+	absBase, err := filepath.Abs(m.BaseDir)
+	if err != nil {
+		return fmt.Errorf("resolve base dir %s: %w", m.BaseDir, err)
+	}
+	absWs, err := filepath.Abs(ws.Dir)
+	if err != nil {
+		return fmt.Errorf("resolve workspace dir %s: %w", ws.Dir, err)
+	}
+	rel, err := filepath.Rel(absBase, absWs)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("refusing to delete directory outside base dir: %s (base: %s)", absWs, absBase)
+	}
+
 	ws.Cleaned = true
 	// Give windows a brief moment to release file handles if needed
 	time.Sleep(10 * time.Millisecond)

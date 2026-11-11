@@ -3,7 +3,7 @@ name: "API and Client Schema Synchronization"
 category: "parallel_delegation"
 difficulty: "hard"
 description: "Synchronize API model schema and client serialization across modules."
-instructions: "Coordinate updates between API and Client modules: (1) In api/v1/types.go, add an optional Priority integer field (JSON 'priority,omitempty') to TaskItem. (2) In client/v1/client.go, add Priority to CreateTaskParams and serialize it into the API payload. Ensure integration_test.go passes."
+instructions: "Coordinate updates between API and Client modules using sub-agent delegation. Use the delegate tool to inspect and update both packages concurrently: (1) In api/v1/types.go, add an optional Priority integer field (JSON 'priority,omitempty') to TaskItem. (2) In client/v1/client.go, add Priority to CreateTaskParams and serialize it into the API payload. Ensure integration_test.go passes."
 timeout: "90s"
 expected_files:
   - "api/v1/types.go"
@@ -15,6 +15,8 @@ validation:
 scoring:
   pass_on_zero_exit: true
   require_files_modified: true
+  require_delegation: true
+  disallow_unexpected_files: true
 fixtures:
   "go.mod": |
     module apipkg

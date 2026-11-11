@@ -14,6 +14,7 @@ validation:
 scoring:
   pass_on_zero_exit: true
   require_files_modified: true
+  disallow_unexpected_files: true
 fixtures:
   "go.mod": |
     module payloadpkg
@@ -40,7 +41,6 @@ fixtures:
     	if err := json.Unmarshal(data, &doc); err != nil {
     		return nil, err
     	}
-    	// Bug: dereferences doc.Meta without nil check, causing runtime panic when metadata is null or omitted
     	doc.Author = doc.Meta.Author
     	return &doc, nil
     }

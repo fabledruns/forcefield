@@ -58,6 +58,10 @@ type ScoringSpec struct {
 	PassOnZeroExit bool `yaml:"pass_on_zero_exit" json:"pass_on_zero_exit"`
 	// RequireFilesModified fails the task if the agent made no file edits.
 	RequireFilesModified bool `yaml:"require_files_modified" json:"require_files_modified"`
+	// RequireDelegation fails the task if the agent performed no delegation events.
+	RequireDelegation bool `yaml:"require_delegation,omitempty" json:"require_delegation,omitempty"`
+	// DisallowUnexpectedFiles fails the task if files outside ExpectedFiles were modified.
+	DisallowUnexpectedFiles bool `yaml:"disallow_unexpected_files,omitempty" json:"disallow_unexpected_files,omitempty"`
 }
 
 // Task is a declarative specification of a benchmark task.
@@ -145,7 +149,36 @@ func (t *Task) Validate() error {
 			return fmt.Errorf("task %q: invalid validation max_duration %q: %w", t.ID, t.Validation.MaxDuration, err)
 		}
 	}
+	for path := range t.Fixtures {
+		if !isSafeRelativePath(path) {
+			return fmt.Errorf("task %q: fixture path %q escapes workspace boundary or is invalid", t.ID, path)
+		}
+	}
+	for path := range t.CanonicalFiles {
+		if !isSafeRelativePath(path) {
+			return fmt.Errorf("task %q: canonical file path %q escapes workspace boundary or is invalid", t.ID, path)
+		}
+	}
 	return nil
+}
+
+// isSafeRelativePath verifies that a relative path does not escape into parent directories.
+func isSafeRelativePath(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return false
+	}
+	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, "\\") {
+		return false
+	}
+	if filepath.IsAbs(p) || filepath.VolumeName(p) != "" {
+		return false
+	}
+	clean := filepath.Clean(filepath.FromSlash(p))
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
 
 // LoadTask loads and validates a task manifest from a YAML file.

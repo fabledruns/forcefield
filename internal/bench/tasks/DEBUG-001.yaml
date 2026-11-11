@@ -14,6 +14,7 @@ validation:
 scoring:
   pass_on_zero_exit: true
   require_files_modified: true
+  disallow_unexpected_files: true
 fixtures:
   "go.mod": |
     module windowpkg
@@ -47,19 +48,15 @@ fixtures:
 
     	cutoff := now.Add(-s.window)
 
-    	// Bug: using < instead of <= when evicting stale timestamps,
-    	// or using >= incorrectly on boundary.
     	valid := s.timestamps[:0]
     	for _, t := range s.timestamps {
-    		// Should keep timestamps >= cutoff (i.e. within window)
-    		if t.Before(cutoff) { // strictly before cutoff is evicted
+    		if t.Before(cutoff) {
     			continue
     		}
     		valid = append(valid, t)
     	}
     	s.timestamps = valid
 
-    	// Bug: off-by-one comparison on limit (using > instead of >=)
     	if len(s.timestamps) > s.limit {
     		return false
     	}

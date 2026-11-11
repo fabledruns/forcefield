@@ -14,6 +14,7 @@ validation:
 scoring:
   pass_on_zero_exit: true
   require_files_modified: true
+  disallow_unexpected_files: true
 fixtures:
   "go.mod": |
     module ringpkg
@@ -43,7 +44,6 @@ fixtures:
     }
 
     func (r *RingBuffer) Push(val int) bool {
-    	// Bug: size is checked and updated outside mutex lock
     	if r.size >= r.cap {
     		return false
     	}
@@ -56,7 +56,6 @@ fixtures:
     }
 
     func (r *RingBuffer) Pop() (int, bool) {
-    	// Bug: size is checked outside mutex lock
     	if r.size == 0 {
     		return 0, false
     	}

@@ -194,6 +194,8 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 	// In benchmark mode, auto-allow tool permissions so the agent does not hang on stdin.
 	taskCfg.Permissions.Default = "allow"
 	taskCfg.Permissions.Tools = nil
+	// Enable orchestration so the delegate tool is registered for multi-agent / parallel tasks.
+	taskCfg.Orchestration.Enabled = true
 
 	// 4. Determine execution timeout.
 	taskTimeout := task.ParsedTimeout()
@@ -246,6 +248,12 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 		metrics.FailureReason = fmt.Sprintf("stream chat invocation failed: %v", streamErr)
 	} else {
 		for ev := range streamEvents {
+			if ev.TaskState != nil && ev.TaskState.Iteration > metrics.AgentTurns {
+				metrics.AgentTurns = ev.TaskState.Iteration
+			}
+			if ev.ToolResult != nil && ev.ToolResult.Attempt > 1 {
+				metrics.AgentRetries += (ev.ToolResult.Attempt - 1)
+			}
 			switch ev.Type {
 			case runtime.EventToolStart:
 				metrics.ToolCalls++
@@ -278,6 +286,9 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 				}
 			}
 		}
+		if metrics.AgentTurns == 0 && metrics.Status == "completed" {
+			metrics.AgentTurns = 1
+		}
 	}
 
 	// 8. Handle timeouts / cancellations.
@@ -293,7 +304,14 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 	// Read collector stats
 	metrics.Delegations = collector.Delegations()
 
-	// 9. Restore canonical tests if specified to prevent cheating.
+	// 9. Inspect filesystem modifications via Git before restoring canonical files.
+	modifiedFiles, diffText, _ := r.wsManager.Diff(context.Background(), ws)
+	metrics.FilesChanged = modifiedFiles
+	metrics.FilesChangedCount = len(modifiedFiles)
+	metrics.Diff = diffText
+	metrics.UnexpectedFilesModified = CheckUnexpectedFiles(modifiedFiles, task.ExpectedFiles)
+
+	// 10. Restore canonical tests if specified to prevent cheating.
 	if task.Validation.RestoreCanonical {
 		if err := r.wsManager.RestoreCanonical(ws); err != nil {
 			metrics.Status = "error"
@@ -306,13 +324,6 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 		}
 	}
 
-	// 10. Inspect filesystem modifications via Git.
-	modifiedFiles, diffText, _ := r.wsManager.Diff(context.Background(), ws)
-	metrics.FilesChanged = modifiedFiles
-	metrics.FilesChangedCount = len(modifiedFiles)
-	metrics.Diff = diffText
-	metrics.UnexpectedFilesModified = CheckUnexpectedFiles(modifiedFiles, task.ExpectedFiles)
-
 	// 11. Run independent validation.
 	vResult := RunValidation(context.Background(), ws)
 	metrics.Validation = vResult
@@ -321,6 +332,14 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 	// 12. Evaluate final task verdict.
 	if metrics.Status == "timeout" {
 		metrics.Passed = false
+	} else if task.Scoring.RequireDelegation && metrics.Delegations == 0 {
+		metrics.Passed = false
+		metrics.FailureType = FailureAgent
+		metrics.FailureReason = "task required agent delegation, but no delegation events occurred"
+	} else if task.Scoring.DisallowUnexpectedFiles && metrics.UnexpectedFilesModified {
+		metrics.Passed = false
+		metrics.FailureType = FailureAgent
+		metrics.FailureReason = "agent modified unexpected files outside the authorized target set"
 	} else if !vResult.Passed {
 		metrics.Passed = false
 		if metrics.FailureType == "" {
@@ -329,10 +348,14 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 				metrics.FailureReason = "agent produced no file modifications"
 			} else {
 				metrics.FailureType = FailureTest
-				metrics.FailureReason = redact.Scrub(vResult.Error)
-				if metrics.FailureReason == "" && vResult.Stderr != "" {
-					metrics.FailureReason = redact.Scrub(vResult.Stderr)
+				reason := strings.TrimSpace(vResult.Stderr)
+				if reason == "" {
+					reason = extractTestFailureReason(vResult.Stdout)
 				}
+				if reason == "" {
+					reason = vResult.Error
+				}
+				metrics.FailureReason = redact.Scrub(reason)
 			}
 		}
 	} else {
@@ -393,4 +416,26 @@ func resolveGitCommit() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func extractTestFailureReason(stdout string) string {
+	lines := strings.Split(stdout, "\n")
+	var failLines []string
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if strings.HasPrefix(trimmed, "--- FAIL:") || strings.HasPrefix(trimmed, "FAIL\t") || strings.Contains(trimmed, "_test.go:") {
+			failLines = append(failLines, trimmed)
+		}
+	}
+	if len(failLines) > 0 {
+		if len(failLines) > 5 {
+			failLines = failLines[:5]
+		}
+		return strings.Join(failLines, "\n")
+	}
+	trimmed := strings.TrimSpace(stdout)
+	if len(trimmed) > 300 {
+		return trimmed[len(trimmed)-300:]
+	}
+	return trimmed
 }
