@@ -69,6 +69,17 @@ func NewRunner(opts RunnerOptions) *Runner {
 	if opts.RuntimeFactory == nil {
 		opts.RuntimeFactory = runtime.NewFromConfig
 	}
+
+	// Ensure project environment directory is preserved for credential resolution
+	// across isolated task workspaces.
+	if config.ProjectEnvDir() == "" {
+		if opts.BaseConfig != nil && opts.BaseConfig.Workspace.Root != "" {
+			config.SetProjectEnvDir(opts.BaseConfig.Workspace.Root)
+		} else if wd, err := os.Getwd(); err == nil {
+			config.SetProjectEnvDir(wd)
+		}
+	}
+
 	return &Runner{
 		opts: opts,
 		wsManager: NewWorkspaceManager(
@@ -77,6 +88,27 @@ func NewRunner(opts RunnerOptions) *Runner {
 			opts.KeepFailed,
 		),
 	}
+}
+
+// Preflight verifies that the configured model provider can be resolved and
+// has necessary credentials before executing any benchmark tasks. It uses
+// cfg.ResolveProvider so credential resolution is identical to runtime execution.
+func (r *Runner) Preflight(cfg *config.Config) (*config.ResolvedProvider, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("preflight: base configuration is nil")
+	}
+	resolved, err := cfg.ResolveProvider(cfg.Model.Provider, cfg.Model.Name)
+	if err != nil {
+		return nil, fmt.Errorf("preflight provider resolution failed: %w", err)
+	}
+	if resolved.AuthRequired && resolved.APIKey == "" {
+		label := resolved.Label
+		if label == "" {
+			label = providers.DisplayName(resolved.ID)
+		}
+		return nil, fmt.Errorf("%s requires an API key - set %s in your environment or .env file and restart Forcefield", label, resolved.AuthEnvVar)
+	}
+	return &resolved, nil
 }
 
 // Run executes the discovered benchmark tasks and produces evaluation reports.
@@ -98,6 +130,20 @@ func (r *Runner) Run(ctx context.Context) (*RunResult, error) {
 			return nil, fmt.Errorf("load base config: %w", err)
 		}
 		baseCfg = loaded
+	}
+
+	// Ensure project environment directory is preserved for credential resolution.
+	if config.ProjectEnvDir() == "" {
+		if baseCfg.Workspace.Root != "" {
+			config.SetProjectEnvDir(baseCfg.Workspace.Root)
+		} else if wd, err := os.Getwd(); err == nil {
+			config.SetProjectEnvDir(wd)
+		}
+	}
+
+	// Preflight provider configuration and credentials using the unified provider resolver.
+	if _, err := r.Preflight(baseCfg); err != nil {
+		return nil, fmt.Errorf("preflight check failed: %w", err)
 	}
 
 	runID := fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102-150405"))
@@ -247,7 +293,7 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 		metrics.Status = "error"
 		metrics.Passed = false
 		metrics.FailureType = FailureInfra
-		metrics.FailureReason = fmt.Sprintf("stream chat invocation failed: %v", streamErr)
+		metrics.FailureReason = redact.Scrub(fmt.Sprintf("stream chat invocation failed: %v", streamErr))
 	} else {
 		for ev := range streamEvents {
 			if ev.TaskState != nil && ev.TaskState.Iteration > metrics.AgentTurns {
@@ -285,7 +331,7 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 				metrics.Status = "error"
 				metrics.FailureType = FailureInfra
 				if ev.Err != nil {
-					metrics.FailureReason = ev.Err.Error()
+					metrics.FailureReason = redact.Scrub(ev.Err.Error())
 				}
 			}
 		}

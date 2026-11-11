@@ -26,10 +26,23 @@ type JSONReport struct {
 	Tasks             []TaskMetrics `json:"tasks"`
 }
 
+// scrubMetrics ensures no credentials leak into structured reports.
+func scrubMetrics(m TaskMetrics) TaskMetrics {
+	m.FailureReason = redact.Scrub(m.FailureReason)
+	m.Validation.Stderr = redact.Scrub(m.Validation.Stderr)
+	m.Validation.Stdout = redact.Scrub(m.Validation.Stdout)
+	return m
+}
+
 // SaveJSONReport writes the benchmark results to a formatted JSON file.
 func SaveJSONReport(res *RunResult, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
+	}
+
+	tasks := make([]TaskMetrics, len(res.Tasks))
+	for i, t := range res.Tasks {
+		tasks[i] = scrubMetrics(t)
 	}
 
 	report := JSONReport{
@@ -41,7 +54,7 @@ func SaveJSONReport(res *RunResult, path string) error {
 		Provider:          res.Provider,
 		Model:             res.Model,
 		Summary:           res.Summary,
-		Tasks:             res.Tasks,
+		Tasks:             tasks,
 	}
 
 	data, err := json.MarshalIndent(report, "", "  ")

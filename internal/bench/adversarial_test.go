@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"forcefield/internal/config"
 	"forcefield/internal/providers"
+	"forcefield/internal/redact"
 	"forcefield/internal/runtime"
 	"forcefield/internal/task"
 )
@@ -371,5 +373,166 @@ scoring:
 	}
 	if !res.Tasks[0].UnexpectedFilesModified {
 		t.Fatal("expected UnexpectedFilesModified to be true")
+	}
+}
+
+// TestBenchmark_ProjectDotEnvCredentialResolution verifies that:
+// 1. Benchmark preflight and provider resolution recognize credentials in project .env.
+// 2. Isolated task workspaces NEVER contain .env, API keys, or secrets.
+// 3. Provider runtime initialization succeeds in isolated workspace using project context.
+// 4. Preflight fails closed when required credentials are missing.
+func TestBenchmark_ProjectDotEnvCredentialResolution(t *testing.T) {
+	// 1. Setup simulated project context directory with a .env containing credentials.
+	projectDir := t.TempDir()
+	envKey := "BENCHMARK_MOCK_AUTH_KEY"
+	secretVal := "secret-nim-benchmark-token-42"
+	envContent := fmt.Sprintf("%s=%s\n", envKey, secretVal)
+	if err := os.WriteFile(filepath.Join(projectDir, ".env"), []byte(envContent), 0600); err != nil {
+		t.Fatalf("write project .env: %v", err)
+	}
+
+	// Explicitly set project environment directory.
+	config.SetProjectEnvDir(projectDir)
+	t.Cleanup(func() { config.SetProjectEnvDir("") })
+
+	// Ensure process environment does not have the key.
+	t.Setenv(envKey, "")
+
+	// 2. Build mock server and base configuration requiring this auth key.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	baseCfg := &config.Config{
+		Model: config.Model{
+			Provider: "nim-mock",
+			Name:     "test-model",
+		},
+		Providers: map[string]config.ProviderConfig{
+			"nim-mock": {
+				Type:      "openai-compatible",
+				BaseURL:   server.URL,
+				APIKeyEnv: envKey,
+			},
+		},
+	}
+
+	runner := NewRunner(RunnerOptions{
+		BaseConfig: baseCfg,
+	})
+
+	// 3. Preflight check: must successfully resolve provider and key from project .env.
+	resolved, err := runner.Preflight(baseCfg)
+	if err != nil {
+		t.Fatalf("preflight failed: %v", err)
+	}
+	if resolved.APIKey != secretVal {
+		t.Fatalf("preflight resolved key = %q, want %q", resolved.APIKey, secretVal)
+	}
+	if !strings.Contains(resolved.APIKeySource, ".env") {
+		t.Fatalf("preflight apiKeySource = %q, want it to indicate .env", resolved.APIKeySource)
+	}
+
+	// 4. Verify workspace isolation: task workspace prepared in temp dir MUST NOT contain .env.
+	task := &Task{
+		ID:           "SEC-001",
+		Name:         "Credential Isolation Task",
+		Category:     CategorySimpleCodeModifications,
+		Difficulty:   DifficultyEasy,
+		Instructions: "Inspect files",
+		Validation:   ValidationSpec{Commands: [][]string{{"go", "version"}}},
+	}
+	ws, err := runner.wsManager.Prepare(context.Background(), task, "test-run")
+	if err != nil {
+		t.Fatalf("prepare workspace: %v", err)
+	}
+	defer func() { _ = runner.wsManager.Cleanup(ws, false) }()
+
+	wsDotEnv := filepath.Join(ws.Dir, ".env")
+	if _, err := os.Stat(wsDotEnv); !os.IsNotExist(err) {
+		t.Fatalf("security violation: isolated task workspace contains .env at %s", wsDotEnv)
+	}
+
+	// 5. Provider initialization check: task-scoped config in isolated workspace inherits
+	// credential resolution from project context without having .env in ws.Dir.
+	taskCfg := cloneConfig(baseCfg)
+	taskCfg.Workspace.Root = ws.Dir
+	taskCfg.Workspace.Mode = config.WorkspaceStrict
+
+	rt, err := runtime.NewFromConfig(taskCfg)
+	if err != nil {
+		t.Fatalf("runtime initialization in isolated workspace failed: %v", err)
+	}
+	defer func() { _ = rt.Close() }()
+
+	// 6. Negative preflight test: remove project .env and ensure preflight fails closed with guidance.
+	emptyDir := t.TempDir()
+	config.SetProjectEnvDir(emptyDir)
+
+	_, err = runner.Preflight(baseCfg)
+	if err == nil {
+		t.Fatal("expected preflight to fail when credentials are missing, got nil")
+	}
+	if !strings.Contains(err.Error(), "requires an API key") || !strings.Contains(err.Error(), envKey) {
+		t.Fatalf("preflight error = %v, want guidance mentioning %s", err, envKey)
+	}
+}
+
+// TestBenchmark_ReportsNeverLeakCredentials verifies that credentials
+// are scrubbed from JSON and Markdown reports.
+func TestBenchmark_ReportsNeverLeakCredentials(t *testing.T) {
+	secretVal := "super-secret-api-key-xyz-987"
+	redact.AddSecret(secretVal)
+
+	res := &RunResult{
+		RunID:             "leak-test-run",
+		Timestamp:         time.Now().UTC().Format(time.RFC3339),
+		ForcefieldVersion: "v1.6",
+		Provider:          "test-provider",
+		Model:             "test-model",
+		Tasks: []TaskMetrics{
+			{
+				TaskID:        "LEAK-001",
+				Name:          "Leak Test",
+				Category:      CategoryDebugging,
+				Difficulty:    DifficultyEasy,
+				Passed:        false,
+				FailureType:   FailureInfra,
+				FailureReason: fmt.Sprintf("failed connecting with key %s: unauthorized", secretVal),
+				Validation: ValidationResult{
+					Stderr: fmt.Sprintf("diagnostic dump: bearer %s failed", secretVal),
+					Stdout: fmt.Sprintf("echo %s", secretVal),
+				},
+			},
+		},
+	}
+
+	resDir := t.TempDir()
+	jsonPath := filepath.Join(resDir, "report.json")
+	mdPath := filepath.Join(resDir, "report.md")
+
+	if err := SaveJSONReport(res, jsonPath); err != nil {
+		t.Fatalf("SaveJSONReport: %v", err)
+	}
+	if err := SaveMarkdownReport(res, mdPath); err != nil {
+		t.Fatalf("SaveMarkdownReport: %v", err)
+	}
+
+	jsonData, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatalf("read json report: %v", err)
+	}
+	if strings.Contains(string(jsonData), secretVal) {
+		t.Fatalf("leak detected in JSON report: contains secret credential %q", secretVal)
+	}
+
+	mdData, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatalf("read md report: %v", err)
+	}
+	if strings.Contains(string(mdData), secretVal) {
+		t.Fatalf("leak detected in Markdown report: contains secret credential %q", secretVal)
 	}
 }

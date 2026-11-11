@@ -118,3 +118,65 @@ func TestLoadFailsOnMalformedDotEnv(t *testing.T) {
 		t.Errorf("error = %v, want it to name the .env file", err)
 	}
 }
+
+func TestResolveEnvValueReadsProjectEnvDir(t *testing.T) {
+	isolateHome(t)
+
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, ".env"), []byte("NVIDIA_API_KEY=nvapi-from-project-dir\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	SetProjectEnvDir(projectDir)
+	t.Cleanup(func() { SetProjectEnvDir("") })
+
+	// Change to another directory that has no .env
+	otherDir := t.TempDir()
+	t.Chdir(otherDir)
+	t.Setenv(apiKeyName, "")
+
+	key, source, err := ResolveEnvValue(apiKeyName)
+	if err != nil {
+		t.Fatalf("ResolveEnvValue error = %v", err)
+	}
+	if key != "nvapi-from-project-dir" {
+		t.Errorf("key = %q, want nvapi-from-project-dir", key)
+	}
+	if !strings.Contains(source, projectDir) {
+		t.Errorf("source = %q, want it to contain %s", source, projectDir)
+	}
+}
+
+func TestResolveEnvValueUpwardDiscovery(t *testing.T) {
+	isolateHome(t)
+
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, ".env"), []byte("NVIDIA_API_KEY=nvapi-from-repo-root\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repoDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	nested := filepath.Join(repoDir, "sub1", "sub2")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	SetProjectEnvDir("")
+	t.Cleanup(func() { SetProjectEnvDir("") })
+
+	t.Chdir(nested)
+	t.Setenv(apiKeyName, "")
+
+	key, source, err := ResolveEnvValue(apiKeyName)
+	if err != nil {
+		t.Fatalf("ResolveEnvValue error = %v", err)
+	}
+	if key != "nvapi-from-repo-root" {
+		t.Errorf("key = %q, want nvapi-from-repo-root", key)
+	}
+	if !strings.Contains(source, repoDir) {
+		t.Errorf("source = %q, want it to contain %s", source, repoDir)
+	}
+}

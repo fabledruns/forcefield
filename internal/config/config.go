@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -464,6 +465,53 @@ func Load() (*Config, error) {
 // per-provider keys are resolved through ResolveProvider instead.
 const apiKeyName = "NVIDIA_API_KEY"
 
+var (
+	projectEnvDirMu sync.RWMutex
+	projectEnvDir   string
+)
+
+// SetProjectEnvDir configures the directory used to locate the project's .env file.
+// When set, ResolveEnvValue prioritizes .env in this directory (and upward search from it)
+// before falling back to the working directory, repository root, and ~/.forcefield/.env.
+func SetProjectEnvDir(dir string) {
+	projectEnvDirMu.Lock()
+	defer projectEnvDirMu.Unlock()
+	projectEnvDir = dir
+}
+
+// ProjectEnvDir returns the currently configured project environment directory, or empty if unset.
+func ProjectEnvDir() string {
+	projectEnvDirMu.RLock()
+	defer projectEnvDirMu.RUnlock()
+	return projectEnvDir
+}
+
+// findUpwardDotEnv searches upward starting from startDir for a .env file,
+// terminating when a .git marker or the filesystem root is reached.
+func findUpwardDotEnv(startDir string) string {
+	dir, err := filepath.Abs(startDir)
+	if err != nil {
+		return ""
+	}
+	for {
+		candidate := filepath.Join(dir, ".env")
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			return candidate
+		}
+		// Stop if we see a .git directory or file (repo root)
+		gitMarker := filepath.Join(dir, ".git")
+		if _, err := os.Stat(gitMarker); err == nil {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
 // ResolveEnvValue returns a credential value (env, then project .env, then
 // global .env). Found values stay in-memory only, never enter os.Environ,
 // so shell children cannot inherit them. Malformed .env fails closed.
@@ -479,11 +527,42 @@ func ResolveEnvValue(name string) (value, source string, err error) {
 		return v, "environment", nil
 	}
 
-	// Project-local .env wins over the global one; the environment wins
-	// over both.
-	candidates := []string{filepath.Join(".", ".env")}
+	var rawCandidates []string
+
+	// 1. Explicit project environment directory (e.g. from runner/CLI context)
+	if projDir := ProjectEnvDir(); projDir != "" {
+		rawCandidates = append(rawCandidates, filepath.Join(projDir, ".env"))
+		if upward := findUpwardDotEnv(projDir); upward != "" {
+			rawCandidates = append(rawCandidates, upward)
+		}
+	}
+
+	// 2. Direct working directory .env
+	rawCandidates = append(rawCandidates, filepath.Join(".", ".env"))
+
+	// 3. Upward search from working directory to repository root
+	if upward := findUpwardDotEnv("."); upward != "" {
+		rawCandidates = append(rawCandidates, upward)
+	}
+
+	// 4. Global .env fallback
 	if home, homeErr := os.UserHomeDir(); homeErr == nil {
-		candidates = append(candidates, filepath.Join(home, ".forcefield", ".env"))
+		rawCandidates = append(rawCandidates, filepath.Join(home, ".forcefield", ".env"))
+	}
+
+	// Deduplicate candidates preserving priority order
+	seen := make(map[string]bool)
+	var candidates []string
+	for _, c := range rawCandidates {
+		absPath, err := filepath.Abs(c)
+		if err != nil {
+			absPath = filepath.Clean(c)
+		}
+		key := strings.ToLower(filepath.Clean(absPath))
+		if !seen[key] {
+			seen[key] = true
+			candidates = append(candidates, c)
+		}
 	}
 
 	for _, path := range candidates {
