@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -227,6 +228,9 @@ func (r *Runtime) SetModel(name string) error {
 	if resolved, rerr := cfgCopy.ResolveProvider(cfgCopy.Model.Provider, cfgCopy.Model.Name); rerr == nil {
 		authReq, authEnv = resolved.AuthRequired, resolved.AuthEnvVar
 	}
+	if lap, ok := provider.(interface{ SetLifecycleContext(context.Context) }); ok {
+		lap.SetLifecycleContext(r.LifecycleContext())
+	}
 	r.mu.Lock()
 	r.cfg = &cfgCopy
 	r.provider = provider
@@ -283,6 +287,9 @@ func (r *Runtime) SetProvider(name string) error {
 	var authEnv string
 	if resolved, rerr := cfgCopy.ResolveProvider(cfgCopy.Model.Provider, cfgCopy.Model.Name); rerr == nil {
 		authReq, authEnv = resolved.AuthRequired, resolved.AuthEnvVar
+	}
+	if lap, ok := provider.(interface{ SetLifecycleContext(context.Context) }); ok {
+		lap.SetLifecycleContext(r.LifecycleContext())
 	}
 	r.mu.Lock()
 	r.cfg = &cfgCopy

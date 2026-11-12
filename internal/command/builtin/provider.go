@@ -16,8 +16,8 @@ func NewProvider() *Provider { return &Provider{} }
 
 func (Provider) Name() string        { return "provider" }
 func (Provider) Aliases() []string   { return nil }
-func (Provider) Description() string { return "Show or switch the active model provider." }
-func (Provider) Usage() string       { return "/provider [name]" }
+func (Provider) Description() string { return "Show, switch, or reload the active model provider." }
+func (Provider) Usage() string       { return "/provider [name|reload]" }
 
 func (Provider) Execute(ctx command.Context, args []string) error {
 	if len(args) == 0 {
@@ -29,6 +29,14 @@ func (Provider) Execute(ctx command.Context, args []string) error {
 	}
 
 	name := args[0]
+	if name == "reload" {
+		if err := ctx.ReloadProvider(); err != nil {
+			return fmt.Errorf("reload provider: %w", err)
+		}
+		ctx.Println("✓ Provider reloaded: %s", providers.DisplayName(ctx.Provider()))
+		return nil
+	}
+
 	if err := ctx.SetProvider(name); err != nil {
 		return fmt.Errorf("switch provider: %w", err)
 	}

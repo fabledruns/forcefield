@@ -34,12 +34,10 @@ var Registry = buildRegistry()
 
 func buildRegistry() []ProviderInfo {
 	out := make([]ProviderInfo, 0, len(Catalog))
-	capsByType := make(map[string]Capabilities)
 	for _, preset := range Catalog {
-		caps, cached := capsByType[preset.Type]
-		if !cached {
+		caps := preset.Capabilities
+		if caps == (Capabilities{}) {
 			caps = CapabilitiesFor(preset.Type)
-			capsByType[preset.Type] = caps
 		}
 		models := make([]ModelInfo, len(preset.Models))
 		copy(models, preset.Models)

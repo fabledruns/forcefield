@@ -181,6 +181,14 @@ func (m *model) SetProvider(name string) error {
 	return nil
 }
 
+// ReloadProvider triggers credential/configuration reloading on the active provider.
+func (m *model) ReloadProvider() error {
+	if m.runtime == nil {
+		return nil
+	}
+	return m.runtime.ReloadProvider()
+}
+
 // Agent reports the currently active agent name.
 func (m *model) Agent() string {
 	if m.runtime == nil {

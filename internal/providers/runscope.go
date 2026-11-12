@@ -176,22 +176,22 @@ func (v *VertexProvider) CloneForRun() (ModelProvider, error) {
 		return nil, fmt.Errorf("cannot clone a nil VertexProvider")
 	}
 	return &VertexProvider{
-		spec:      v.spec,
-		client:    v.client,
-		retry:     v.retry,
-		gate:      newRequestGate(),
-		tokenFunc: v.tokenFunc,
+		spec:         v.spec,
+		client:       v.client,
+		retry:        v.retry,
+		gate:         newRequestGate(),
+		lifecycleCtx: v.lifecycleCtx,
+		tokenFunc:    v.tokenFunc,
 	}, nil
 }
 
-// CloneForRun clones the Bedrock transport per run. The SDK client seam
-// builds a fresh SDK client per request, so sharing the seam preserves
-// behavior exactly; only the gate becomes per-run (Bedrock carries no
-// reasoning state).
+// CloneForRun clones the Bedrock transport per run. The shared cache pointer
+// preserves cached client handles across runs without copying mutexes.
 func (b *BedrockProvider) CloneForRun() (ModelProvider, error) {
 	if b == nil {
 		return nil, fmt.Errorf("cannot clone a nil BedrockProvider")
 	}
+	b.getCache()
 	c := *b
 	c.gate = newRequestGate()
 	return &c, nil

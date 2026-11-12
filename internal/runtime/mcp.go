@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -212,25 +213,51 @@ func joinQuoted(names []string) string {
 // Job termination is synchronous and fast (group/job kill, no waits);
 // MCP teardown stays bounded internally (stdin EOF plus grace, then
 // escalating waits), so Close as a whole cannot hang shutdown.
+// Close gracefully shuts down the Runtime with a default 5-second drain timeout.
+// It stops accepting new requests, cancels active requests, waits for in-flight
+// operations to drain, and tears down MCP hosts, background jobs, and providers.
 func (r *Runtime) Close() error {
+	return r.CloseWithTimeout(5 * time.Second)
+}
+
+// CloseWithTimeout shuts down the Runtime, waiting up to drainTimeout for active
+// operations to finish. If the timeout expires before active requests drain,
+// CloseWithTimeout returns ErrShutdownTimeout without destroying active provider
+// resources out from under running requests. Teardown of resources is deferred
+// until active operations eventually complete.
+func (r *Runtime) CloseWithTimeout(drainTimeout time.Duration) error {
 	if r == nil {
 		return nil
 	}
-	r.closeBackgroundJobs()
-	r.mu.Lock()
-	host := r.mcpHost
-	r.mcpHost = nil
-	cfg := r.cfg
-	workspace := r.workspaceRoot
-	r.mu.Unlock()
-	if host == nil {
-		return nil
-	}
-	// Capture the final snapshot (including crashed servers) for doctor
-	// before teardown. Best-effort: shutdown stays bounded and a write
-	// failure must not fail Close.
-	_ = persistMCPStatus(host, workspace, cfg)
-	return host.Close()
+	return r.ensureTracker().closeWithTimeout(drainTimeout, func() error {
+		r.closeBackgroundJobs()
+		r.mu.Lock()
+		host := r.mcpHost
+		r.mcpHost = nil
+		cfg := r.cfg
+		workspace := r.workspaceRoot
+		prov := r.provider
+		r.mu.Unlock()
+
+		var closeErr error
+		if closer, ok := prov.(io.Closer); ok {
+			if err := closer.Close(); err != nil && closeErr == nil {
+				closeErr = err
+			}
+		}
+
+		if host == nil {
+			return closeErr
+		}
+		// Capture the final snapshot (including crashed servers) for doctor
+		// before teardown. Best-effort: shutdown stays bounded and a write
+		// failure must not fail Close.
+		_ = persistMCPStatus(host, workspace, cfg)
+		if err := host.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+		return closeErr
+	})
 }
 
 // MCP management (slash commands).

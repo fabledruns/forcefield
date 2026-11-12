@@ -3,6 +3,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -127,6 +128,10 @@ type Runtime struct {
 	// tracer records the local-only execution trace when enabled in
 	// config. Nil-safe: a nil or disabled tracer records nothing.
 	tracer *trace.Tracer
+
+	// tracker coordinates the operational request lifecycle and graceful
+	// shutdown drain sequence.
+	tracker *requestTracker
 }
 
 func New() (*Runtime, error) {
@@ -358,6 +363,7 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 		workspaceRoot:       policy.Workspace,
 		workspaceCwd:        cwd,
 		tracer:              trace.New(cfg.Tracing.Enabled, cfg.Tracing.Dir),
+		tracker:             newRequestTracker(),
 	}
 	r.agent = r.buildAgent(def)
 	// Scope load_skill to the active agent's skill set. The closures read
@@ -373,6 +379,9 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 		orch.parent = r
 		r.scheduler.askSerial = orch.childAskSerial()
 	}
+	if lap, ok := r.provider.(interface{ SetLifecycleContext(context.Context) }); ok {
+		lap.SetLifecycleContext(r.LifecycleContext())
+	}
 	r.refreshAuthState()
 	r.applyReasoning()
 
@@ -386,4 +395,69 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 	}
 	perfmark.Event("stage-agents")
 	return r, nil
+}
+
+func (r *Runtime) ensureTracker() *requestTracker {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tracker == nil {
+		r.tracker = newRequestTracker()
+	}
+	return r.tracker
+}
+
+// LifecycleContext returns the session-scoped context that is cancelled only
+// when the Runtime is closed.
+func (r *Runtime) LifecycleContext() context.Context {
+	if r == nil {
+		return context.Background()
+	}
+	return r.ensureTracker().lifecycleContext()
+}
+
+// IsAccepting reports whether the runtime is actively accepting new requests.
+func (r *Runtime) IsAccepting() bool {
+	if r == nil {
+		return false
+	}
+	return r.ensureTracker().isAccepting()
+}
+
+// ReloadableProvider is an interface for providers that support runtime
+// credential and configuration reloading (e.g. Bedrock).
+type ReloadableProvider interface {
+	Reload()
+}
+
+// InvalidatorProvider is an interface for providers that support cache invalidation (e.g. Vertex).
+type InvalidatorProvider interface {
+	Invalidate()
+}
+
+// ReloadProvider triggers a credential and configuration reload on the active provider,
+// clearing authentication failure latches and incrementing configuration generations.
+func (r *Runtime) ReloadProvider() error {
+	if r == nil {
+		return errors.New("runtime is nil")
+	}
+	r.mu.RLock()
+	prov := r.provider
+	r.mu.RUnlock()
+
+	if prov == nil {
+		return errors.New("no active provider")
+	}
+
+	if rp, ok := prov.(ReloadableProvider); ok {
+		rp.Reload()
+		return nil
+	}
+	if ip, ok := prov.(InvalidatorProvider); ok {
+		ip.Invalidate()
+		return nil
+	}
+	return nil
 }

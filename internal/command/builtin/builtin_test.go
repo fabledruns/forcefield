@@ -109,6 +109,10 @@ func (f *fakeContext) SetProvider(name string) error {
 	return nil
 }
 
+func (f *fakeContext) ReloadProvider() error {
+	return nil
+}
+
 func (f *fakeContext) OpenSessionPicker(sessions []session.Session) {
 	f.pickedSessions = sessions
 }
@@ -383,6 +387,16 @@ func TestProvider_WithArgSwitches(t *testing.T) {
 	}
 	if ctx.provider != "lmstudio" {
 		t.Fatalf("ctx.provider = %q, want %q", ctx.provider, "lmstudio")
+	}
+}
+
+func TestProvider_Reload(t *testing.T) {
+	ctx := &fakeContext{provider: "bedrock"}
+	if err := NewProvider().Execute(ctx, []string{"reload"}); err != nil {
+		t.Fatalf("Provider.Execute(reload) error: %v", err)
+	}
+	if len(ctx.lines) == 0 || !strings.Contains(ctx.lines[0], "reloaded") {
+		t.Fatalf("expected reload confirmation message, got: %v", ctx.lines)
 	}
 }
 
