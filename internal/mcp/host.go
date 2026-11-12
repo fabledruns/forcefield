@@ -492,6 +492,7 @@ func (s *server) resolveDir(workspace string) (string, error) {
 
 // isPathSpell reports whether cmd names a path (absolute or containing a
 // separator) rather than a bare executable name for PATH lookup.
+// Diabolical function name dawg.
 func isPathSpell(cmd string) bool {
 	if filepath.IsAbs(cmd) {
 		return true
