@@ -24,6 +24,19 @@ import (
 // with `gcloud auth application-default login`.
 const vertexScope = "https://www.googleapis.com/auth/cloud-platform"
 
+// ErrADCAttemptSuperseded indicates an in-flight ADC resolution was superseded by Invalidate().
+var ErrADCAttemptSuperseded = errors.New("vertex ADC discovery superseded by invalidation")
+
+type adcAttempt struct {
+	gen        uint64
+	done       chan struct{}
+	cancel     context.CancelFunc
+	ts         oauth2.TokenSource
+	err        error
+	superseded bool
+	completed  bool
+}
+
 // VertexProvider talks to Google Cloud Vertex AI's Generative AI API
 // (GenerateContent / streamGenerateContent) using Application Default
 // Credentials. A dedicated adapter is warranted: unlike the Gemini
@@ -36,36 +49,135 @@ const vertexScope = "https://www.googleapis.com/auth/cloud-platform"
 // package; only endpoint construction, credentials, and error wording
 // are Vertex-specific.
 type VertexProvider struct {
-	spec   Spec
-	client *http.Client
-	retry  retryPolicy
-	gate   *requestGate
-
-	reasoning ReasoningConfig
+	spec         Spec
+	client       *http.Client
+	retry        retryPolicy
+	gate         *requestGate
+	reasoning    ReasoningConfig
+	lifecycleCtx context.Context
 
 	// tokenFunc overrides ADC token resolution. It is nil in production
 	// and set by tests to avoid touching real credentials.
 	tokenFunc func(ctx context.Context) (string, error)
 
-	mu sync.Mutex
-	ts oauth2.TokenSource
+	onADCAttemptJoined func(gen uint64) // Test seam
+
+	mu        sync.Mutex
+	adcGen    uint64
+	activeADC *adcAttempt
+	ts        oauth2.TokenSource
 }
 
 // NewVertexProvider builds a provider from a resolved spec. The regional
 // endpoint comes from config resolution (derived from location unless an
 // explicit base_url overrides it); the resource path is appended here.
 func NewVertexProvider(spec Spec) *VertexProvider {
+	return NewVertexProviderWithLifecycle(spec, context.Background())
+}
+
+// NewVertexProviderWithLifecycle builds a provider bound to a session lifecycle context.
+func NewVertexProviderWithLifecycle(spec Spec, lifecycleCtx context.Context) *VertexProvider {
+	if lifecycleCtx == nil {
+		lifecycleCtx = context.Background()
+	}
 	spec.BaseURL = strings.TrimRight(spec.BaseURL, "/")
 	client := newDefaultClient()
 	if spec.TimeoutSeconds > 0 {
 		client = clientForTimeout(spec.TimeoutSeconds)
 	}
 	return &VertexProvider{
-		spec:   spec,
-		client: client,
-		retry:  defaultRetryPolicy,
-		gate:   newRequestGate(),
+		spec:         spec,
+		client:       client,
+		retry:        defaultRetryPolicy,
+		gate:         newRequestGate(),
+		lifecycleCtx: lifecycleCtx,
 	}
+}
+
+func (v *VertexProvider) getLifecycleCtx() context.Context {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.lifecycleCtx == nil {
+		v.lifecycleCtx = context.Background()
+	}
+	return v.lifecycleCtx
+}
+
+// SetLifecycleContext configures the session lifecycle context for ADC token resolution.
+func (v *VertexProvider) SetLifecycleContext(ctx context.Context) {
+	if v == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.lifecycleCtx = ctx
+}
+
+// SetOnADCAttemptJoined configures an internal synchronization hook for tests.
+func (v *VertexProvider) SetOnADCAttemptJoined(hook func(gen uint64)) {
+	if v == nil {
+		return
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.onADCAttemptJoined = hook
+}
+
+// Invalidate invalidates any cached token source and supersedes in-flight ADC resolution.
+func (v *VertexProvider) Invalidate() {
+	if v == nil {
+		return
+	}
+	v.mu.Lock()
+	v.adcGen++
+	v.ts = nil
+
+	var attemptToCancel context.CancelFunc
+	if v.activeADC != nil {
+		attempt := v.activeADC
+		v.activeADC = nil
+		attempt.superseded = true
+		attempt.err = ErrADCAttemptSuperseded
+		close(attempt.done)
+		attemptToCancel = attempt.cancel
+	}
+	v.mu.Unlock()
+
+	if attemptToCancel != nil {
+		attemptToCancel()
+	}
+}
+
+// Close closes the provider, invalidating cached credentials.
+func (v *VertexProvider) Close() error {
+	if v == nil {
+		return nil
+	}
+	v.Invalidate()
+	return nil
+}
+
+// ReadyTokenSource returns the currently cached TokenSource (for testing).
+func (v *VertexProvider) ReadyTokenSource() oauth2.TokenSource {
+	if v == nil {
+		return nil
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.ts
+}
+
+// ADCGen returns the current ADC generation counter (for testing).
+func (v *VertexProvider) ADCGen() uint64 {
+	if v == nil {
+		return 0
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.adcGen
 }
 
 // displayName is the service name used in error messages.
@@ -159,27 +271,116 @@ func (v *VertexProvider) token(ctx context.Context) (string, error) {
 		}
 		return tok, nil
 	}
-	v.mu.Lock()
-	ts := v.ts
-	v.mu.Unlock()
-	if ts == nil {
-		creds, err := v.adcCredentials(ctx)
-		if err != nil {
-			return "", err
-		}
-		ts = creds.TokenSource
-		v.mu.Lock()
-		v.ts = ts
-		v.mu.Unlock()
+
+	ts, err := v.getOrResolveTokenSource(ctx)
+	if err != nil {
+		return "", err
 	}
+
 	tok, err := ts.Token()
 	if err != nil {
+		v.Invalidate()
 		return "", v.authError(err)
 	}
 	if tok == nil || !IsValidAPIKey(tok.AccessToken) {
+		v.Invalidate()
 		return "", v.authError(errors.New("resolved token is missing or invalid"))
 	}
 	return tok.AccessToken, nil
+}
+
+func (v *VertexProvider) getOrResolveTokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	for {
+		v.mu.Lock()
+		lifecycle := v.lifecycleCtx
+		if lifecycle == nil {
+			lifecycle = context.Background()
+			v.lifecycleCtx = lifecycle
+		}
+		// Linearization Stage 1: Fast-path shutdown check
+		if err := lifecycle.Err(); err != nil {
+			v.mu.Unlock()
+			return nil, err
+		}
+		if v.ts != nil {
+			ts := v.ts
+			v.mu.Unlock()
+			return ts, nil
+		}
+		if v.activeADC == nil {
+			v.adcGen++
+			workerCtx, cancel := context.WithCancel(lifecycle)
+			v.activeADC = &adcAttempt{
+				gen:    v.adcGen,
+				done:   make(chan struct{}),
+				cancel: cancel,
+			}
+			go v.runADCResolution(v.activeADC, workerCtx)
+		}
+		attempt := v.activeADC
+		gen := attempt.gen
+		hook := v.onADCAttemptJoined
+		v.mu.Unlock()
+
+		if hook != nil {
+			hook(gen)
+		}
+
+		select {
+		case <-attempt.done:
+			if err := lifecycle.Err(); err != nil {
+				return nil, err
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if errors.Is(attempt.err, ErrADCAttemptSuperseded) {
+				if err := lifecycle.Err(); err != nil {
+					return nil, err
+				}
+				continue // Retry in next generation
+			}
+			if attempt.err != nil {
+				return nil, attempt.err
+			}
+			return attempt.ts, nil
+		case <-ctx.Done():
+			// Individual caller cancelled or timed out!
+			// Returns immediately without poisoning the shared resolution
+			return nil, ctx.Err()
+		case <-lifecycle.Done():
+			return nil, lifecycle.Err()
+		}
+	}
+}
+
+func (v *VertexProvider) runADCResolution(attempt *adcAttempt, workerCtx context.Context) {
+	defer attempt.cancel()
+
+	// Pass session lifecycle context to ensure long-lived token refresher retention
+	creds, err := v.adcCredentials(v.getLifecycleCtx())
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if attempt.superseded || v.adcGen != attempt.gen || v.activeADC != attempt {
+		// Stale worker discard
+		return
+	}
+
+	attempt.completed = true
+	if err == nil && creds != nil {
+		attempt.ts = creds.TokenSource
+		attempt.err = nil
+		v.ts = creds.TokenSource
+	} else {
+		attempt.ts = nil
+		attempt.err = err
+		v.ts = nil
+	}
+	v.activeADC = nil
+
+	close(attempt.done)
 }
 
 // adcCredentials resolves credentials following the documented ADC chain:

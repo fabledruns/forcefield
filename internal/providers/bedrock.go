@@ -8,13 +8,17 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"forcefield/internal/tools"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brtdoc "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
@@ -54,6 +58,109 @@ func (s sdkBedrockClient) ConverseStream(ctx context.Context, params *bedrockrun
 	return out.GetStream(), nil
 }
 
+// ErrAttemptSuperseded indicates an in-flight client initialization attempt was
+// superseded by an explicit Invalidate() call.
+var ErrAttemptSuperseded = errors.New("bedrock client initialization superseded by invalidation")
+
+type initAttempt struct {
+	gen        uint64
+	done       chan struct{}
+	cancel     context.CancelFunc
+	client     bedrockConverseClient
+	tr         *http.Transport
+	err        error
+	superseded bool
+	completed  bool
+}
+
+// AuthSnapshot captures non-secret, observable metadata about the active AWS
+// authentication environment to support secret-safe automatic recovery.
+type AuthSnapshot struct {
+	AccessKeyID string
+	Profile     string
+	Region      string
+	CredsMTime  time.Time
+	ConfigMTime time.Time
+	SSOMTime    time.Time
+	ConfigGen   uint64
+}
+
+// Equal returns true if two AuthSnapshot values have matching metadata.
+func (s AuthSnapshot) Equal(other AuthSnapshot) bool {
+	return s.AccessKeyID == other.AccessKeyID &&
+		s.Profile == other.Profile &&
+		s.Region == other.Region &&
+		s.ConfigGen == other.ConfigGen &&
+		s.CredsMTime.Equal(other.CredsMTime) &&
+		s.ConfigMTime.Equal(other.ConfigMTime) &&
+		s.SSOMTime.Equal(other.SSOMTime)
+}
+
+type authFailedLatch struct {
+	latched  bool
+	err      error
+	snapshot AuthSnapshot
+}
+
+func (l *authFailedLatch) IsLatched(current AuthSnapshot) bool {
+	if l == nil || !l.latched {
+		return false
+	}
+	// If snapshot changed, automatically unlatch!
+	if !l.snapshot.Equal(current) {
+		l.latched = false
+		l.err = nil
+		return false
+	}
+	return true
+}
+
+func (l *authFailedLatch) Latch(err error, snap AuthSnapshot) {
+	if l == nil {
+		return
+	}
+	l.latched = true
+	l.err = err
+	l.snapshot = snap
+}
+
+func (l *authFailedLatch) Reset() {
+	if l == nil {
+		return
+	}
+	l.latched = false
+	l.err = nil
+	l.snapshot = AuthSnapshot{}
+}
+
+func (l *authFailedLatch) Err() error {
+	if l == nil {
+		return nil
+	}
+	return l.err
+}
+
+type bedrockClientCache struct {
+	mu              sync.Mutex
+	lifecycleCtx    context.Context
+	generation      uint64
+	active          *initAttempt
+	readyClient     bedrockConverseClient
+	tr              *http.Transport
+	authLatch       *authFailedLatch
+	configGen       uint64
+	onAttemptJoined func(gen uint64) // Test hook
+}
+
+func newBedrockClientCache(lifecycleCtx context.Context) *bedrockClientCache {
+	if lifecycleCtx == nil {
+		lifecycleCtx = context.Background()
+	}
+	return &bedrockClientCache{
+		lifecycleCtx: lifecycleCtx,
+	}
+}
+
 // BedrockProvider talks to Amazon Bedrock via the Converse API using the
 // maintained AWS SDK for Go v2. A dedicated adapter is warranted: request
 // signing (SigV4), the standard AWS credential chain, Converse message
@@ -69,10 +176,12 @@ type BedrockProvider struct {
 	spec  Spec
 	retry retryPolicy
 	gate  *requestGate
+	cache *bedrockClientCache
 
 	// newClient builds the SDK client. It is a seam so tests run without
 	// AWS credentials or network; production builds from the spec.
-	newClient func(ctx context.Context, spec Spec) (bedrockConverseClient, error)
+	newClient         func(ctx context.Context, spec Spec) (bedrockConverseClient, error)
+	newClientWithHTTP func(ctx context.Context, spec Spec, httpClient aws.HTTPClient) (bedrockConverseClient, error)
 }
 
 // NewBedrockProvider builds a provider from a resolved spec. Construction
@@ -80,12 +189,363 @@ type BedrockProvider struct {
 // built lazily per request so capability probes and picker listings work
 // without AWS configuration.
 func NewBedrockProvider(spec Spec) *BedrockProvider {
+	return NewBedrockProviderWithLifecycle(spec, context.Background())
+}
+
+// NewBedrockProviderWithLifecycle builds a provider bound to a session lifecycle context.
+func NewBedrockProviderWithLifecycle(spec Spec, lifecycleCtx context.Context) *BedrockProvider {
+	if lifecycleCtx == nil {
+		lifecycleCtx = context.Background()
+	}
 	return &BedrockProvider{
 		spec:      spec,
 		retry:     defaultRetryPolicy,
 		gate:      newRequestGate(),
+		cache:     newBedrockClientCache(lifecycleCtx),
 		newClient: defaultBedrockClient,
 	}
+}
+
+func (b *BedrockProvider) getCache() *bedrockClientCache {
+	if b == nil {
+		return nil
+	}
+	if b.cache == nil {
+		b.cache = newBedrockClientCache(context.Background())
+	}
+	return b.cache
+}
+
+// SetLifecycleContext configures the session lifecycle context for the client cache.
+func (b *BedrockProvider) SetLifecycleContext(ctx context.Context) {
+	if b == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c := b.getCache()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lifecycleCtx = ctx
+}
+
+// SetOnAttemptJoined configures an internal synchronization hook for tests.
+func (b *BedrockProvider) SetOnAttemptJoined(hook func(gen uint64)) {
+	if b == nil {
+		return
+	}
+	c := b.getCache()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onAttemptJoined = hook
+}
+
+// Generation returns the current generation counter of the cache (for testing).
+func (b *BedrockProvider) Generation() uint64 {
+	if b == nil || b.cache == nil {
+		return 0
+	}
+	b.cache.mu.Lock()
+	defer b.cache.mu.Unlock()
+	return b.cache.generation
+}
+
+// ReadyClient returns the currently cached client (for testing).
+func (b *BedrockProvider) ReadyClient() bedrockConverseClient {
+	if b == nil || b.cache == nil {
+		return nil
+	}
+	b.cache.mu.Lock()
+	defer b.cache.mu.Unlock()
+	return b.cache.readyClient
+}
+
+// RetainedTransport returns the retained HTTP transport handle (for testing).
+func (b *BedrockProvider) RetainedTransport() *http.Transport {
+	if b == nil || b.cache == nil {
+		return nil
+	}
+	b.cache.mu.Lock()
+	defer b.cache.mu.Unlock()
+	return b.cache.tr
+}
+
+// Invalidate invalidates the cached client and closes idle connections.
+func (b *BedrockProvider) Invalidate() {
+	if b == nil {
+		return
+	}
+	b.getCache().Invalidate()
+}
+
+// Close closes the provider, invalidating cached state and closing idle transport connections.
+func (b *BedrockProvider) Close() error {
+	if b == nil {
+		return nil
+	}
+	b.Invalidate()
+	return nil
+}
+
+// Reload triggers an explicit configuration reload, incrementing generation and resetting the auth latch.
+func (b *BedrockProvider) Reload() {
+	if b == nil {
+		return
+	}
+	c := b.getCache()
+	c.mu.Lock()
+	c.configGen++
+	if c.authLatch != nil {
+		c.authLatch.Reset()
+	}
+	c.mu.Unlock()
+	c.Invalidate()
+}
+
+func (c *bedrockClientCache) Invalidate() {
+	c.mu.Lock()
+	c.generation++      // Immediately supersedes any in-flight attempt
+	c.readyClient = nil // Clears cached client
+	oldTr := c.tr
+	c.tr = nil
+
+	var attemptToCancel context.CancelFunc
+	if c.active != nil {
+		attempt := c.active
+		c.active = nil
+		attempt.superseded = true
+		attempt.err = ErrAttemptSuperseded
+		close(attempt.done) // Immediately unblocks all waiters of this attempt!
+		attemptToCancel = attempt.cancel
+	}
+	c.mu.Unlock()
+
+	// Deterministically close idle TCP sockets on client retirement
+	if oldTr != nil {
+		oldTr.CloseIdleConnections()
+	}
+
+	// Cancel detached worker outside provider mutex to avoid lock inversion
+	if attemptToCancel != nil {
+		attemptToCancel()
+	}
+}
+
+func (c *bedrockClientCache) getOrInitClient(ctx context.Context, b *BedrockProvider) (bedrockConverseClient, error) {
+	for {
+		c.mu.Lock()
+		// Linearization Stage 1: Fast-path shutdown check
+		if err := c.lifecycleCtx.Err(); err != nil {
+			c.mu.Unlock()
+			return nil, err
+		}
+		// Fast-path auth failure check (0ms failure on uncorrected static keys)
+		snap := currentAuthSnapshot(b.spec, c.configGen)
+		if c.authLatch != nil && c.authLatch.IsLatched(snap) {
+			err := c.authLatch.Err()
+			c.mu.Unlock()
+			return nil, err
+		}
+		if c.readyClient != nil {
+			client := c.readyClient
+			c.mu.Unlock()
+			return client, nil
+		}
+		if c.active == nil {
+			c.generation++
+			workerCtx, cancel := context.WithTimeout(c.lifecycleCtx, 30*time.Second)
+			c.active = &initAttempt{
+				gen:    c.generation,
+				done:   make(chan struct{}),
+				cancel: cancel,
+			}
+			go c.runInit(c.active, workerCtx, b, snap)
+		}
+		attempt := c.active
+		gen := attempt.gen
+		hook := c.onAttemptJoined
+		c.mu.Unlock()
+
+		// Test hook invoked STRICTLY outside lock to prevent deadlocks
+		if hook != nil {
+			hook(gen)
+		}
+
+		select {
+		case <-attempt.done:
+			// Linearization Stage 2: Prioritized shutdown check on completion
+			if err := c.lifecycleCtx.Err(); err != nil {
+				return nil, err
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if errors.Is(attempt.err, ErrAttemptSuperseded) {
+				// Linearization Stage 3: Shutdown check before retry loop
+				if err := c.lifecycleCtx.Err(); err != nil {
+					return nil, err
+				}
+				continue // Seamlessly join or start next generation
+			}
+			if attempt.err != nil {
+				return nil, attempt.err
+			}
+			return attempt.client, nil
+		case <-ctx.Done():
+			// Individual caller cancelled or timed out!
+			return nil, ctx.Err()
+		case <-c.lifecycleCtx.Done():
+			// Runtime shutdown unblocks all waiters immediately
+			return nil, c.lifecycleCtx.Err()
+		}
+	}
+}
+
+func (c *bedrockClientCache) runInit(attempt *initAttempt, workerCtx context.Context, b *BedrockProvider, snap AuthSnapshot) {
+	defer attempt.cancel() // Prevent context leak on worker completion
+
+	var capturedTr *http.Transport
+	buildableClient := awshttp.NewBuildableClient().WithTransportOptions(func(tr *http.Transport) {
+		tr.MaxIdleConns = 100
+		tr.IdleConnTimeout = 30 * time.Second
+		tr.ForceAttemptHTTP2 = true
+		tr.Proxy = http.ProxyFromEnvironment
+		capturedTr = tr
+	})
+	if capturedTr == nil {
+		capturedTr = buildableClient.GetTransport()
+	}
+
+	client, err := b.callNewClient(workerCtx, b.spec, buildableClient)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// If Invalidate() ran while worker executed, attempt.superseded is true,
+	// done was already closed, and err was set to ErrAttemptSuperseded.
+	if attempt.superseded || c.generation != attempt.gen || c.active != attempt {
+		// STALE WORKER DISCARD:
+		// Close idle connections of discarded transport immediately to avoid FD leaks!
+		if capturedTr != nil {
+			capturedTr.CloseIdleConnections()
+		}
+		return
+	}
+
+	// Normal completion
+	attempt.completed = true
+	attempt.client = client
+	attempt.tr = capturedTr
+	attempt.err = err
+	c.active = nil
+
+	if err == nil {
+		c.readyClient = client
+		c.tr = capturedTr
+		if c.authLatch != nil {
+			c.authLatch.Reset()
+		}
+	} else {
+		c.readyClient = nil
+		if capturedTr != nil {
+			capturedTr.CloseIdleConnections()
+		}
+		kind, _, _ := bedrockErrorInfo(err)
+		if kind == ErrKindAuth {
+			if c.authLatch == nil {
+				c.authLatch = &authFailedLatch{}
+			}
+			c.authLatch.Latch(err, snap)
+		}
+	}
+
+	close(attempt.done) // Wakes all waiters who joined THIS specific attempt
+}
+
+func currentAuthSnapshot(spec Spec, configGen uint64) AuthSnapshot {
+	snap := AuthSnapshot{
+		AccessKeyID: os.Getenv("AWS_ACCESS_KEY_ID"),
+		Profile:     spec.Profile,
+		Region:      spec.Region,
+		ConfigGen:   configGen,
+	}
+	if snap.Profile == "" {
+		snap.Profile = os.Getenv("AWS_PROFILE")
+	}
+	if snap.Region == "" {
+		snap.Region = os.Getenv("AWS_REGION")
+	}
+
+	home, _ := os.UserHomeDir()
+
+	credsFile := os.Getenv("AWS_SHARED_CREDENTIALS_FILE")
+	if credsFile == "" && home != "" {
+		credsFile = filepath.Join(home, ".aws", "credentials")
+	}
+	if credsFile != "" {
+		if fi, err := os.Stat(credsFile); err == nil {
+			snap.CredsMTime = fi.ModTime()
+		}
+	}
+
+	configFile := os.Getenv("AWS_CONFIG_FILE")
+	if configFile == "" && home != "" {
+		configFile = filepath.Join(home, ".aws", "config")
+	}
+	if configFile != "" {
+		if fi, err := os.Stat(configFile); err == nil {
+			snap.ConfigMTime = fi.ModTime()
+		}
+	}
+
+	if home != "" {
+		ssoDir := filepath.Join(home, ".aws", "sso", "cache")
+		if entries, err := os.ReadDir(ssoDir); err == nil {
+			var latest time.Time
+			for _, entry := range entries {
+				if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+					if info, err := entry.Info(); err == nil {
+						if info.ModTime().After(latest) {
+							latest = info.ModTime()
+						}
+					}
+				}
+			}
+			snap.SSOMTime = latest
+		}
+	}
+
+	return snap
+}
+
+func (b *BedrockProvider) handleSelectiveInvalidation(err error) {
+	if err == nil {
+		return
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		code := apiErr.ErrorCode()
+		switch code {
+		case "UnrecognizedClientException", "InvalidAccessKeyId", "InvalidTokenError":
+			b.Invalidate()
+		}
+		return
+	}
+	errStr := strings.ToLower(err.Error())
+	if strings.Contains(errStr, "sso") && (strings.Contains(errStr, "expired") || strings.Contains(errStr, "invalid_grant")) {
+		b.Invalidate()
+	}
+}
+
+func (b *BedrockProvider) callNewClient(ctx context.Context, spec Spec, httpClient aws.HTTPClient) (bedrockConverseClient, error) {
+	if b.newClientWithHTTP != nil {
+		return b.newClientWithHTTP(ctx, spec, httpClient)
+	}
+	if b.newClient != nil {
+		return b.newClient(ctx, spec)
+	}
+	return defaultBedrockClientWithHTTP(ctx, spec, httpClient)
 }
 
 // displayName is the service name used in error messages.
@@ -113,15 +573,22 @@ func (b *BedrockProvider) Capabilities() Capabilities {
 // retryer is disabled so Forcefield's policy owns every retry; the shared
 // header-timeout HTTP client bounds the connection phase.
 func defaultBedrockClient(ctx context.Context, spec Spec) (bedrockConverseClient, error) {
+	return defaultBedrockClientWithHTTP(ctx, spec, nil)
+}
+
+func defaultBedrockClientWithHTTP(ctx context.Context, spec Spec, httpClient aws.HTTPClient) (bedrockConverseClient, error) {
 	if strings.TrimSpace(spec.Region) == "" {
 		return nil, fmt.Errorf("provider %q has no region - set providers.%s.region (or AWS_REGION)", spec.ID, spec.ID)
+	}
+	if httpClient == nil {
+		httpClient = defaultBedrockHTTPClient()
 	}
 	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(spec.Region),
 		// Single attempt: Forcefield retries transient failures itself
 		// with quota awareness the SDK retryer lacks.
 		awsconfig.WithRetryer(func() aws.Retryer { return aws.NopRetryer{} }),
-		awsconfig.WithHTTPClient(bedrockHTTPClient(spec.TimeoutSeconds)),
+		awsconfig.WithHTTPClient(httpClient),
 	}
 	if strings.TrimSpace(spec.Profile) != "" {
 		opts = append(opts, awsconfig.WithSharedConfigProfile(spec.Profile))
@@ -143,6 +610,15 @@ func defaultBedrockClient(ctx context.Context, spec Spec) (bedrockConverseClient
 		return nil, fmt.Errorf("load AWS configuration: %w", err)
 	}
 	return sdkBedrockClient{client: bedrockruntime.NewFromConfig(cfg)}, nil
+}
+
+func defaultBedrockHTTPClient() *awshttp.BuildableClient {
+	return awshttp.NewBuildableClient().WithTransportOptions(func(tr *http.Transport) {
+		tr.MaxIdleConns = 100
+		tr.IdleConnTimeout = 30 * time.Second
+		tr.ForceAttemptHTTP2 = true
+		tr.Proxy = http.ProxyFromEnvironment
+	})
 }
 
 // bedrockHTTPClient returns the shared header-timeout transport for SDK
@@ -496,7 +972,7 @@ func (b *BedrockProvider) StreamChat(ctx context.Context, messages []Message, de
 	if err := b.gate.acquire(); err != nil {
 		return nil, err
 	}
-	client, err := b.newClient(ctx, b.spec)
+	client, err := b.getCache().getOrInitClient(ctx, b)
 	if err != nil {
 		b.gate.release()
 		return nil, b.normalizeBedrockError(err, 0)
@@ -508,6 +984,7 @@ func (b *BedrockProvider) StreamChat(ctx context.Context, messages []Message, de
 		return callErr
 	}); err != nil {
 		b.gate.release()
+		b.handleSelectiveInvalidation(err)
 		return nil, err
 	}
 
@@ -570,6 +1047,7 @@ func (b *BedrockProvider) StreamChat(ctx context.Context, messages []Message, de
 						if kind == ErrKindCanceled {
 							return
 						}
+						b.handleSelectiveInvalidation(err)
 						send(StreamEvent{Err: b.normalizeBedrockError(err, 0)})
 						return
 					}
@@ -678,7 +1156,7 @@ func (b *BedrockProvider) Complete(ctx context.Context, messages []Message, defs
 		return Response{}, err
 	}
 	defer b.gate.release()
-	client, err := b.newClient(ctx, b.spec)
+	client, err := b.getCache().getOrInitClient(ctx, b)
 	if err != nil {
 		return Response{}, b.normalizeBedrockError(err, 0)
 	}
@@ -688,6 +1166,7 @@ func (b *BedrockProvider) Complete(ctx context.Context, messages []Message, defs
 		out, callErr = client.Converse(ctx, input)
 		return callErr
 	}); err != nil {
+		b.handleSelectiveInvalidation(err)
 		return Response{}, err
 	}
 	if out == nil {

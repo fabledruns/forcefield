@@ -3,7 +3,6 @@ package providers
 import (
 	"sort"
 	"strings"
-	"sync"
 )
 
 // Preset describes one known service (display, protocol, endpoint, auth).
@@ -14,48 +13,121 @@ type Preset struct {
 	Name        string
 	Description string
 	// Type is the transport protocol serving this preset.
-	Type       string
-	BaseURL    string
-	AuthEnvVar string // environment variable holding the API key; "" means unauthenticated
-	Auth       AuthRequirement
-	Scope      Scope
-	Models     []ModelInfo
+	Type         string
+	BaseURL      string
+	AuthEnvVar   string // environment variable holding the API key; "" means unauthenticated
+	Auth         AuthRequirement
+	Scope        Scope
+	Capabilities Capabilities
+	Models       []ModelInfo
+}
+
+// staticTypeCapabilities statically defines the capabilities of each built-in
+// transport protocol, eliminating dynamic probe allocations and eager adapter construction.
+var staticTypeCapabilities = map[string]Capabilities{
+	"ollama": {
+		Streaming:       true,
+		ToolCalling:     true,
+		Reasoning:       true,
+		MaxOutputTokens: 4096,
+	},
+	"openai-compatible": {
+		Streaming:       true,
+		ToolCalling:     true,
+		Reasoning:       true,
+		MaxOutputTokens: 4096,
+	},
+	"anthropic": {
+		Streaming:         true,
+		ToolCalling:       true,
+		Reasoning:         true,
+		ParallelToolCalls: true,
+		MaxOutputTokens:   8192,
+	},
+	"gemini": {
+		Streaming:         true,
+		ToolCalling:       true,
+		Reasoning:         true,
+		ParallelToolCalls: true,
+		MaxOutputTokens:   8192,
+	},
+	"vertex": {
+		Streaming:         true,
+		ToolCalling:       true,
+		Reasoning:         true,
+		ParallelToolCalls: true,
+		MaxOutputTokens:   8192,
+	},
+	"bedrock": {
+		Streaming:       true,
+		ToolCalling:     true,
+		MaxOutputTokens: 4096,
+	},
+	"azure": {
+		Streaming:       true,
+		ToolCalling:     true,
+		MaxOutputTokens: 4096,
+	},
+	"openai-responses": {
+		Streaming:         true,
+		ToolCalling:       true,
+		Reasoning:         true,
+		ParallelToolCalls: true,
+		MaxOutputTokens:   4096,
+	},
+	"opencode-zen": {
+		Streaming:         true,
+		ToolCalling:       true,
+		Reasoning:         true,
+		ParallelToolCalls: true,
+		MaxOutputTokens:   4096,
+	},
+	"opencode-go": {
+		Streaming:         true,
+		ToolCalling:       true,
+		Reasoning:         true,
+		ParallelToolCalls: true,
+		MaxOutputTokens:   4096,
+	},
 }
 
 // Catalog lists every known provider service in display order.
 var Catalog = []Preset{
 	{
-		ID:          "ollama",
-		Name:        "Ollama",
-		Description: "Local models served by Ollama.",
-		Type:        "ollama",
-		BaseURL:     "http://localhost:11434",
-		Auth:        AuthNone,
-		Scope:       ScopeLocal,
+		ID:           "ollama",
+		Name:         "Ollama",
+		Description:  "Local models served by Ollama.",
+		Type:         "ollama",
+		BaseURL:      "http://localhost:11434",
+		Auth:         AuthNone,
+		Scope:        ScopeLocal,
+		Capabilities: staticTypeCapabilities["ollama"],
 		Models: []ModelInfo{
 			{Name: "Ornith 9B", ID: "ornith:9b", Description: "Forcefield's default local model."},
 		},
 	},
 	{
-		ID:          "lmstudio",
-		Name:        "LM Studio",
-		Description: "Local models served by LM Studio.",
-		Type:        "openai-compatible",
-		BaseURL:     "http://localhost:1234/v1",
-		Auth:        AuthNone,
-		Scope:       ScopeLocal,
+		ID:           "lmstudio",
+		Name:         "LM Studio",
+		Description:  "Local models served by LM Studio.",
+		Type:         "openai-compatible",
+		BaseURL:      "http://localhost:1234/v1",
+		Auth:         AuthNone,
+		Scope:        ScopeLocal,
+		Capabilities: staticTypeCapabilities["openai-compatible"],
 		Models: []ModelInfo{
 			{Name: "Local Model", ID: "local-model", Description: "Whatever model is currently loaded in LM Studio."},
 		},
 	},
 	{
-		ID:          "llama-cpp",
-		Name:        "llama.cpp",
-		Description: "Local models served by llama-server.",
-		Type:        "openai-compatible",
-		BaseURL:     "http://localhost:9931/v1",
-		Auth:        AuthNone,
-		Scope:       ScopeLocal,
+		ID:           "llama-cpp",
+		Name:         "llama.cpp",
+		Description:  "Local models served by llama-server.",
+		Type:         "openai-compatible",
+		BaseURL:      "http://localhost:9931/v1",
+		Auth:         AuthNone,
+		Scope:        ScopeLocal,
+		Capabilities: staticTypeCapabilities["openai-compatible"],
 		// No fallback models: the served model ID is user-defined
 		// (llama-server --alias, defaulting to the model file path),
 		// so any hardcoded ID would be a guess. Model discovery
@@ -63,14 +135,15 @@ var Catalog = []Preset{
 		// model always remains selectable before discovery lands.
 	},
 	{
-		ID:          "nvidia",
-		Name:        "NVIDIA NIM",
-		Description: "Hosted models served by NVIDIA NIM.",
-		Type:        "openai-compatible",
-		BaseURL:     "https://integrate.api.nvidia.com/v1",
-		AuthEnvVar:  "NVIDIA_API_KEY",
-		Auth:        AuthRequired,
-		Scope:       ScopeCloud,
+		ID:           "nvidia",
+		Name:         "NVIDIA NIM",
+		Description:  "Hosted models served by NVIDIA NIM.",
+		Type:         "openai-compatible",
+		BaseURL:      "https://integrate.api.nvidia.com/v1",
+		AuthEnvVar:   "NVIDIA_API_KEY",
+		Auth:         AuthRequired,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["openai-compatible"],
 		Models: []ModelInfo{
 			{Name: "Nemotron 3 Ultra", ID: "nvidia/nemotron-3-ultra-550b-a55b", Description: "NVIDIA's largest Nemotron model."},
 			{Name: "Inkling", ID: "thinkingmachines/inkling", Description: "Inkling is a multimodal (text + image) reasoning model from Thinking Machines."},
@@ -80,70 +153,75 @@ var Catalog = []Preset{
 		},
 	},
 	{
-		ID:          "openai",
-		Name:        "OpenAI",
-		Description: "OpenAI's hosted models.",
-		Type:        "openai-compatible",
-		BaseURL:     "https://api.openai.com/v1",
-		AuthEnvVar:  "OPENAI_API_KEY",
-		Auth:        AuthRequired,
-		Scope:       ScopeCloud,
+		ID:           "openai",
+		Name:         "OpenAI",
+		Description:  "OpenAI's hosted models.",
+		Type:         "openai-compatible",
+		BaseURL:      "https://api.openai.com/v1",
+		AuthEnvVar:   "OPENAI_API_KEY",
+		Auth:         AuthRequired,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["openai-compatible"],
 		Models: []ModelInfo{
 			{Name: "GPT-4o mini", ID: "gpt-4o-mini"},
 			{Name: "GPT-4o", ID: "gpt-4o"},
 		},
 	},
 	{
-		ID:          "anthropic",
-		Name:        "Anthropic",
-		Description: "Anthropic's Claude models.",
-		Type:        "anthropic",
-		BaseURL:     "https://api.anthropic.com",
-		AuthEnvVar:  "ANTHROPIC_API_KEY",
-		Auth:        AuthRequired,
-		Scope:       ScopeCloud,
+		ID:           "anthropic",
+		Name:         "Anthropic",
+		Description:  "Anthropic's Claude models.",
+		Type:         "anthropic",
+		BaseURL:      "https://api.anthropic.com",
+		AuthEnvVar:   "ANTHROPIC_API_KEY",
+		Auth:         AuthRequired,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["anthropic"],
 		Models: []ModelInfo{
 			{Name: "Claude Sonnet 4.5", ID: "claude-sonnet-4-5"},
 			{Name: "Claude Haiku 4.5", ID: "claude-haiku-4-5"},
 		},
 	},
 	{
-		ID:          "gemini",
-		Name:        "Google Gemini",
-		Description: "Google's Gemini models.",
-		Type:        "gemini",
-		BaseURL:     "https://generativelanguage.googleapis.com",
-		AuthEnvVar:  "GEMINI_API_KEY",
-		Auth:        AuthRequired,
-		Scope:       ScopeCloud,
+		ID:           "gemini",
+		Name:         "Google Gemini",
+		Description:  "Google's Gemini models.",
+		Type:         "gemini",
+		BaseURL:      "https://generativelanguage.googleapis.com",
+		AuthEnvVar:   "GEMINI_API_KEY",
+		Auth:         AuthRequired,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["gemini"],
 		Models: []ModelInfo{
 			{Name: "Gemini 2.5 Flash", ID: "gemini-2.5-flash"},
 			{Name: "Gemini 2.5 Pro", ID: "gemini-2.5-pro"},
 		},
 	},
 	{
-		ID:          "vertex",
-		Name:        "Google Vertex AI",
-		Description: "Gemini models in your Google Cloud project via Vertex AI (Application Default Credentials).",
-		Type:        "vertex",
-		BaseURL:     "",
-		AuthEnvVar:  "",
-		Auth:        AuthNone,
-		Scope:       ScopeCloud,
+		ID:           "vertex",
+		Name:         "Google Vertex AI",
+		Description:  "Gemini models in your Google Cloud project via Vertex AI (Application Default Credentials).",
+		Type:         "vertex",
+		BaseURL:      "",
+		AuthEnvVar:   "",
+		Auth:         AuthNone,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["vertex"],
 		Models: []ModelInfo{
 			{Name: "Gemini 2.5 Flash", ID: "gemini-2.5-flash"},
 			{Name: "Gemini 2.5 Pro", ID: "gemini-2.5-pro"},
 		},
 	},
 	{
-		ID:          "bedrock",
-		Name:        "Amazon Bedrock",
-		Description: "Foundation models in your AWS account via Bedrock Converse (standard AWS credential chain).",
-		Type:        "bedrock",
-		BaseURL:     "",
-		AuthEnvVar:  "",
-		Auth:        AuthNone,
-		Scope:       ScopeCloud,
+		ID:           "bedrock",
+		Name:         "Amazon Bedrock",
+		Description:  "Foundation models in your AWS account via Bedrock Converse (standard AWS credential chain).",
+		Type:         "bedrock",
+		BaseURL:      "",
+		AuthEnvVar:   "",
+		Auth:         AuthNone,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["bedrock"],
 		// No fallback models: IDs (base model IDs, inference profiles,
 		// ARNs) and availability vary by region, account entitlement,
 		// and date, so any hardcoded ID would be a guess. Configure
@@ -151,106 +229,114 @@ var Catalog = []Preset{
 		// remains selectable.
 	},
 	{
-		ID:          "azure",
-		Name:        "Azure AI",
-		Description: "Azure OpenAI / AI Foundry resources via the deployment-scoped Chat Completions API.",
-		Type:        "azure",
-		BaseURL:     "",
-		AuthEnvVar:  "AZURE_OPENAI_API_KEY",
-		Auth:        AuthRequired,
-		Scope:       ScopeCloud,
+		ID:           "azure",
+		Name:         "Azure AI",
+		Description:  "Azure OpenAI / AI Foundry resources via the deployment-scoped Chat Completions API.",
+		Type:         "azure",
+		BaseURL:      "",
+		AuthEnvVar:   "AZURE_OPENAI_API_KEY",
+		Auth:         AuthRequired,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["azure"],
 		// No fallback models: model names are deployment names, unique
 		// per resource. Configure providers.<id>.models with your
 		// deployment names; the active model stays selectable.
 	},
 	{
-		ID:          "xai",
-		Name:        "xAI",
-		Description: "xAI's Grok models.",
-		Type:        "openai-compatible",
-		BaseURL:     "https://api.x.ai/v1",
-		AuthEnvVar:  "XAI_API_KEY",
-		Auth:        AuthRequired,
-		Scope:       ScopeCloud,
+		ID:           "xai",
+		Name:         "xAI",
+		Description:  "xAI's Grok models.",
+		Type:         "openai-compatible",
+		BaseURL:      "https://api.x.ai/v1",
+		AuthEnvVar:   "XAI_API_KEY",
+		Auth:         AuthRequired,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["openai-compatible"],
 		Models: []ModelInfo{
 			{Name: "Grok 3", ID: "grok-3"},
 			{Name: "Grok 3 Mini", ID: "grok-3-mini"},
 		},
 	},
 	{
-		ID:          "openrouter",
-		Name:        "OpenRouter",
-		Description: "One API across many hosted models.",
-		Type:        "openai-compatible",
-		BaseURL:     "https://openrouter.ai/api/v1",
-		AuthEnvVar:  "OPENROUTER_API_KEY",
-		Auth:        AuthRequired,
-		Scope:       ScopeCloud,
+		ID:           "openrouter",
+		Name:         "OpenRouter",
+		Description:  "One API across many hosted models.",
+		Type:         "openai-compatible",
+		BaseURL:      "https://openrouter.ai/api/v1",
+		AuthEnvVar:   "OPENROUTER_API_KEY",
+		Auth:         AuthRequired,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["openai-compatible"],
 		Models: []ModelInfo{
 			{Name: "Auto Router", ID: "openrouter/auto", Description: "Lets OpenRouter pick the best available model."},
 		},
 	},
 	{
-		ID:          "groq",
-		Name:        "Groq",
-		Description: "Extremely fast hosted inference.",
-		Type:        "openai-compatible",
-		BaseURL:     "https://api.groq.com/openai/v1",
-		AuthEnvVar:  "GROQ_API_KEY",
-		Auth:        AuthRequired,
-		Scope:       ScopeCloud,
+		ID:           "groq",
+		Name:         "Groq",
+		Description:  "Extremely fast hosted inference.",
+		Type:         "openai-compatible",
+		BaseURL:      "https://api.groq.com/openai/v1",
+		AuthEnvVar:   "GROQ_API_KEY",
+		Auth:         AuthRequired,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["openai-compatible"],
 		Models: []ModelInfo{
 			{Name: "Llama 3.3 70B", ID: "llama-3.3-70b-versatile"},
 		},
 	},
 	{
-		ID:          "mistral",
-		Name:        "Mistral",
-		Description: "Mistral AI's hosted models.",
-		Type:        "openai-compatible",
-		BaseURL:     "https://api.mistral.ai/v1",
-		AuthEnvVar:  "MISTRAL_API_KEY",
-		Auth:        AuthRequired,
-		Scope:       ScopeCloud,
+		ID:           "mistral",
+		Name:         "Mistral",
+		Description:  "Mistral AI's hosted models.",
+		Type:         "openai-compatible",
+		BaseURL:      "https://api.mistral.ai/v1",
+		AuthEnvVar:   "MISTRAL_API_KEY",
+		Auth:         AuthRequired,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["openai-compatible"],
 		Models: []ModelInfo{
 			{Name: "Mistral Large", ID: "mistral-large-latest"},
 			{Name: "Mistral Small", ID: "mistral-small-latest"},
 		},
 	},
 	{
-		ID:          "together",
-		Name:        "Together AI",
-		Description: "Together AI's hosted open models.",
-		Type:        "openai-compatible",
-		BaseURL:     "https://api.together.xyz/v1",
-		AuthEnvVar:  "TOGETHER_API_KEY",
-		Auth:        AuthRequired,
-		Scope:       ScopeCloud,
+		ID:           "together",
+		Name:         "Together AI",
+		Description:  "Together AI's hosted open models.",
+		Type:         "openai-compatible",
+		BaseURL:      "https://api.together.xyz/v1",
+		AuthEnvVar:   "TOGETHER_API_KEY",
+		Auth:         AuthRequired,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["openai-compatible"],
 		Models: []ModelInfo{
 			{Name: "Llama 3.3 70B Turbo", ID: "meta-llama/Llama-3.3-70B-Instruct-Turbo"},
 		},
 	},
 	{
-		ID:          "opencode-zen",
-		Name:        "OpenCode Zen",
-		Description: "Curated coding models via the OpenCode Zen gateway (pay as you go).",
-		Type:        "opencode-zen",
-		BaseURL:     "https://opencode.ai/zen/v1",
-		AuthEnvVar:  "OPENCODE_API_KEY",
-		Auth:        AuthRequired,
-		Scope:       ScopeCloud,
-		Models:      opencodeModelInfos(zenModels),
+		ID:           "opencode-zen",
+		Name:         "OpenCode Zen",
+		Description:  "Curated coding models via the OpenCode Zen gateway (pay as you go).",
+		Type:         "opencode-zen",
+		BaseURL:      "https://opencode.ai/zen/v1",
+		AuthEnvVar:   "OPENCODE_API_KEY",
+		Auth:         AuthRequired,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["opencode-zen"],
+		Models:       opencodeModelInfos(zenModels),
 	},
 	{
-		ID:          "opencode-go",
-		Name:        "OpenCode Go",
-		Description: "Curated open coding models via the OpenCode Go subscription.",
-		Type:        "opencode-go",
-		BaseURL:     "https://opencode.ai/zen/go/v1",
-		AuthEnvVar:  "OPENCODE_API_KEY",
-		Auth:        AuthRequired,
-		Scope:       ScopeCloud,
-		Models:      opencodeModelInfos(goModels),
+		ID:           "opencode-go",
+		Name:         "OpenCode Go",
+		Description:  "Curated open coding models via the OpenCode Go subscription.",
+		Type:         "opencode-go",
+		BaseURL:      "https://opencode.ai/zen/go/v1",
+		AuthEnvVar:   "OPENCODE_API_KEY",
+		Auth:         AuthRequired,
+		Scope:        ScopeCloud,
+		Capabilities: staticTypeCapabilities["opencode-go"],
+		Models:       opencodeModelInfos(goModels),
 	},
 }
 
@@ -308,55 +394,12 @@ func KnownTypes() []string {
 	return out
 }
 
-// capabilitiesCache memoizes CapabilitiesFor by normalized protocol
-// type. DefaultFactories is immutable after init and every adapter's
-// Capabilities() is constant for its transport, so a probe result cannot
-// change within a process. Without this, every picker open and status
-// query constructs a throwaway adapter (plus its http.Transport) per
-// provider — roughly a dozen per open — defeating transport pooling.
-var (
-	capabilitiesMu    sync.Mutex
-	capabilitiesCache = make(map[string]Capabilities)
-)
-
-// CapabilitiesFor reports what a given transport type supports by asking
-// its registered adapter. Unknown types report nothing. The probe model
-// is deliberately empty: construction must never depend on a real model
-// selection (multi-protocol routers resolve transports per model and
-// accept an empty model for capability reporting).
+// CapabilitiesFor reports what a given transport type supports by consulting
+// the static capability table. Unknown types report nothing. Zero network,
+// zero throwaway allocations, and zero eager adapter construction.
 func CapabilitiesFor(protocolType string) Capabilities {
-	// Key matches Create's lookup normalization (lowercase, no trim)
-	// so cached results are bit-identical to uncached ones for every
-	// input, including unknown or whitespace-padded types.
-	key := strings.ToLower(protocolType)
-	capabilitiesMu.Lock()
-	if caps, ok := capabilitiesCache[key]; ok {
-		capabilitiesMu.Unlock()
-		return caps
-	}
-	capabilitiesMu.Unlock()
-	caps := probeCapabilities(protocolType)
-	capabilitiesMu.Lock()
-	capabilitiesCache[key] = caps
-	capabilitiesMu.Unlock()
-	return caps
-}
-
-func probeCapabilities(protocolType string) Capabilities {
-	spec := Spec{
-		ID:      "capability-probe",
-		Type:    protocolType,
-		BaseURL: "http://localhost:9",
-		Model:   "",
-	}
-	p, err := DefaultFactories().Create(spec)
-	if err != nil {
-		return Capabilities{}
-	}
-	if cp, ok := p.(CapabilitiesProvider); ok {
-		return cp.Capabilities()
-	}
-	return Capabilities{}
+	key := strings.ToLower(strings.TrimSpace(protocolType))
+	return staticTypeCapabilities[key]
 }
 
 func contains(list []string, s string) bool {

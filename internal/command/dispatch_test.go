@@ -52,6 +52,7 @@ func (f *fakeContext) SetProvider(name string) error {
 	f.provider = name
 	return nil
 }
+func (f *fakeContext) ReloadProvider() error { return nil }
 func (f *fakeContext) OpenSessionPicker(sessions []session.Session) {
 	f.pickedSessions = sessions
 }

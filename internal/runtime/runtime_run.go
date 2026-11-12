@@ -106,6 +106,17 @@ func (r *Runtime) StreamChatWithMode(ctx context.Context, messages []providers.M
 		return nil, fmt.Errorf("runtime not available")
 	}
 
+	dereg, err := r.ensureTracker().registerOperation()
+	if err != nil {
+		return nil, err
+	}
+	registered := true
+	defer func() {
+		if registered {
+			dereg()
+		}
+	}()
+
 	snap := r.snapshotRunState()
 	snap.mode = mode
 	if mode == ModePlan {
@@ -145,7 +156,9 @@ func (r *Runtime) StreamChatWithMode(ctx context.Context, messages []providers.M
 	// on Ctrl+C, while ensuring active consumers never lose EventCancelled
 	// due to a transiently full channel.
 	events := make(chan Event, 64)
+	registered = false
 	go func() {
+		defer dereg()
 		defer close(events)
 		if tr != nil {
 			defer tr.Close()

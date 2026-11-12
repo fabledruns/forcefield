@@ -99,6 +99,8 @@ type Context interface {
 	Provider() string
 	SetModel(name string) error
 	SetProvider(name string) error
+	// ReloadProvider reloads credentials and configuration for the active provider.
+	ReloadProvider() error
 	OpenSessionPicker(sessions []session.Session)
 	OpenProviderPicker()
 	OpenModelPicker()
