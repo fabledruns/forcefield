@@ -480,5 +480,3 @@ func TestBedrock_SelectiveInvalidation_AccessDeniedRetainsClient(t *testing.T) {
 		t.Fatal("UnrecognizedClientException should invalidate cached client")
 	}
 }
-
-

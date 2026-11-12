@@ -45,8 +45,8 @@ func TestVertex_ConcurrentADCDiscovery(t *testing.T) {
 	p.mu.Lock()
 	p.adcGen = 1
 	p.activeADC = &adcAttempt{
-		gen:  1,
-		done: make(chan struct{}),
+		gen:    1,
+		done:   make(chan struct{}),
 		cancel: func() {},
 	}
 	attempt := p.activeADC
