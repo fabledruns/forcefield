@@ -546,7 +546,7 @@ func TestWorkerProtocol_UnknownAction(t *testing.T) {
 	req := map[string]any{
 		"version": "1.0",
 		"id":      "x",
-		"action":  "fetch",  // not a valid action
+		"action":  "fetch", // not a valid action
 		"html":    "<html/>",
 		"url":     "",
 		"targets": []string{},

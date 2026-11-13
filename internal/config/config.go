@@ -974,7 +974,7 @@ var knownTools = map[string]struct{}{
 	"read_file": {}, "write_file": {}, "edit_file": {}, "list_files": {}, "pwd": {},
 	"shell": {}, "shell_job": {}, "search_files": {}, "search_code": {}, "find_files": {}, "git": {}, "secret_scan": {},
 	"load_skill": {}, "update_task_state": {}, "add_project_memory": {},
-	"delegate": {},
+	"delegate":   {},
 	"web_search": {}, "web_fetch": {}, "web_extract": {}, "web_crawl": {}, "web_research": {},
 }
 

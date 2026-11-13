@@ -9,14 +9,14 @@ import (
 // URL normalization because they carry cross-site tracking information.
 var trackingParams = map[string]bool{
 	// Google Analytics / Ads
-	"utm_source":   true,
-	"utm_medium":   true,
-	"utm_campaign": true,
-	"utm_term":     true,
-	"utm_content":  true,
-	"utm_id":       true,
-	"utm_source_platform": true,
-	"utm_creative_format": true,
+	"utm_source":           true,
+	"utm_medium":           true,
+	"utm_campaign":         true,
+	"utm_term":             true,
+	"utm_content":          true,
+	"utm_id":               true,
+	"utm_source_platform":  true,
+	"utm_creative_format":  true,
 	"utm_marketing_tactic": true,
 	// Google Ads
 	"gclid":  true,
@@ -45,12 +45,12 @@ var trackingParams = map[string]bool{
 	"mc_cid": true,
 	"mc_eid": true,
 	// Adobe
-	"ef_id": true,
+	"ef_id":   true,
 	"s_kwcid": true,
 	// Misc
-	"ref":    true,
-	"_ga":    true,
-	"_gl":    true,
+	"ref": true,
+	"_ga": true,
+	"_gl": true,
 }
 
 // NormalizeURL returns a canonical form of rawURL suitable for caching and

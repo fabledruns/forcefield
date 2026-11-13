@@ -35,7 +35,7 @@ func NewCrawlTool(safeGet SafeGetter, native, scrapling Extractor, robots *Robot
 }
 
 func (c *CrawlTool) SetLimits(l tools.Limits) { c.limits = l }
-func (c *CrawlTool) ToolLimits() tools.Limits  { return c.resolveLimits() }
+func (c *CrawlTool) ToolLimits() tools.Limits { return c.resolveLimits() }
 
 func (c *CrawlTool) resolveLimits() tools.Limits {
 	return c.limits.WithDefaults(tools.DefaultLimitsFor("web_crawl"))

@@ -29,7 +29,7 @@ func NewFetchTool(safeGet SafeGetter, native, scrapling Extractor) *FetchTool {
 }
 
 func (f *FetchTool) SetLimits(l tools.Limits) { f.limits = l }
-func (f *FetchTool) ToolLimits() tools.Limits  { return f.resolveLimits() }
+func (f *FetchTool) ToolLimits() tools.Limits { return f.resolveLimits() }
 
 func (f *FetchTool) resolveLimits() tools.Limits {
 	return f.limits.WithDefaults(tools.DefaultLimitsFor("web_fetch"))

@@ -8,14 +8,14 @@ import (
 
 // Common error classifications for search and retrieval.
 var (
-	ErrRateLimited     = errors.New("provider rate limit exceeded")
-	ErrNetwork         = errors.New("network retrieval failure")
-	ErrParseFailed     = errors.New("content parse failure")
-	ErrInvalidKey      = errors.New("missing or invalid API key")
-	ErrAccessDenied    = errors.New("access denied by remote site or policy")
+	ErrRateLimited      = errors.New("provider rate limit exceeded")
+	ErrNetwork          = errors.New("network retrieval failure")
+	ErrParseFailed      = errors.New("content parse failure")
+	ErrInvalidKey       = errors.New("missing or invalid API key")
+	ErrAccessDenied     = errors.New("access denied by remote site or policy")
 	ErrRobotsDisallowed = errors.New("disallowed by robots.txt")
-	ErrBudgetExceeded  = errors.New("resource budget exceeded")
-	ErrBackendNotFound = errors.New("extraction backend not available")
+	ErrBudgetExceeded   = errors.New("resource budget exceeded")
+	ErrBackendNotFound  = errors.New("extraction backend not available")
 )
 
 // Heading represents a structured heading in a document.

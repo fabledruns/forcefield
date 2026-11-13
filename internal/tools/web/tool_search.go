@@ -20,7 +20,7 @@ func NewSearchTool(reg *SearchRegistry) *SearchTool {
 }
 
 func (s *SearchTool) SetLimits(l tools.Limits) { s.limits = l }
-func (s *SearchTool) ToolLimits() tools.Limits  { return s.resolveLimits() }
+func (s *SearchTool) ToolLimits() tools.Limits { return s.resolveLimits() }
 
 func (s *SearchTool) resolveLimits() tools.Limits {
 	return s.limits.WithDefaults(tools.DefaultLimitsFor("web_search"))

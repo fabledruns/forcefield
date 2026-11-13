@@ -26,7 +26,7 @@ func NewExtractTool(safeGet SafeGetter, native, scrapling Extractor) *ExtractToo
 }
 
 func (e *ExtractTool) SetLimits(l tools.Limits) { e.limits = l }
-func (e *ExtractTool) ToolLimits() tools.Limits  { return e.resolveLimits() }
+func (e *ExtractTool) ToolLimits() tools.Limits { return e.resolveLimits() }
 
 func (e *ExtractTool) resolveLimits() tools.Limits {
 	return e.limits.WithDefaults(tools.DefaultLimitsFor("web_extract"))

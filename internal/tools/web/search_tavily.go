@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	tavilyAPIURL   = "https://api.tavily.com/search"
-	tavilyTimeout  = 20 * time.Second
+	tavilyAPIURL     = "https://api.tavily.com/search"
+	tavilyTimeout    = 20 * time.Second
 	tavilyMaxResults = 20
-	tavilyEnvKey   = "TAVILY_API_KEY"
+	tavilyEnvKey     = "TAVILY_API_KEY"
 )
 
 // TavilyProvider queries the Tavily AI Search REST API.
@@ -58,11 +58,11 @@ func (t *TavilyProvider) Search(ctx context.Context, query SearchQuery) (SearchR
 	}
 
 	reqBody := tavilyRequest{
-		APIKey:          t.apiKey,
-		Query:           query.Query,
-		SearchDepth:     "basic",
-		MaxResults:      max,
-		IncludeAnswer:   false,
+		APIKey:            t.apiKey,
+		Query:             query.Query,
+		SearchDepth:       "basic",
+		MaxResults:        max,
+		IncludeAnswer:     false,
 		IncludeRawContent: false,
 	}
 

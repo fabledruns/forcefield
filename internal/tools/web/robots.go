@@ -46,8 +46,8 @@ type robotsGroup struct {
 // RobotsChecker checks whether a URL path is allowed for a given User-Agent,
 // following RFC 9309.
 type RobotsChecker struct {
-	ua         string // lower-cased product token
-	fetchFn    func(robotsURL string) ([]byte, error)
+	ua      string // lower-cased product token
+	fetchFn func(robotsURL string) ([]byte, error)
 }
 
 // NewRobotsChecker creates a RobotsChecker for the given user-agent.

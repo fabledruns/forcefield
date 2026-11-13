@@ -87,10 +87,10 @@ func NewClient(cfg *ClientConfig) (*Client, error) {
 		// Disable HTTP/2 DialTLS so we keep full control via DialContext.
 		ForceAttemptHTTP2: false,
 		// Limit connection pooling to prevent cross-request IP reuse attacks.
-		MaxIdleConns:        100,
-		IdleConnTimeout:     90 * time.Second,
-		MaxConnsPerHost:     10,
-		DisableCompression:  true, // We handle decompression ourselves.
+		MaxIdleConns:       100,
+		IdleConnTimeout:    90 * time.Second,
+		MaxConnsPerHost:    10,
+		DisableCompression: true, // We handle decompression ourselves.
 	}
 
 	c.httpClient = &http.Client{

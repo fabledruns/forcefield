@@ -39,7 +39,7 @@ func NewResearchTool(reg *SearchRegistry, safeGet SafeGetter, native, scrapling 
 }
 
 func (r *ResearchTool) SetLimits(l tools.Limits) { r.limits = l }
-func (r *ResearchTool) ToolLimits() tools.Limits  { return r.resolveLimits() }
+func (r *ResearchTool) ToolLimits() tools.Limits { return r.resolveLimits() }
 
 func (r *ResearchTool) resolveLimits() tools.Limits {
 	return r.limits.WithDefaults(tools.DefaultLimitsFor("web_research"))

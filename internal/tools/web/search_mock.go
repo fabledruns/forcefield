@@ -10,12 +10,12 @@ import (
 // MockProvider is a deterministic search provider for unit testing and offline development.
 // Results are pre-seeded and returned in a predictable order.
 type MockProvider struct {
-	mu         sync.RWMutex
-	name       string
-	results    map[string][]SearchResultItem
-	healthOK   bool
-	callCount  int
-	lastQuery  string
+	mu          sync.RWMutex
+	name        string
+	results     map[string][]SearchResultItem
+	healthOK    bool
+	callCount   int
+	lastQuery   string
 	errToReturn error
 }
 
@@ -29,9 +29,9 @@ func NewMockProvider(name string, seedResults map[string][]SearchResultItem) *Mo
 		seedResults = make(map[string][]SearchResultItem)
 	}
 	return &MockProvider{
-		name:      name,
-		results:   seedResults,
-		healthOK:  true,
+		name:     name,
+		results:  seedResults,
+		healthOK: true,
 	}
 }
 

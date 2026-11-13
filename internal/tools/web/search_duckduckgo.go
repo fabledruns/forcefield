@@ -190,8 +190,8 @@ func unwrapDDGRedirect(raw string) string {
 // ddgJSONResult is used for the JSON API fallback (not currently used but
 // kept for future extension).
 type ddgJSONResult struct {
-	AbstractURL string `json:"AbstractURL"`
-	AbstractText string `json:"AbstractText"`
+	AbstractURL   string `json:"AbstractURL"`
+	AbstractText  string `json:"AbstractText"`
 	RelatedTopics []struct {
 		FirstURL string `json:"FirstURL"`
 		Text     string `json:"Text"`
@@ -199,5 +199,5 @@ type ddgJSONResult struct {
 }
 
 var _ = json.Marshal // keep import used
-var _ = os.Getenv   // keep import used (used in other providers)
+var _ = os.Getenv    // keep import used (used in other providers)
 var _ = fmt.Sprintf  // keep used
