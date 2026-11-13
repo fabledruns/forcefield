@@ -86,6 +86,11 @@ Built-in tools are registered through `tools/builtin`.
 | `find_files`  | `tools/search`          | Find files/dirs by glob or substring. Sorted workspace-relative paths; max 50 results. |
 | `git`           | `tools/git`                   | Inspect a git repository (read-only): status, diffs, log, changed files. Max 256 KiB output. Repo config execution neutralized (`core.fsmonitor` override, no textconv/external drivers, content-filter drivers replaced with identity), minimal child environment. |
 | `secret_scan` | `tools/security`        | Defensively scan one file/text for hardcoded secrets (local-only, redacted output). Max 50 findings, 1 MiB input. |
+| `web_search`  | `tools/web`             | Search the web for a query and return ranked results. Supports DuckDuckGo (zero API key), SearXNG, Brave, and Tavily. Max 20 results, 15s timeout. |
+| `web_fetch`   | `tools/web`             | SSRF-protected HTTP retrieval with charset decoding, boilerplate removal, Markdown conversion, and 50 KiB context budget. |
+| `web_extract` | `tools/web`             | Structured extraction (article, headings, links, tables, metadata) from URL (via SafeNet) or raw supplied HTML (strictly local, zero network access). Supports native Go and Scrapling backends. |
+| `web_crawl`   | `tools/web`             | Polite breadth-first crawl with RFC 9309 robots.txt compliance, per-domain rate limiting, HTTP 429 backoff, max 20 pages, max depth 3. |
+| `web_research`| `tools/web`             | Multi-source research orchestration combining deterministic query generation, deduplicated search, parallel fetch, and cited dossier synthesis ([1], [2]). |
 | `load_skill`  | `runtime`               | Load a skill body by ID, scoped to the active agent's skill set. |
 
 `load_skill` is registered by the runtime, not by the generic builtin package, because it needs the skill store. It refuses IDs outside the active agent's assignment with a soft error.

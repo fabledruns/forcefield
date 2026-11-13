@@ -97,4 +97,29 @@ tools: [
 		description:        "Run a bounded child agent run inside one tool call (orchestration.enabled only)."
 		default_permission: "ask"
 	},
+	{
+		name:               "web_search"
+		description:        "Search the web for a query and return ranked results."
+		default_permission: "ask"
+	},
+	{
+		name:               "web_fetch"
+		description:        "Fetch a web page via a safe HTTP client and return clean Markdown."
+		default_permission: "ask"
+	},
+	{
+		name:               "web_extract"
+		description:        "Extract structured content from a web page or raw HTML string into clean Markdown."
+		default_permission: "ask"
+	},
+	{
+		name:               "web_crawl"
+		description:        "Politely crawl a website with robots.txt enforcement, rate limits, and deduplication."
+		default_permission: "ask"
+	},
+	{
+		name:               "web_research"
+		description:        "Conduct multi-source web research on a question with citations."
+		default_permission: "ask"
+	},
 ]

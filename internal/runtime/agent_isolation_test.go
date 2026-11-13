@@ -51,7 +51,12 @@ func newAgentTestRuntime(t *testing.T, provider providers.ModelProvider) *Runtim
 
 func registerTestTools(t *testing.T, m *tools.Manager) {
 	t.Helper()
-	names := []string{"read_file", "write_file", "edit_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
+	names := []string{
+		"read_file", "write_file", "edit_file", "list_files", "pwd",
+		"shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan",
+		"load_skill", "update_task_state", "add_project_memory",
+		"web_search", "web_fetch", "web_extract", "web_crawl", "web_research",
+	}
 	for _, name := range names {
 		n := name
 		tool := &testAgentTool{name: n}
@@ -76,9 +81,9 @@ func (t *testAgentTool) Execute(_ context.Context, args map[string]any) (tools.R
 
 func TestAgent_ToolIsolationDefinitions(t *testing.T) {
 	rt := newAgentTestRuntime(t, &scriptedProvider{turns: [][]providers.StreamEvent{{{Done: true}}}})
-	// general has all 14
-	if len(rt.manager.Definitions()) != 15 {
-		t.Fatalf("general should have 15 tools, got %d", len(rt.manager.Definitions()))
+	// general has all 20
+	if len(rt.manager.Definitions()) != 20 {
+		t.Fatalf("general should have 20 tools, got %d", len(rt.manager.Definitions()))
 	}
 	if err := rt.SetAgent("legal"); err != nil {
 		t.Fatalf("SetAgent legal: %v", err)
@@ -116,8 +121,8 @@ func TestAgent_ToolIsolationDefinitions(t *testing.T) {
 	if err := rt.SetAgent("coding"); err != nil {
 		t.Fatalf("SetAgent coding: %v", err)
 	}
-	if len(rt.manager.Definitions()) != 15 {
-		t.Fatalf("coding should have 15, got %d", len(rt.manager.Definitions()))
+	if len(rt.manager.Definitions()) != 20 {
+		t.Fatalf("coding should have 20, got %d", len(rt.manager.Definitions()))
 	}
 }
 
@@ -196,8 +201,8 @@ func TestAgent_ToolSummariesReflectFiltered(t *testing.T) {
 	rt := newAgentTestRuntime(t, &scriptedProvider{turns: [][]providers.StreamEvent{{{Done: true}}}})
 	_ = rt.SetAgent("research")
 	summaries := rt.ToolSummaries()
-	if len(summaries) != 10 {
-		t.Fatalf("research summaries len = %d, want 10", len(summaries))
+	if len(summaries) != 15 {
+		t.Fatalf("research summaries len = %d, want 15", len(summaries))
 	}
 	for _, s := range summaries {
 		if len(s) == 0 {

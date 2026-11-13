@@ -114,6 +114,21 @@ func TestDefaultLimitsFor(t *testing.T) {
 	if got := DefaultLimitsFor("secret_scan"); got.MaxLines != DefaultSecretMaxFindings {
 		t.Errorf("secret_scan = %+v", got)
 	}
+	if got := DefaultLimitsFor("web_search"); got.MaxLines != DefaultWebSearchMaxLines || got.Timeout != DefaultWebSearchTimeout {
+		t.Errorf("web_search = %+v", got)
+	}
+	if got := DefaultLimitsFor("web_fetch"); got.MaxBytes != DefaultWebFetchMaxBytes || got.Timeout != DefaultWebFetchTimeout {
+		t.Errorf("web_fetch = %+v", got)
+	}
+	if got := DefaultLimitsFor("web_extract"); got.MaxBytes != DefaultWebExtractMaxBytes || got.Timeout != DefaultWebExtractTimeout {
+		t.Errorf("web_extract = %+v", got)
+	}
+	if got := DefaultLimitsFor("web_crawl"); got.Timeout != DefaultWebCrawlTimeout {
+		t.Errorf("web_crawl = %+v", got)
+	}
+	if got := DefaultLimitsFor("web_research"); got.Timeout != DefaultWebResearchTimeout {
+		t.Errorf("web_research = %+v", got)
+	}
 	if got := DefaultLimitsFor("mystery"); got.Timeout != DefaultToolTimeout || got.MaxBytes != 0 {
 		t.Errorf("unknown = %+v, want generic timeout-only bound", got)
 	}

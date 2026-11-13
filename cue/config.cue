@@ -41,7 +41,7 @@ package config
 #AgentName: "coding" | "cyber" | "legal" | "docs" | "research" | "devops" | "general"
 
 // ToolName lists the tool names a tools: override block may address.
-#ToolName: "read_file" | "write_file" | "list_files" | "pwd" | "shell" | "shell_job" | "search_files" | "search_code" | "find_files" | "git" | "secret_scan" | "load_skill" | "update_task_state" | "add_project_memory" | "delegate"
+#ToolName: "read_file" | "write_file" | "list_files" | "pwd" | "shell" | "shell_job" | "search_files" | "search_code" | "find_files" | "git" | "secret_scan" | "load_skill" | "update_task_state" | "add_project_memory" | "delegate" | "web_search" | "web_fetch" | "web_extract" | "web_crawl" | "web_research"
 
 // MCPToolName matches namespaced MCP tool override keys
 // (mcp__server__tool). Overrides share the native limits mechanism;
@@ -259,5 +259,15 @@ package config
 	// internal/mcp, which remains authoritative.
 	mcp?: {
 		servers?: [#MCPServerKey]: #MCPServer
+	}
+
+	web?: {
+		search_provider?: string
+		searxng_base_url?: string
+		brave_api_key?:    string
+		tavily_api_key?:   string
+		default_backend?:  string
+		allowed_domains?:  [...string]
+		blocked_domains?:  [...string]
 	}
 }

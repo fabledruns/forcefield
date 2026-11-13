@@ -3,6 +3,10 @@
 package builtin
 
 import (
+	"context"
+	"sync"
+	"time"
+
 	"forcefield/internal/sandbox"
 	"forcefield/internal/tools"
 	"forcefield/internal/tools/filesystem"
@@ -10,6 +14,9 @@ import (
 	"forcefield/internal/tools/search"
 	"forcefield/internal/tools/security"
 	"forcefield/internal/tools/shell"
+	"forcefield/internal/tools/web"
+	"forcefield/internal/tools/web/safenet"
+	"forcefield/internal/tools/web/scrapling"
 )
 
 // Option customizes how built-in tools are constructed.
@@ -81,6 +88,7 @@ func Register(m *tools.Manager, opts ...Option) error {
 		newGit(o),
 		newSecretScan(o),
 	}
+	all = append(all, newWebTools(o)...)
 
 	for _, t := range all {
 		applyLimits(t, o.limits)
@@ -147,6 +155,45 @@ func newGit(o options) tools.Tool {
 
 func newSecretScan(o options) tools.Tool {
 	return security.NewSecretScanWithPolicy(o.policy)
+}
+
+var (
+	defaultSafeNetClient *safenet.Client
+	defaultSafeNetOnce   sync.Once
+)
+
+func getSafeNetClient() *safenet.Client {
+	defaultSafeNetOnce.Do(func() {
+		defaultSafeNetClient, _ = safenet.NewClient(nil)
+	})
+	return defaultSafeNetClient
+}
+
+func newWebTools(o options) []tools.Tool {
+	snClient := getSafeNetClient()
+	safeGetter := web.NewSafeClientAdapter(snClient)
+	native := web.NewNativeExtractor()
+	scraplingExt := scrapling.New("")
+
+	reg := web.NewRegistry()
+	_ = reg.Register(web.NewDuckDuckGoProvider(snClient))
+	_ = reg.Register(web.NewSearXNGProvider("", snClient))
+	_ = reg.Register(web.NewBraveProvider("", snClient))
+	_ = reg.Register(web.NewTavilyProvider("", snClient))
+
+	robotsChecker := web.NewRobotsChecker("Forcefield/1.0", func(robotsURL string) ([]byte, error) {
+		body, _, err := safeGetter.SafeGet(context.Background(), robotsURL, 64<<10)
+		return body, err
+	})
+	rateLimiter := web.NewRateLimiter(time.Second)
+
+	return []tools.Tool{
+		web.NewSearchTool(reg),
+		web.NewFetchTool(safeGetter, native, scraplingExt),
+		web.NewExtractTool(safeGetter, native, scraplingExt),
+		web.NewCrawlTool(safeGetter, native, scraplingExt, robotsChecker, rateLimiter),
+		web.NewResearchTool(reg, safeGetter, native, scraplingExt),
+	}
 }
 
 // NewManager returns a Manager with every built-in tool already

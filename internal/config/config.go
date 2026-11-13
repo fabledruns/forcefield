@@ -313,6 +313,19 @@ type Config struct {
 	// package owns file I/O, error wording, and persistence. Omitted
 	// means zero servers and preserves existing behavior exactly.
 	MCP mcp.Config `yaml:"mcp,omitempty"`
+	// Web holds web search, retrieval, and crawling settings.
+	Web WebConfig `yaml:"web,omitempty"`
+}
+
+// WebConfig configures web search, retrieval, and extraction tools.
+type WebConfig struct {
+	SearchProvider string   `yaml:"search_provider,omitempty"`
+	SearXNGBaseURL string   `yaml:"searxng_base_url,omitempty"`
+	BraveAPIKey    string   `yaml:"brave_api_key,omitempty"`
+	TavilyAPIKey   string   `yaml:"tavily_api_key,omitempty"`
+	DefaultBackend string   `yaml:"default_backend,omitempty"`
+	AllowedDomains []string `yaml:"allowed_domains,omitempty"`
+	BlockedDomains []string `yaml:"blocked_domains,omitempty"`
 }
 
 const defaultConfigTemplate = `model:
@@ -342,6 +355,11 @@ permissions:
     shell: ask
     shell_job: ask
     add_project_memory: ask
+    web_search: ask
+    web_fetch: ask
+    web_extract: ask
+    web_crawl: ask
+    web_research: ask
 
 sandbox:
   # Execution boundary for shell commands.
@@ -957,6 +975,7 @@ var knownTools = map[string]struct{}{
 	"shell": {}, "shell_job": {}, "search_files": {}, "search_code": {}, "find_files": {}, "git": {}, "secret_scan": {},
 	"load_skill": {}, "update_task_state": {}, "add_project_memory": {},
 	"delegate": {},
+	"web_search": {}, "web_fetch": {}, "web_extract": {}, "web_crawl": {}, "web_research": {},
 }
 
 // validateRunLimits rejects negative run/context bounds. Zero stays valid:

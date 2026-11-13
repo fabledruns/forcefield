@@ -69,8 +69,18 @@ func keys(m map[string]bool) []string {
 }
 
 var (
-	fullSet  = []string{"read_file", "write_file", "edit_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
-	cyberSet = []string{"read_file", "list_files", "pwd", "shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan", "load_skill", "update_task_state", "add_project_memory"}
+	fullSet = []string{
+		"read_file", "write_file", "edit_file", "list_files", "pwd",
+		"shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan",
+		"load_skill", "update_task_state", "add_project_memory",
+		"web_search", "web_fetch", "web_extract", "web_crawl", "web_research",
+	}
+	cyberSet = []string{
+		"read_file", "list_files", "pwd",
+		"shell", "shell_job", "search_files", "search_code", "find_files", "git", "secret_scan",
+		"load_skill", "update_task_state", "add_project_memory",
+		"web_search", "web_fetch", "web_extract",
+	}
 	legalSet = []string{"read_file", "list_files", "pwd", "search_files", "search_code", "find_files", "git", "load_skill", "update_task_state", "add_project_memory"}
 )
 

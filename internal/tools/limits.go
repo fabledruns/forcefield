@@ -45,6 +45,22 @@ const (
 	DefaultJobTimeout = 300 * time.Second
 	// DefaultSecretMaxFindings bounds secret_scan findings reported.
 	DefaultSecretMaxFindings = 50
+	// DefaultWebSearchMaxLines bounds web_search results reported.
+	DefaultWebSearchMaxLines = 20
+	// DefaultWebSearchTimeout bounds web_search execution.
+	DefaultWebSearchTimeout = 15 * time.Second
+	// DefaultWebFetchMaxBytes bounds fetched document content.
+	DefaultWebFetchMaxBytes = 50 << 10 // 50 KiB
+	// DefaultWebFetchTimeout bounds web_fetch execution.
+	DefaultWebFetchTimeout = 20 * time.Second
+	// DefaultWebExtractMaxBytes bounds extracted document content.
+	DefaultWebExtractMaxBytes = 50 << 10 // 50 KiB
+	// DefaultWebExtractTimeout bounds web_extract execution.
+	DefaultWebExtractTimeout = 20 * time.Second
+	// DefaultWebCrawlTimeout bounds web_crawl execution.
+	DefaultWebCrawlTimeout = 60 * time.Second
+	// DefaultWebResearchTimeout bounds web_research execution.
+	DefaultWebResearchTimeout = 90 * time.Second
 	// DefaultToolTimeout bounds any tool execution without its own
 	// advertised timeout.
 	DefaultToolTimeout = 30 * time.Second
@@ -93,6 +109,16 @@ func DefaultLimitsFor(name string) Limits {
 		return Limits{MaxBytes: DefaultJobMaxBytes, Timeout: DefaultJobTimeout}
 	case "secret_scan":
 		return Limits{MaxLines: DefaultSecretMaxFindings, Timeout: DefaultToolTimeout}
+	case "web_search":
+		return Limits{MaxLines: DefaultWebSearchMaxLines, Timeout: DefaultWebSearchTimeout}
+	case "web_fetch":
+		return Limits{MaxBytes: DefaultWebFetchMaxBytes, Timeout: DefaultWebFetchTimeout}
+	case "web_extract":
+		return Limits{MaxBytes: DefaultWebExtractMaxBytes, Timeout: DefaultWebExtractTimeout}
+	case "web_crawl":
+		return Limits{Timeout: DefaultWebCrawlTimeout}
+	case "web_research":
+		return Limits{Timeout: DefaultWebResearchTimeout}
 	default:
 		return Limits{Timeout: DefaultToolTimeout}
 	}

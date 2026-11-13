@@ -40,6 +40,7 @@ var allowedSpawnSites = map[string]bool{
 	"internal/memory/project.go":              true,
 	"internal/process/run.go":                 true,
 	"internal/process/process_windows.go":     true,
+	"internal/tools/web/scrapling/client.go":  true,
 }
 
 // allowedDevSpawnSites lists non-test files that construct child
