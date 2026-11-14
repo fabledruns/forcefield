@@ -177,6 +177,11 @@ func TestShell_PermissiveVsConfinedCwdSemantics(t *testing.T) {
 		}
 	}
 
+	containsWorkspace := func(content string) bool {
+		lower := strings.ToLower(content)
+		return strings.Contains(lower, strings.ToLower(ws)) || strings.Contains(lower, strings.ToLower(canonicalWS))
+	}
+
 	// Wrap executors with probeStubExecutor so Shell.Execute can validate
 	// working-directory error semantics without attempting to launch WSL on Windows.
 	permShell := NewShellWithExecutor(probeStubExecutor{permExec})
@@ -187,7 +192,10 @@ func TestShell_PermissiveVsConfinedCwdSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute error = %v", err)
 	}
-	if !res.IsError || !strings.Contains(res.Content, "process working directory") || !strings.Contains(res.Content, ws) {
+	if !res.IsError || !res.ExecutionFailure || res.CommandFailure {
+		t.Fatalf("unexpected permissive missing-dir failure classification: %+v", res)
+	}
+	if !strings.Contains(res.Content, "process working directory") || !containsWorkspace(res.Content) {
 		t.Fatalf("unexpected permissive missing-dir result: %+v", res)
 	}
 
@@ -199,7 +207,10 @@ func TestShell_PermissiveVsConfinedCwdSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("strict Execute missing-dir error = %v", err)
 	}
-	if !resStrictMissing.IsError || !strings.Contains(resStrictMissing.Content, "workspace root") || !strings.Contains(resStrictMissing.Content, ws) {
+	if !resStrictMissing.IsError || !resStrictMissing.ExecutionFailure || resStrictMissing.CommandFailure {
+		t.Fatalf("unexpected strict missing-dir failure classification: %+v", resStrictMissing)
+	}
+	if !strings.Contains(resStrictMissing.Content, "workspace root") || !containsWorkspace(resStrictMissing.Content) {
 		t.Fatalf("unexpected strict missing-dir result: %+v", resStrictMissing)
 	}
 
@@ -211,7 +222,10 @@ func TestShell_PermissiveVsConfinedCwdSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("strict Execute outside-dir error = %v", err)
 	}
-	if !resStrictEscape.IsError || !strings.Contains(resStrictEscape.Content, "outside the allowed workspace") || !strings.Contains(resStrictEscape.Content, ws) {
+	if !resStrictEscape.IsError || !resStrictEscape.ExecutionFailure || resStrictEscape.CommandFailure {
+		t.Fatalf("unexpected strict outside-dir failure classification: %+v", resStrictEscape)
+	}
+	if !strings.Contains(resStrictEscape.Content, "outside the allowed workspace") || !containsWorkspace(resStrictEscape.Content) {
 		t.Fatalf("unexpected strict outside-dir result: %+v", resStrictEscape)
 	}
 }
