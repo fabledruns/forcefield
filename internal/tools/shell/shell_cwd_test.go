@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -176,7 +177,9 @@ func TestShell_PermissiveVsConfinedCwdSemantics(t *testing.T) {
 		}
 	}
 
-	permShell := NewShellWithExecutor(permExec)
+	// Wrap executors with probeStubExecutor so Shell.Execute can validate
+	// working-directory error semantics without attempting to launch WSL on Windows.
+	permShell := NewShellWithExecutor(probeStubExecutor{permExec})
 	res, err := permShell.Execute(context.Background(), map[string]any{
 		"command": "echo hi",
 		"cwd":     filepath.Join(ws, "missing-subdir"),
@@ -186,5 +189,62 @@ func TestShell_PermissiveVsConfinedCwdSemantics(t *testing.T) {
 	}
 	if !res.IsError || !strings.Contains(res.Content, "process working directory") || !strings.Contains(res.Content, ws) {
 		t.Fatalf("unexpected permissive missing-dir result: %+v", res)
+	}
+
+	strictShell := NewShellWithExecutor(probeStubExecutor{strictExec})
+	resStrictMissing, err := strictShell.Execute(context.Background(), map[string]any{
+		"command": "echo hi",
+		"cwd":     filepath.Join(ws, "missing-subdir"),
+	})
+	if err != nil {
+		t.Fatalf("strict Execute missing-dir error = %v", err)
+	}
+	if !resStrictMissing.IsError || !strings.Contains(resStrictMissing.Content, "workspace root") || !strings.Contains(resStrictMissing.Content, ws) {
+		t.Fatalf("unexpected strict missing-dir result: %+v", resStrictMissing)
+	}
+
+	outside := t.TempDir()
+	resStrictEscape, err := strictShell.Execute(context.Background(), map[string]any{
+		"command": "echo hi",
+		"cwd":     outside,
+	})
+	if err != nil {
+		t.Fatalf("strict Execute outside-dir error = %v", err)
+	}
+	if !resStrictEscape.IsError || !strings.Contains(resStrictEscape.Content, "outside the allowed workspace") || !strings.Contains(resStrictEscape.Content, ws) {
+		t.Fatalf("unexpected strict outside-dir result: %+v", resStrictEscape)
+	}
+}
+
+// probeStubExecutor wraps a sandbox.Executor and stubs Probe to return nil.
+// This allows working-directory resolution semantics and error formatting to be
+// tested through Shell.Execute without attempting to launch WSL on Windows.
+type probeStubExecutor struct {
+	sandbox.Executor
+}
+
+func (p probeStubExecutor) Probe(context.Context) error {
+	return nil
+}
+
+func TestShell_WindowsWithoutWSL_BackendFailurePreemptsExecution(t *testing.T) {
+	// In Windows environments without installed WSL distributions, the backend
+	// probe fails. Shell.Execute must report this probe failure cleanly rather
+	// than panicking, hanging, or executing commands.
+	probeErr := errors.New("Bash on Windows runs through WSL, but WSL failed to run /bin/bash in the distribution (exit code -1)")
+	s := NewShellWithExecutor(&failingExecutor{probeErr: probeErr})
+
+	res, err := s.Execute(context.Background(), map[string]any{
+		"command": "echo hi",
+		"cwd":     `C:\some\missing\dir`,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	if !res.IsError || !res.ExecutionFailure || res.ExitCode != -1 {
+		t.Fatalf("expected execution failure Result, got: %+v", res)
+	}
+	if !strings.Contains(res.Content, "Bash on Windows runs through WSL") {
+		t.Errorf("Content = %q, want WSL distribution failure message", res.Content)
 	}
 }
