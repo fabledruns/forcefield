@@ -49,6 +49,9 @@ providers:
   llama-cpp:
     type: llama-cpp
 
+  lemonade:
+    type: lemonade
+
   bedrock-example:
     type: bedrock
     region: us-east-1

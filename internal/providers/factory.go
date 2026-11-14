@@ -55,6 +55,10 @@ type Spec struct {
 	// endpoints that do not implement every OpenAI feature. Nil keeps
 	// the adapter defaults.
 	CapabilitiesOverride *CapabilitiesOverride
+	// DisableSlotGuard disables Lemonade's shared SlotGuard coordinator
+	// (intended for controlled benchmarking baselines without slot gating).
+	DisableSlotGuard bool
+
 	// AllowMetadataEndpoint explicitly opts in to using a cloud
 	// instance-metadata URL as a provider endpoint. Default false:
 	// metadata endpoints are never legitimate model servers, and sending
@@ -391,6 +395,9 @@ func newDefaultFactories() *FactoryRegistry {
 	r := NewFactoryRegistry()
 	r.MustRegister("ollama", func(spec Spec) (ModelProvider, error) {
 		return NewOllamaProvider(spec.BaseURL, spec.Model), nil
+	})
+	r.MustRegister("lemonade", func(spec Spec) (ModelProvider, error) {
+		return NewLemonade(spec), nil
 	})
 	r.MustRegister("openai-compatible", func(spec Spec) (ModelProvider, error) {
 		return NewOpenAICompatible(spec), nil

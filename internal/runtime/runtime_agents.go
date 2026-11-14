@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 
 	"forcefield/internal/agent"
 	"forcefield/internal/config"
 	"forcefield/internal/providers"
+	"forcefield/internal/sandbox"
 	"forcefield/internal/skills"
 )
 
@@ -21,12 +23,49 @@ func (r *Runtime) buildAgent(def agent.Definition) *agent.Agent {
 	cfg := r.cfg
 	registry := r.agents
 	memoryText := r.projectMemoryText
+	ws := r.workspaceRoot
+	mode := r.sandboxMode
 	r.mu.RUnlock()
+	if mode == "" && cfg != nil {
+		if parsed, err := sandbox.ParseMode(cfg.Sandbox.Mode); err == nil {
+			mode = parsed
+		}
+	}
+	if mode == "" {
+		mode = sandbox.ModeNative
+	}
+	if ws == "" && cfg != nil && strings.TrimSpace(cfg.Workspace.Root) != "" {
+		if resolved, err := resolveExplicitRoot(cfg.Workspace.Root); err == nil {
+			ws = resolved
+		}
+	}
+	wsMode := string(config.WorkspacePermissive)
+	if cfg != nil {
+		if parsedWS, err := config.ParseWorkspaceMode(cfg.Workspace.Mode); err == nil {
+			wsMode = string(parsedWS)
+		}
+	}
 	return agent.New(
 		legacyDisplayName(cfg, registry, def.Name),
 		effectivePromptFor(cfg, def),
 		r.catalogFor(def),
-	).WithConstraints(def.Constraints).WithProjectMemory(memoryText)
+	).WithConstraints(def.Constraints).
+		WithRuntimeEnv(formatRuntimeEnvironmentWithMode(runtime.GOOS, runtime.GOARCH, ws, wsMode, mode)).
+		WithProjectMemory(memoryText)
+}
+
+func formatRuntimeEnvironment(goos, goarch, workspaceRoot string, mode sandbox.Mode) string {
+	return formatRuntimeEnvironmentWithMode(goos, goarch, workspaceRoot, "", mode)
+}
+
+func formatRuntimeEnvironmentWithMode(goos, goarch, workspaceRoot, workspaceMode string, mode sandbox.Mode) string {
+	return agent.FormatEnvironment(agent.EnvironmentInfo{
+		OS:            goos,
+		Arch:          goarch,
+		WorkspaceRoot: workspaceRoot,
+		WorkspaceMode: workspaceMode,
+		SandboxMode:   string(mode),
+	})
 }
 
 // catalogFor renders the skill catalog text for def: the full store

@@ -12,6 +12,10 @@ import (
 // empty means the process cwd, relative paths anchor there, and the only
 // requirement is that the directory exists after symlink resolution.
 func resolveExistingDir(dir string) (string, error) {
+	return resolveExistingDirWithWorkspace(dir, "")
+}
+
+func resolveExistingDirWithWorkspace(dir, workspace string) (string, error) {
 	target := dir
 	if strings.TrimSpace(target) == "" {
 		wd, err := os.Getwd()
@@ -19,6 +23,18 @@ func resolveExistingDir(dir string) (string, error) {
 			return "", fmt.Errorf("resolve working directory: %w", err)
 		}
 		return filepath.Clean(wd), nil
+	}
+	if runtimeCaseInsensitive() && strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "//") {
+		if strings.TrimSpace(workspace) != "" {
+			return "", fmt.Errorf(
+				"%w: %s is a Linux-style path and not a valid Windows host directory (workspace root is %s; omit cwd or pass a Windows host path)",
+				ErrInvalidDir, target, workspace,
+			)
+		}
+		return "", fmt.Errorf(
+			"%w: %s is a Linux-style path and not a valid Windows host directory (omit cwd or pass a Windows host path)",
+			ErrInvalidDir, target,
+		)
 	}
 	if !filepath.IsAbs(target) {
 		abs, err := filepath.Abs(target)
@@ -29,6 +45,9 @@ func resolveExistingDir(dir string) (string, error) {
 	}
 	resolved, err := filepath.EvalSymlinks(filepath.Clean(target))
 	if err != nil {
+		if strings.TrimSpace(workspace) != "" {
+			return "", fmt.Errorf("%w: %s (workspace root is %s; omit cwd to use the process working directory, or pass the workspace root or another existing directory)", ErrInvalidDir, target, workspace)
+		}
 		return "", fmt.Errorf("%w: %s", ErrInvalidDir, target)
 	}
 	return resolved, nil
@@ -73,7 +92,7 @@ func resolveWithinWorkspace(workspace, dir string) (string, error) {
 			// A Linux-absolute path addresses the WSL filesystem, which no
 			// Windows-side workspace contains. Refuse as an escape instead
 			// of letting volume guessing turn it into C:\home\...
-			return "", fmt.Errorf("%w: %s is a Linux filesystem path; the sandboxed workspace is %s",
+			return "", fmt.Errorf("%w: %s is a Linux filesystem path; the sandboxed workspace is %s (omit path/cwd or pass \".\" for the workspace root)",
 				ErrWorkspaceEscape, target, wsResolved)
 		case len(target) >= 2 && target[1] == ':' && len(target) > 2 && target[2] != '\\' && target[2] != '/':
 			// Drive-relative ("C:foo"): its meaning depends on the current
@@ -97,7 +116,7 @@ func resolveWithinWorkspace(workspace, dir string) (string, error) {
 		if !withinAny(wsAbs, wsResolved, abs) {
 			return "", fmt.Errorf("%w: %s is outside %s", ErrWorkspaceEscape, abs, wsResolved)
 		}
-		return "", fmt.Errorf("%w: %s", ErrInvalidDir, abs)
+		return "", fmt.Errorf("%w: %s (workspace root is %s)", ErrInvalidDir, abs, wsResolved)
 	}
 
 	// Same dual-spelling acceptance as above.
@@ -142,7 +161,7 @@ func EnsureWithinWorkspace(workspace, path string) (string, error) {
 	if runtimeCaseInsensitive() {
 		switch {
 		case strings.HasPrefix(target, "/"):
-			return "", fmt.Errorf("%w: %s is a Linux filesystem path; the sandboxed workspace is %s",
+			return "", fmt.Errorf("%w: %s is a Linux filesystem path; the sandboxed workspace is %s (omit path/cwd or pass \".\" for the workspace root)",
 				ErrWorkspaceEscape, target, wsResolved)
 		case len(target) >= 2 && target[1] == ':' && len(target) > 2 && target[2] != '\\' && target[2] != '/':
 			return "", fmt.Errorf("%w: %s is a drive-relative path", ErrInvalidDir, target)

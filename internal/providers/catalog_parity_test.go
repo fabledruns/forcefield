@@ -6,11 +6,11 @@ import (
 )
 
 // TestCatalog_StaticCapabilitiesMatchDynamic verifies that the static
-// Capabilities populated on all 17 presets in Catalog bit-for-bit match
+// Capabilities populated on all 18 presets in Catalog bit-for-bit match
 // what the actual provider adapters report dynamically from Capabilities().
 func TestCatalog_StaticCapabilitiesMatchDynamic(t *testing.T) {
-	if len(Catalog) != 17 {
-		t.Fatalf("expected 17 presets in Catalog, found %d", len(Catalog))
+	if len(Catalog) != 18 {
+		t.Fatalf("expected 18 presets in Catalog, found %d", len(Catalog))
 	}
 
 	factories := DefaultFactories()

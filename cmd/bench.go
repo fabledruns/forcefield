@@ -161,9 +161,34 @@ func runBenchCommand(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Total Duration: %.2fs (avg %.2fs/task)\n",
 		float64(res.Summary.TotalDurationMS)/1000.0, float64(res.Summary.AvgDurationMS)/1000.0)
 	fmt.Printf("Total Tools:    %d calls (%d failures)\n", res.Summary.TotalToolCalls, res.Summary.TotalToolFailures)
+	if env := res.Environment; env != nil {
+		fmt.Printf("Environment:    %s/%s | backend=%s | slotguard=%s", env.OS, env.Arch, env.Backend, env.SlotGuardMode)
+		if env.ContextSize > 0 {
+			fmt.Printf(" | ctx=%d", env.ContextSize)
+		}
+		if env.ParallelSlots > 0 {
+			fmt.Printf(" | np=%d", env.ParallelSlots)
+		}
+		if env.Quantization != "" {
+			fmt.Printf(" | quant=%s", env.Quantization)
+		}
+		fmt.Println()
+	}
+	if res.Summary.LatencyP50MS > 0 || res.Summary.LatencyP95MS > 0 {
+		fmt.Printf("Latency p50/95: %.2fs / %.2fs\n",
+			float64(res.Summary.LatencyP50MS)/1000.0, float64(res.Summary.LatencyP95MS)/1000.0)
+	}
 	if res.Summary.Tokens.Available {
-		fmt.Printf("Tokens:         %d prompt / %d completion (%d total)\n",
-			res.Summary.Tokens.PromptTokens, res.Summary.Tokens.CompletionTokens, res.Summary.Tokens.TotalTokens)
+		fmt.Printf("Tokens:         %d prompt / %d completion (%d total, %d cached)\n",
+			res.Summary.Tokens.PromptTokens, res.Summary.Tokens.CompletionTokens, res.Summary.Tokens.TotalTokens, res.Summary.Tokens.CachedTokens)
+	}
+	if res.Summary.AvgPromptPerSecond > 0 || res.Summary.AvgPredictedPerSecond > 0 {
+		fmt.Printf("Throughput:     %.1f prompt tok/s | %.1f gen tok/s\n",
+			res.Summary.AvgPromptPerSecond, res.Summary.AvgPredictedPerSecond)
+	}
+	if res.Summary.SlotGuardAdmitted > 0 || res.Summary.SlotGuardWaits > 0 {
+		fmt.Printf("SlotGuard:      %d admitted / %d waited (%d ms total wait)\n",
+			res.Summary.SlotGuardAdmitted, res.Summary.SlotGuardWaits, res.Summary.SlotGuardWaitMS)
 	}
 
 	fmt.Printf("\n--- Category Breakdown ---\n")

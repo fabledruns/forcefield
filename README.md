@@ -37,7 +37,7 @@ Forcefield is a local-first runtime for executing AI agents.
 
 It provides the complete host execution harness around a language model: deterministic tool dispatch, on-demand skill indexing, project-scoped memory, atomic session recovery, 3-state permission gating, shell execution, and provider transport abstraction. It runs as a single static binary.
 
-Forcefield does not require a local model. It works with local inference engines (Ollama, LM Studio, llama.cpp) and remote API providers (Anthropic, OpenAI, Google Gemini, AWS Bedrock, Azure AI, NVIDIA NIM, Groq, Mistral, Together, OpenRouter, and OpenCode). Running models locally is optional.
+Forcefield does not require a local model. It works with local inference engines (AMD Lemonade, Ollama, LM Studio, llama.cpp) and remote API providers (Anthropic, OpenAI, Google Gemini, AWS Bedrock, Azure AI, NVIDIA NIM, Groq, Mistral, Together, OpenRouter, and OpenCode). Running models locally is optional.
 
 | Architectural Invariant | Specification |
 | :--- | :--- |
@@ -174,7 +174,7 @@ ff doctor
 
 Forcefield requires connectivity to a supported model provider. Ollama or local runtimes are only needed if you choose local execution.
 
-* **Local Inference**: Install Ollama, LM Studio, or llama.cpp, and load a model:
+* **Local Inference**: Install AMD Lemonade, Ollama, LM Studio, or llama.cpp, and load a model:
   ```bash
   ollama pull ornith:9b
   ```
@@ -328,6 +328,7 @@ Forcefield abstracts provider wire protocols behind a unified streaming interfac
 
 | Provider | Scope | Default Endpoint | Authentication | Default / Sample Models |
 | :--- | :--- | :--- | :--- | :--- |
+| AMD Lemonade | Local | `http://localhost:13305/api/v1` | None | Local downloaded models (`Qwen2.5-Coder-3B-Instruct-GGUF`) |
 | Ollama | Local | `http://localhost:11434` | None | `ornith:9b` |
 | llama.cpp | Local | `http://localhost:9931/v1` | None | Dynamic (`llama-server --alias`) |
 | LM Studio | Local | `http://localhost:1234/v1` | None | `local-model` (active loaded model) |
@@ -369,6 +370,7 @@ Architecture guides and reference manuals are organized under [`docs/`](docs/Ind
 
 * [Runtime Coordination](docs/Runtime.md): Event flow, multi-turn loop lifecycle, context guards, and cancellation mechanics.
 * [Model Providers](docs/Providers.md): Interface contracts, capability negotiation, and transport adapters.
+* [AMD Lemonade Integration](docs/Lemonade.md): Dedicated local inference adapter, SlotGuard concurrency coordinator, and diagnostics.
 * [Tools Framework](docs/Tools.md): Registration, execution policies, output elision, and error classification.
 * [Sandbox and Shell Execution](docs/Sandbox.md): Host isolation boundaries, WSL configuration, and environment hygiene.
 * [Session and Crash Recovery](docs/Session.md): Atomic persistence, history compaction, and recovery invariants.

@@ -13,7 +13,7 @@ package config
 // Provider lists the values accepted for a providers entry's type:
 // either a wire protocol Forcefield ships adapters for, or a known
 // service whose defaults (endpoint, auth variable) are built in.
-#Provider: "ollama" | "lmstudio" | "llama-cpp" | "nvidia" | "openai" | "anthropic" | "gemini" | "vertex" | "bedrock" | "azure" | "xai" | "openrouter" | "groq" | "mistral" | "together" | "opencode-zen" | "opencode-go" | "openai-compatible" | "openai-responses"
+#Provider: "ollama" | "lmstudio" | "llama-cpp" | "lemonade" | "nvidia" | "openai" | "anthropic" | "gemini" | "vertex" | "bedrock" | "azure" | "xai" | "openrouter" | "groq" | "mistral" | "together" | "opencode-zen" | "opencode-go" | "openai-compatible" | "openai-responses"
 
 // Permission values for permissions.default and every permissions.tools
 // entry. "" is accepted everywhere and means "unset behaves like ask",
@@ -120,6 +120,7 @@ package config
 	auth_header?:     string
 	auth_scheme?:     string
 	timeout_seconds?: int & >= 0 & <= 300
+	disable_slot_guard?:      bool
 	allow_metadata_endpoint?: bool
 	project?:           string
 	location?:          string

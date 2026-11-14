@@ -125,6 +125,7 @@ type Runtime struct {
 	// resolve against. Both are fixed for the runtime lifetime.
 	workspaceRoot string
 	workspaceCwd  string
+	sandboxMode   sandbox.Mode
 	// tracer records the local-only execution trace when enabled in
 	// config. Nil-safe: a nil or disabled tracer records nothing.
 	tracer *trace.Tracer
@@ -157,6 +158,35 @@ func NewFromConfig(cfg *config.Config) (*Runtime, error) {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
 	return newRuntime(cfg)
+}
+
+// ProviderSlotStats returns numeric SlotGuard statistics if the active provider
+// exposes SlotStatsProvider (e.g. AMD Lemonade with SlotGuard active).
+func (rt *Runtime) ProviderSlotStats() (providers.SlotGuardStats, bool) {
+	if rt == nil {
+		return providers.SlotGuardStats{}, false
+	}
+	rt.mu.RLock()
+	p := rt.provider
+	rt.mu.RUnlock()
+	if sp, ok := p.(providers.SlotStatsProvider); ok {
+		return sp.SlotStats(), true
+	}
+	return providers.SlotGuardStats{}, false
+}
+
+// SlotGuardEnabled reports whether the active provider has an enabled SlotGuard.
+func (rt *Runtime) SlotGuardEnabled() bool {
+	if rt == nil {
+		return false
+	}
+	rt.mu.RLock()
+	p := rt.provider
+	rt.mu.RUnlock()
+	if lp, ok := p.(interface{ SlotGuardEnabled() bool }); ok {
+		return lp.SlotGuardEnabled()
+	}
+	return false
 }
 
 // SetOrchestrationEventSink attaches local orchestration-event
@@ -362,6 +392,7 @@ func newRuntime(cfg *config.Config) (*Runtime, error) {
 		projectMemoryText:   memoryText,
 		workspaceRoot:       policy.Workspace,
 		workspaceCwd:        cwd,
+		sandboxMode:         policy.Mode,
 		tracer:              trace.New(cfg.Tracing.Enabled, cfg.Tracing.Dir),
 		tracker:             newRequestTracker(),
 	}

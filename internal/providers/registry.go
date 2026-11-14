@@ -3,10 +3,11 @@ package providers
 // ModelInfo is one selectable model (display Name, wire ID, optional gateway
 // Protocol). UI displays Name only. See docs/Providers.md.
 type ModelInfo struct {
-	Name        string
-	ID          string
-	Description string
-	Protocol    string
+	Name          string
+	ID            string
+	Description   string
+	Protocol      string
+	ContextWindow int64
 }
 
 // ProviderInfo describes one selectable provider and the models known

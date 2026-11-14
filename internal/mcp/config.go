@@ -163,14 +163,20 @@ func (s ServerConfig) validate(key string) error {
 	return nil
 }
 
-// checkCommand rejects empty commands and shell-control characters. The
-// command is an executable path or bare name resolved at startup; it is
-// never passed through a shell, so metacharacters indicate a mistake, not
-// a feature. Spaces, colons, slashes, and drive-letter spellings stay
-// legal so absolute paths (including Windows paths) keep working.
+// checkCommand rejects empty commands, shell-control characters, and
+// remote URLs. The command is an executable path or bare name resolved at
+// startup; it is never passed through a shell, and Forcefield only supports
+// local stdio MCP servers (remote HTTP/SSE transports are not supported).
+// Metacharacters or URL schemes indicate a mistake, not a feature. Spaces,
+// colons, slashes, and drive-letter spellings stay legal so absolute paths
+// (including Windows paths) keep working.
 func checkCommand(cmd string) error {
 	if len(cmd) > MaxCommandBytes {
 		return fmt.Errorf("value of %d bytes exceeds %d byte limit: %w", len(cmd), MaxCommandBytes, ErrInvalidConfig)
+	}
+	lower := strings.ToLower(cmd)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "ws://") || strings.HasPrefix(lower, "wss://") {
+		return fmt.Errorf("command %q is a remote URL; Forcefield only supports local stdio MCP servers (remote HTTP/SSE transports are not supported): %w", quoteBounded(cmd), ErrInvalidConfig)
 	}
 	for _, r := range cmd {
 		switch {

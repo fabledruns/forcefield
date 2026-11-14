@@ -78,6 +78,12 @@ func ModelReasoningCapabilities(providerID, modelID string) ReasoningCapabilitie
 		return ReasoningCapabilities{
 			Thinking: &ThinkingCapability{Kind: ThinkingKindBool, DefaultEnabled: false},
 		}
+	case "lemonade":
+		// AMD Lemonade accepts a top-level boolean enable_thinking field on
+		// /chat/completions and separates thinking output into reasoning_content.
+		return ReasoningCapabilities{
+			Thinking: &ThinkingCapability{Kind: ThinkingKindBool, DefaultEnabled: false},
+		}
 	case "anthropic":
 		// Known Claude models expose extended thinking with a numeric budget.
 		if anthropicThinkingModels[modelLower] {
@@ -234,7 +240,11 @@ func ModelReasoningCapabilities(providerID, modelID string) ReasoningCapabilitie
 // ReasoningCapabilitiesForSpec resolves capabilities for a provider Spec.
 // It is a convenience wrapper around ModelReasoningCapabilities.
 func ReasoningCapabilitiesForSpec(spec Spec) ReasoningCapabilities {
-	return ModelReasoningCapabilities(spec.ID, spec.Model)
+	caps := ModelReasoningCapabilities(spec.ID, spec.Model)
+	if !caps.SupportsEffort() && !caps.SupportsThinking() && strings.EqualFold(strings.TrimSpace(spec.Type), "lemonade") {
+		return ModelReasoningCapabilities("lemonade", spec.Model)
+	}
+	return caps
 }
 
 // ValidateEffort reports whether level is allowed by this capability.

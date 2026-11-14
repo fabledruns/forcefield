@@ -76,3 +76,102 @@ func TestOperatingContractContainsBehavioralAnchors(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildSystemPromptIncludesRuntimeEnvAndWindowsGuidance(t *testing.T) {
+	winEnv := FormatEnvironment(EnvironmentInfo{
+		OS:            "windows",
+		Arch:          "amd64",
+		WorkspaceRoot: `C:\projects\forcefield`,
+		SandboxMode:   "native",
+	})
+	a := New("default", "identity", "").WithRuntimeEnv(winEnv)
+	got := a.BuildSystemPrompt()
+
+	for _, want := range []string{
+		"## Runtime Environment",
+		"windows/amd64",
+		`C:\projects\forcefield`,
+		"Sandbox mode: native",
+		"Windows host paths",
+		"inside WSL",
+		"Filesystem tools path usage",
+		"omit `path` or use `\".\"` to target the workspace root",
+		"permissive native mode",
+		"process working directory",
+		"actual `Workspace root` host path",
+		"confined mode",
+		"workspace.mode: strict",
+		"sandbox.mode: wsl",
+		"sandbox.mode: isolated",
+		`"."`,
+		"/home/agent/repo",
+		`"root"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Windows runtime prompt missing %q:\n%s", want, got)
+		}
+	}
+
+	linuxEnv := FormatEnvironment(EnvironmentInfo{
+		OS:            "linux",
+		Arch:          "amd64",
+		WorkspaceRoot: "/tmp/forcefield",
+		SandboxMode:   "isolated",
+	})
+	linuxPrompt := New("default", "identity", "").WithRuntimeEnv(linuxEnv).BuildSystemPrompt()
+	for _, want := range []string{
+		"## Runtime Environment",
+		"linux/amd64",
+		"/tmp/forcefield",
+		"Sandbox mode: isolated",
+		"/home/agent/repo",
+	} {
+		if !strings.Contains(linuxPrompt, want) {
+			t.Errorf("Linux runtime prompt missing %q:\n%s", want, linuxPrompt)
+		}
+	}
+	if strings.Contains(linuxEnv, "inside WSL") || strings.Contains(linuxPrompt, "Windows / WSL boundary") {
+		t.Errorf("Linux runtime prompt should not include Windows/WSL note:\n%s", linuxPrompt)
+	}
+}
+
+func TestFormatEnvironmentDistinguishesPermissiveAndConfinedModes(t *testing.T) {
+	if got := FormatEnvironment(EnvironmentInfo{}); got != "" {
+		t.Fatalf("FormatEnvironment(empty) = %q, want empty", got)
+	}
+
+	permissive := FormatEnvironment(EnvironmentInfo{
+		OS:            "linux",
+		Arch:          "amd64",
+		WorkspaceRoot: "/repo/forcefield",
+		WorkspaceMode: "permissive",
+		SandboxMode:   "native",
+	})
+	for _, want := range []string{
+		"Workspace mode: permissive",
+		"Sandbox mode: native",
+		"for filesystem tools, omit `path` or use `\".\"` to target the workspace root",
+		"omitting `cwd` uses the process working directory",
+		"`\".\"` resolves relative to the process working directory",
+		"pass the actual `Workspace root` host path",
+		"omitting `cwd` or using `\".\"` targets the workspace root",
+	} {
+		if !strings.Contains(permissive, want) {
+			t.Errorf("permissive prompt missing %q:\n%s", want, permissive)
+		}
+	}
+	if strings.Contains(permissive, "omit `path` / `cwd`") {
+		t.Errorf("prompt still conflates filesystem path and shell cwd:\n%s", permissive)
+	}
+
+	strict := FormatEnvironment(EnvironmentInfo{
+		OS:            "windows",
+		Arch:          "amd64",
+		WorkspaceRoot: `C:\Users\Admin\Documents\projects\forcefield`,
+		WorkspaceMode: "strict",
+		SandboxMode:   "native",
+	})
+	if !strings.Contains(strict, "Workspace mode: strict") {
+		t.Errorf("strict prompt missing Workspace mode: strict:\n%s", strict)
+	}
+}

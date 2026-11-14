@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -142,5 +143,65 @@ func TestStart_RestoresBrandingOnPanic(t *testing.T) {
 
 	if !restoreCalled {
 		t.Fatal("expected branding to be restored when Start panics")
+	}
+}
+
+func TestStart_CancelsUnstartedProgramOnExit(t *testing.T) {
+	origBrander := tuiBrander
+	origRunProgram := runProgram
+	defer func() {
+		tuiBrander = origBrander
+		runProgram = origRunProgram
+	}()
+
+	restoreCalled := false
+	tuiBrander = func(title string) func() {
+		return func() {
+			restoreCalled = true
+		}
+	}
+
+	var capturedProg *tea.Program
+	runProgram = func(p *tea.Program) (tea.Model, error) {
+		capturedProg = p
+		// Allow background input/drain loops (e.g. Windows CONIN$ early-msg drain)
+		// enough time to observe the published program before returning without Run().
+		time.Sleep(25 * time.Millisecond)
+		return nil, nil
+	}
+
+	sess := session.New()
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- Start(sess)
+	}()
+
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("Start returned unexpected error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start deadlocked when runProgram returned without running Bubble Tea event loop")
+	}
+
+	if !restoreCalled {
+		t.Fatal("expected branding to be restored after Start exit")
+	}
+	if capturedProg == nil {
+		t.Fatal("expected runProgram to receive a non-nil *tea.Program")
+	}
+
+	sendDone := make(chan struct{})
+	go func() {
+		capturedProg.Send(tea.WindowSizeMsg{Width: 80, Height: 24})
+		close(sendDone)
+	}()
+
+	select {
+	case <-sendDone:
+	case <-time.After(500 * time.Millisecond):
+		capturedProg.Kill()
+		t.Fatal("capturedProg.Send blocked after Start returned; unstarted program context was not cancelled")
 	}
 }

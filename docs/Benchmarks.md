@@ -137,3 +137,23 @@ Results are saved to:
 - `benchmarks/results/<run-id>.json` (versioned structured data)
 - `benchmarks/results/<run-id>.md` (formatted Markdown report with scrubbed secrets)
 
+
+## Lemonade Telemetry & 3-Way A/B/C Comparisons
+
+When benchmarking local inference backends (such as AMD Lemonade vs baseline
+providers, with and without `SlotGuard`), `ff bench` additionally records:
+
+- **Environment & backend metadata (`environment`):** OS, arch, CPU, RAM, GPU
+  summary, provider type, Lemonade recipe/backend, device, quantization tag,
+  active `ctx_size`, parallel slots (`-np`), and `SlotGuard` mode (`enabled`,
+  `disabled`, or `n/a`).
+- **Latency percentiles & throughput:** `latency_p50_ms`, `latency_p95_ms`,
+  `avg_prompt_per_second`, and `avg_predicted_per_second`.
+- **KV-cache & SlotGuard counters:** Total `cached_tokens`, per-task and summary
+  `slot_guard_admitted`, `slot_guard_waits`, `slot_guard_wait_ms`, and
+  `slot_guard_degraded_fallbacks`.
+
+For reproducible 3-way live comparison scripts (`baseline` vs `lemonade` with
+`disable_slot_guard: true` vs `lemonade` with `SlotGuard` enabled) and mock
+plumbing validation tests, see [bench/lemonade/README.md](../bench/lemonade/README.md)
+and [docs/Lemonade.md](Lemonade.md).

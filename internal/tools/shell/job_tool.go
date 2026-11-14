@@ -92,7 +92,7 @@ func (ShellJob) InputSchema() map[string]any {
 			},
 			"cwd": map[string]any{
 				"type":        "string",
-				"description": "Working directory for start. Defaults to the workspace.",
+				"description": "Working directory for start. In permissive native mode, omitting cwd uses the process working directory and relative paths such as \".\" resolve relative to the process working directory (pass the actual Workspace root host path explicitly if you need the workspace root). In confined mode (workspace.mode: strict, sandbox.mode: wsl, or sandbox.mode: isolated), omitting cwd or passing \".\" targets the workspace root. On Windows, explicit paths must be valid Windows host paths — never invent placeholder paths such as \"/home/agent/repo\" or \"root\".",
 			},
 			"env": map[string]any{
 				"type":        "object",

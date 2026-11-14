@@ -54,6 +54,7 @@ var (
 	_ RunScopedProvider = (*VertexProvider)(nil)
 	_ RunScopedProvider = (*BedrockProvider)(nil)
 	_ RunScopedProvider = (*OllamaProvider)(nil)
+	_ RunScopedProvider = (*LemonadeProvider)(nil)
 	_ RunScopedProvider = (*OpenAIResponses)(nil)
 	_ RunScopedProvider = (*AzureProvider)(nil)
 	_ RunScopedProvider = (*OpenCodeRouter)(nil)
@@ -72,6 +73,7 @@ func isBuiltInAdapter(p ModelProvider) bool {
 		*VertexProvider,
 		*BedrockProvider,
 		*OllamaProvider,
+		*LemonadeProvider,
 		*OpenAIResponses:
 		return true
 	default:

@@ -80,6 +80,10 @@ func TestConfigInvalidCommand(t *testing.T) {
 		"line\nbreak",
 		"tab\there",
 		"nul\x00byte",
+		"https://api.githubcopilot.com/mcp/",
+		"http://localhost:8080/mcp",
+		"ws://localhost:8080",
+		"wss://example.com/mcp",
 	} {
 		cfg := Config{Servers: map[string]ServerConfig{"srv": {Command: cmd}}}
 		if err := cfg.Validate(); !errors.Is(err, ErrInvalidConfig) {

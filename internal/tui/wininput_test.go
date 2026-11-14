@@ -1713,3 +1713,117 @@ func TestInputParser_KeyUpAndModifiersIgnored(t *testing.T) {
 		t.Fatalf("expected 0 messages, got %d: %+v", len(msgs), msgs)
 	}
 }
+
+func TestWindowsInputPump_ShutdownWithUnstartedPublishedProgram(t *testing.T) {
+	t.Run("stop_immediately_after_publish", func(t *testing.T) {
+		var program atomic.Pointer[tea.Program]
+		pump := &windowsInputPump{
+			programRef: &program,
+			done:       make(chan struct{}),
+			parser:     newInputParser(),
+		}
+		pump.send(tea.WindowSizeMsg{Width: 100, Height: 40})
+		pump.startDrainLoop()
+
+		prog := tea.NewProgram(&testMsgRecorderModel{}, tea.WithInput(nil))
+		program.Store(prog)
+
+		stopDone := make(chan struct{})
+		go func() {
+			pump.stop()
+			close(stopDone)
+		}()
+
+		select {
+		case <-stopDone:
+		case <-time.After(2 * time.Second):
+			prog.Kill()
+			t.Fatal("pump.stop() deadlocked when stopped immediately after publishing unstarted program")
+		}
+	})
+
+	t.Run("stop_while_drain_blocked_in_send", func(t *testing.T) {
+		var program atomic.Pointer[tea.Program]
+		pump := &windowsInputPump{
+			programRef: &program,
+			done:       make(chan struct{}),
+			parser:     newInputParser(),
+		}
+		pump.send(tea.WindowSizeMsg{Width: 100, Height: 40})
+		pump.startDrainLoop()
+
+		prog := tea.NewProgram(&testMsgRecorderModel{}, tea.WithInput(nil))
+		program.Store(prog)
+
+		// Allow startDrainLoop's 5ms ticker to fire and enter drainEarlyMsgs -> prog.Send,
+		// which blocks because prog.Run() was never started.
+		time.Sleep(25 * time.Millisecond)
+
+		stopDone := make(chan struct{})
+		go func() {
+			pump.stop()
+			close(stopDone)
+		}()
+
+		select {
+		case <-stopDone:
+		case <-time.After(2 * time.Second):
+			prog.Kill()
+			t.Fatal("pump.stop() deadlocked while drainEarlyMsgs blocked on unstarted program")
+		}
+
+		// Verify pump.wg is completely drained (no leaked drainLoop goroutine)
+		wgDone := make(chan struct{})
+		go func() {
+			pump.wg.Wait()
+			close(wgDone)
+		}()
+		select {
+		case <-wgDone:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("pump.wg still had active goroutines after stop()")
+		}
+	})
+
+	t.Run("stop_while_direct_send_blocked", func(t *testing.T) {
+		var program atomic.Pointer[tea.Program]
+		pump := &windowsInputPump{
+			programRef: &program,
+			done:       make(chan struct{}),
+			parser:     newInputParser(),
+		}
+
+		prog := tea.NewProgram(&testMsgRecorderModel{}, tea.WithInput(nil))
+		program.Store(prog)
+
+		sendDone := make(chan struct{})
+		pump.wg.Add(1)
+		go func() {
+			defer pump.wg.Done()
+			defer close(sendDone)
+			pump.send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+		}()
+
+		// Let pump.send block inside prog.Send.
+		time.Sleep(20 * time.Millisecond)
+
+		stopDone := make(chan struct{})
+		go func() {
+			pump.stop()
+			close(stopDone)
+		}()
+
+		select {
+		case <-stopDone:
+		case <-time.After(2 * time.Second):
+			prog.Kill()
+			t.Fatal("pump.stop() deadlocked while send() blocked on unstarted program")
+		}
+
+		select {
+		case <-sendDone:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("blocked pump.send goroutine leaked after stop()")
+		}
+	})
+}

@@ -12,6 +12,7 @@ You can find the index of the contents in this file.
 | [Events](Events.md)                  | JSONL run-evidence log for headless runs: schema, correlation, file semantics, exit codes. |
 | [Audit](Audit.md)                    | Forensic hardening audit record: scope, confirmed findings and fixes, and intentionally unchanged areas. |
 | [Recovery](Recovery.md)              | Run recovery, supervision, and process-tree lifecycle. |
+| [Lemonade](Lemonade.md)              | AMD Lemonade local inference integration, `SlotGuard` concurrency coordinator, diagnostics, and benchmark demo. |
 | [Benchmarks](Benchmarks.md)        | How to measure Forcefield with the standalone HPOV suite, and where its methodology lives. |
 | [Orchestration Testing](OrchestrationTesting.md) | Adversarial test suite for the multi-agent orchestration layer: invariants, discovered defects, mutation evidence, and the current test inventory. |
 

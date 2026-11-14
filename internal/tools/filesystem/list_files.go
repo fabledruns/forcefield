@@ -2,6 +2,7 @@ package filesystem
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -49,8 +50,8 @@ func (l *ListFiles) resolveLimits() tools.Limits {
 func (ListFiles) Name() string { return "list_files" }
 
 func (ListFiles) Description() string {
-	return "List the files and directories directly inside the given path (not recursive). " +
-		"Defaults to the current working directory if no path is given."
+	return "List the files and directories directly inside the given path within the workspace (not recursive). " +
+		"Omit path or pass \".\" to list the workspace root."
 }
 
 func (ListFiles) InputSchema() map[string]any {
@@ -59,7 +60,7 @@ func (ListFiles) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Directory to list, absolute or relative. Defaults to the current working directory.",
+				"description": "Directory to list, relative to the workspace root or an absolute path inside the workspace. Omit or pass \".\" to list the workspace root; do not pass placeholder names such as \"root\".",
 			},
 		},
 	}
@@ -79,7 +80,7 @@ func (l ListFiles) Execute(ctx context.Context, args map[string]any) (tools.Resu
 	// listing outside it.
 	resolved, err := sandbox.ResolveWithinWorkspace(l.policy.Workspace, path)
 	if err != nil {
-		return tools.Result{IsError: true, Content: fmt.Sprintf("cannot list %s: %v", path, err)}, nil
+		return tools.Result{IsError: true, Content: listFilesScopeError(path, err)}, nil
 	}
 
 	entries, err := os.ReadDir(resolved)
@@ -142,6 +143,18 @@ func (l ListFiles) CheckBoundary(args map[string]any) (string, error) {
 
 // listTruncMeta reports structured truncation info only when entries
 // were actually dropped; nil otherwise.
+func listFilesScopeError(path string, err error) string {
+	base := fmt.Sprintf("cannot list %s: %v", path, err)
+	switch {
+	case strings.EqualFold(strings.TrimSpace(path), "root") && errors.Is(err, sandbox.ErrInvalidDir):
+		return base + `; "root" is treated as a relative subdirectory inside the workspace, not the workspace root — omit path or pass "." to list the workspace root`
+	case errors.Is(err, sandbox.ErrInvalidDir), errors.Is(err, sandbox.ErrWorkspaceEscape):
+		return base + `; omit path or pass "." to list the workspace root`
+	default:
+		return base
+	}
+}
+
 func listTruncMeta(shown, total int) map[string]any {
 	if shown >= total {
 		return nil

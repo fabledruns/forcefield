@@ -31,6 +31,13 @@ var staticTypeCapabilities = map[string]Capabilities{
 		Reasoning:       true,
 		MaxOutputTokens: 4096,
 	},
+	"lemonade": {
+		Streaming:         true,
+		ToolCalling:       true,
+		Reasoning:         true,
+		ParallelToolCalls: true,
+		MaxOutputTokens:   4096,
+	},
 	"openai-compatible": {
 		Streaming:       true,
 		ToolCalling:     true,
@@ -133,6 +140,18 @@ var Catalog = []Preset{
 		// so any hardcoded ID would be a guess. Model discovery
 		// (GET {base_url}/models) is the source of truth; the active
 		// model always remains selectable before discovery lands.
+	},
+	{
+		ID:           "lemonade",
+		Name:         "AMD Lemonade",
+		Description:  "Local models served by AMD Lemonade Server.",
+		Type:         "lemonade",
+		BaseURL:      DefaultLemonadeBaseURL,
+		Auth:         AuthNone,
+		Scope:        ScopeLocal,
+		Capabilities: staticTypeCapabilities["lemonade"],
+		// No hardcoded fallback models: Lemonade discovers local and
+		// downloaded models dynamically via GET {base_url}/models?show_all=true.
 	},
 	{
 		ID:           "nvidia",

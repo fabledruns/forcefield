@@ -241,6 +241,7 @@ func runHeadlessSession(ctx context.Context, rt *runtime.Runtime, msgs []provide
 		TaskChars: taskChars,
 	})
 
+	startSlotStats, hasSlotStats := rt.ProviderSlotStats()
 	start := time.Now()
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -372,6 +373,40 @@ func runHeadlessSession(ctx context.Context, rt *runtime.Runtime, msgs []provide
 	}
 	if termErr != nil {
 		final.Error = termErr.Error()
+	}
+	meta := map[string]any{}
+	if hasSlotStats {
+		if endStats, ok := rt.ProviderSlotStats(); ok {
+			admitted := endStats.Admitted - startSlotStats.Admitted
+			waits := endStats.Waits - startSlotStats.Waits
+			waitMS := endStats.TotalWaitMS - startSlotStats.TotalWaitMS
+			degraded := endStats.DegradedFallbacks - startSlotStats.DegradedFallbacks
+			if admitted > 0 || waits > 0 || waitMS > 0 || degraded > 0 {
+				meta["slot_guard_admitted"] = admitted
+				meta["slot_guard_waits"] = waits
+				meta["slot_wait_ms"] = waitMS
+				if degraded > 0 {
+					meta["slot_guard_degraded"] = degraded
+				}
+			}
+		}
+	}
+	if respOK {
+		if resp.Usage.CachedTokens > 0 {
+			meta["cached_tokens"] = resp.Usage.CachedTokens
+		}
+		if resp.Usage.Timings.CacheN > 0 {
+			meta["cache_n"] = resp.Usage.Timings.CacheN
+		}
+		if resp.Usage.Timings.PromptPerSecond > 0 {
+			meta["prompt_tps"] = resp.Usage.Timings.PromptPerSecond
+		}
+		if resp.Usage.Timings.PredictedPerSecond > 0 {
+			meta["predicted_tps"] = resp.Usage.Timings.PredictedPerSecond
+		}
+	}
+	if len(meta) > 0 {
+		final.Meta = meta
 	}
 	emit(final)
 	var closeErr error

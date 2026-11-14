@@ -175,7 +175,7 @@ func (d *Discovery) fetch(ctx context.Context, spec Spec) ([]Model, error) {
 		if name == "" {
 			name = m.ID
 		}
-		models = append(models, Model{ID: m.ID, Name: name, Provider: spec.ID})
+		models = append(models, Model{ID: m.ID, Name: name, Provider: spec.ID, ContextWindow: m.ContextWindow})
 	}
 
 	// Deterministic order regardless of what the server sent.

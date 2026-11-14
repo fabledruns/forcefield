@@ -1,11 +1,26 @@
 package providers
 
+// TurnTimings carries optional local-inference timing telemetry emitted by
+// backends such as AMD Lemonade / llama.cpp. Zero values mean not reported.
+type TurnTimings struct {
+	CacheN             int
+	PromptN            int
+	PromptMS           float64
+	PromptPerSecond    float64
+	PredictedN         int
+	PredictedMS        float64
+	PredictedPerSecond float64
+	SlotWaitMS         int64
+}
+
 // Usage carries token accounting for one model turn, when the provider
 // reports it. Zero values mean "not reported".
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	CachedTokens     int
+	Timings          TurnTimings
 }
 
 // FinishReason is the normalized reason a model turn ended. Providers map

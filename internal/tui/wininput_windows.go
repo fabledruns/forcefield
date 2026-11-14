@@ -110,22 +110,7 @@ func setupPlatformInput(opts *[]tea.ProgramOption, programRef *atomic.Pointer[te
 	}
 
 	// Drain any early messages once programRef is assigned
-	pump.wg.Add(1)
-	go func() {
-		defer pump.wg.Done()
-		for {
-			select {
-			case <-pump.done:
-				pump.drainEarlyMsgs()
-				return
-			case <-time.After(5 * time.Millisecond):
-			}
-			if pump.programRef != nil && pump.programRef.Load() != nil {
-				pump.drainEarlyMsgs()
-				return
-			}
-		}
-	}()
+	pump.startDrainLoop()
 
 	pump.wg.Add(1)
 	go pump.readLoop()
@@ -153,11 +138,40 @@ type windowsInputPump struct {
 	sendMsg      func(tea.Msg)
 }
 
+const pumpStopGrace = 250 * time.Millisecond
+
+func (p *windowsInputPump) startDrainLoop() {
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-p.done:
+				// Pump is stopping; discard undrained early messages rather than
+				// calling prog.Send on an unstarted or tearing-down program.
+				return
+			case <-ticker.C:
+			}
+			if p.programRef != nil && p.programRef.Load() != nil {
+				p.drainEarlyMsgs()
+				return
+			}
+		}
+	}()
+}
+
 func (p *windowsInputPump) drainEarlyMsgs() {
 	p.dispatchMu.Lock()
 	defer p.dispatchMu.Unlock()
 
 	p.mu.Lock()
+	if p.stopped {
+		p.earlyMsgs = nil
+		p.mu.Unlock()
+		return
+	}
 	var prog *tea.Program
 	if p.programRef != nil {
 		prog = p.programRef.Load()
@@ -171,6 +185,11 @@ func (p *windowsInputPump) drainEarlyMsgs() {
 	p.mu.Unlock()
 
 	for _, m := range msgs {
+		select {
+		case <-p.done:
+			return
+		default:
+		}
 		prog.Send(m)
 	}
 }
@@ -210,7 +229,17 @@ func (p *windowsInputPump) send(msg tea.Msg) {
 	p.mu.Unlock()
 
 	for _, m := range msgs {
+		select {
+		case <-p.done:
+			return
+		default:
+		}
 		prog.Send(m)
+	}
+	select {
+	case <-p.done:
+		return
+	default:
 	}
 	prog.Send(msg)
 }
@@ -222,18 +251,42 @@ func (p *windowsInputPump) stop() {
 		return
 	}
 	p.stopped = true
-	close(p.done)
+	p.earlyMsgs = nil
+	if p.done != nil {
+		close(p.done)
+	}
+	ctrlHandler := p.ctrlHandler
+	p.ctrlHandler = 0
 	p.mu.Unlock()
 
-	p.parser.stopEscTimer()
-	if p.ctrlHandler != 0 {
-		_ = setConsoleCtrlHandler(p.ctrlHandler, false)
-		p.ctrlHandler = 0
+	waitDone := make(chan struct{})
+	go func() {
+		if p.parser != nil {
+			p.parser.stopEscTimer()
+		}
+		if ctrlHandler != 0 {
+			_ = setConsoleCtrlHandler(ctrlHandler, false)
+		}
+		p.wg.Wait()
+		close(waitDone)
+	}()
+
+	select {
+	case <-waitDone:
+	case <-time.After(pumpStopGrace):
+		// If a worker is still blocked in prog.Send (for instance when
+		// programRef was published to an unstarted tea.Program without
+		// Run/Kill), cancel the program context so Send returns and no
+		// goroutine leaks.
+		if p.programRef != nil {
+			if prog := p.programRef.Load(); prog != nil {
+				prog.Kill()
+			}
+		}
+		<-waitDone
 	}
 
-	p.wg.Wait()
-
-	if p.conin != windows.InvalidHandle {
+	if p.conin != 0 && p.conin != windows.InvalidHandle {
 		_ = windows.SetConsoleMode(p.conin, p.origMode)
 		if p.origCP != 0 {
 			_ = windows.SetConsoleCP(p.origCP)
@@ -284,6 +337,11 @@ func (p *windowsInputPump) readLoop() {
 		}
 
 		for _, rec := range records {
+			select {
+			case <-p.done:
+				return
+			default:
+			}
 			switch e := rec.Unwrap().(type) {
 			case coninput.KeyEventRecord:
 				p.parser.feedKeyRecord(e)

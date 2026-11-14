@@ -2,11 +2,17 @@ package bench
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,16 +43,17 @@ type RunnerOptions struct {
 
 // RunResult holds the output of a completed benchmark suite run.
 type RunResult struct {
-	RunID             string        `json:"run_id"`
-	Timestamp         string        `json:"timestamp"`
-	ForcefieldVersion string        `json:"forcefield_version"`
-	GitCommit         string        `json:"git_commit,omitempty"`
-	Provider          string        `json:"provider,omitempty"`
-	Model             string        `json:"model,omitempty"`
-	Summary           Summary       `json:"summary"`
-	Tasks             []TaskMetrics `json:"tasks"`
-	JSONReportPath    string        `json:"json_report_path,omitempty"`
-	MDReportPath      string        `json:"md_report_path,omitempty"`
+	RunID             string            `json:"run_id"`
+	Timestamp         string            `json:"timestamp"`
+	ForcefieldVersion string            `json:"forcefield_version"`
+	GitCommit         string            `json:"git_commit,omitempty"`
+	Provider          string            `json:"provider,omitempty"`
+	Model             string            `json:"model,omitempty"`
+	Environment       *BenchEnvironment `json:"environment,omitempty"`
+	Summary           Summary           `json:"summary"`
+	Tasks             []TaskMetrics     `json:"tasks"`
+	JSONReportPath    string            `json:"json_report_path,omitempty"`
+	MDReportPath      string            `json:"md_report_path,omitempty"`
 }
 
 // Runner coordinates benchmark execution across isolated workspaces.
@@ -142,7 +149,8 @@ func (r *Runner) Run(ctx context.Context) (*RunResult, error) {
 	}
 
 	// Preflight provider configuration and credentials using the unified provider resolver.
-	if _, err := r.Preflight(baseCfg); err != nil {
+	resolved, err := r.Preflight(baseCfg)
+	if err != nil {
 		return nil, fmt.Errorf("preflight check failed: %w", err)
 	}
 
@@ -156,6 +164,7 @@ func (r *Runner) Run(ctx context.Context) (*RunResult, error) {
 		GitCommit:         gitCommit,
 		Provider:          baseCfg.Model.Provider,
 		Model:             baseCfg.Model.Name,
+		Environment:       probeBenchEnvironment(resolved, baseCfg),
 	}
 
 	total := len(filtered)
@@ -318,12 +327,25 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 				metrics.ToolFailures++
 			case runtime.EventDone:
 				metrics.Status = "completed"
-				if ev.Response != nil && ev.Response.Usage.TotalTokens > 0 {
-					metrics.Tokens = TokenUsage{
-						Available:        true,
-						PromptTokens:     ev.Response.Usage.PromptTokens,
-						CompletionTokens: ev.Response.Usage.CompletionTokens,
-						TotalTokens:      ev.Response.Usage.TotalTokens,
+				if ev.Response != nil {
+					u := ev.Response.Usage
+					if u.TotalTokens > 0 {
+						metrics.Tokens = TokenUsage{
+							Available:        true,
+							PromptTokens:     u.PromptTokens,
+							CompletionTokens: u.CompletionTokens,
+							TotalTokens:      u.TotalTokens,
+							CachedTokens:     u.CachedTokens,
+						}
+					}
+					if u.Timings != (providers.TurnTimings{}) {
+						metrics.Inference = &InferenceTelemetry{
+							PromptMS:           u.Timings.PromptMS,
+							PredictedMS:        u.Timings.PredictedMS,
+							PromptPerSecond:    u.Timings.PromptPerSecond,
+							PredictedPerSecond: u.Timings.PredictedPerSecond,
+							CacheN:             u.Timings.CacheN,
+						}
 					}
 				}
 			case runtime.EventBlocked:
@@ -354,8 +376,29 @@ func (r *Runner) runSingleTask(ctx context.Context, task *Task, baseCfg *config.
 		metrics.FailureReason = "execution cancelled by caller"
 	}
 
-	// Read collector stats
+	// Read collector + SlotGuard stats
 	metrics.Delegations = collector.Delegations()
+	if childCached := collector.ChildCachedTokens(); childCached > 0 && metrics.Tokens.Available {
+		metrics.Tokens.CachedTokens += childCached
+	}
+	if childPredTPS := collector.AvgChildPredictedTPS(); childPredTPS > 0 && (metrics.Inference == nil || metrics.Inference.PredictedPerSecond == 0) {
+		if metrics.Inference == nil {
+			metrics.Inference = &InferenceTelemetry{}
+		}
+		metrics.Inference.PredictedPerSecond = roundTwoDecimals(childPredTPS)
+	}
+	if stats, ok := rt.ProviderSlotStats(); ok {
+		enabled := rt.SlotGuardEnabled()
+		if enabled || stats.Admitted > 0 || stats.Waits > 0 {
+			metrics.SlotGuard = &SlotGuardMetrics{
+				Enabled:           enabled,
+				Admitted:          stats.Admitted,
+				Waits:             stats.Waits,
+				WaitMS:            stats.TotalWaitMS,
+				DegradedFallbacks: stats.DegradedFallbacks,
+			}
+		}
+	}
 
 	// 9. Inspect filesystem modifications via Git before restoring canonical files.
 	modifiedFiles, diffText, _ := r.wsManager.Diff(context.Background(), ws)
@@ -447,10 +490,12 @@ func cloneConfig(c *config.Config) *config.Config {
 	return &cp
 }
 
-// benchEventCollector aggregates orchestration events.
+// benchEventCollector aggregates orchestration events and numeric child telemetry.
 type benchEventCollector struct {
-	mu          sync.Mutex
-	delegations int
+	mu                sync.Mutex
+	delegations       int
+	childCachedTokens int
+	childPredTPS      []float64
 }
 
 func (c *benchEventCollector) Emit(e orchevents.Event) {
@@ -459,12 +504,269 @@ func (c *benchEventCollector) Emit(e orchevents.Event) {
 	if e.Type == orchevents.DelegationRequested || e.Type == orchevents.AgentSpawned {
 		c.delegations++
 	}
+	if e.Type == orchevents.ChildCompleted && e.Meta != nil {
+		if v, ok := metaInt(e.Meta["cached_tokens"]); ok && v > 0 {
+			c.childCachedTokens += v
+		}
+		if v, ok := metaFloat(e.Meta["predicted_tps"]); ok && v > 0 {
+			c.childPredTPS = append(c.childPredTPS, v)
+		}
+	}
 }
 
 func (c *benchEventCollector) Delegations() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.delegations
+}
+
+func (c *benchEventCollector) ChildCachedTokens() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.childCachedTokens
+}
+
+func (c *benchEventCollector) AvgChildPredictedTPS() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.childPredTPS) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, v := range c.childPredTPS {
+		sum += v
+	}
+	return sum / float64(len(c.childPredTPS))
+}
+
+func metaInt(v any) (int, bool) {
+	switch t := v.(type) {
+	case int:
+		return t, true
+	case int64:
+		return int(t), true
+	case uint64:
+		return int(t), true
+	case float64:
+		return int(t), true
+	default:
+		return 0, false
+	}
+}
+
+func metaFloat(v any) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case float32:
+		return float64(t), true
+	case int:
+		return float64(t), true
+	case int64:
+		return float64(t), true
+	default:
+		return 0, false
+	}
+}
+
+func probeBenchEnvironment(resolved *config.ResolvedProvider, cfg *config.Config) *BenchEnvironment {
+	env := &BenchEnvironment{
+		OS:           goruntime.GOOS,
+		Arch:         goruntime.GOARCH,
+		Quantization: detectQuantization(cfg),
+	}
+	if resolved == nil {
+		return env
+	}
+	env.ProviderType = resolved.Type
+	env.Backend = resolved.Type
+	if cfg != nil && cfg.Agent.ContextWindow > 0 {
+		env.ContextSize = cfg.Agent.ContextWindow
+	}
+	if resolved.Type != "lemonade" {
+		env.SlotGuardMode = "n/a"
+		return env
+	}
+	if resolved.DisableSlotGuard {
+		env.SlotGuardMode = "disabled"
+	} else {
+		env.SlotGuardMode = "enabled"
+	}
+
+	apiBase, _ := providers.NormalizeLemonadeEndpoints(resolved.BaseURL)
+	client := &http.Client{Timeout: 750 * time.Millisecond}
+	getJSON := func(fullURL string, out any) bool {
+		req, err := http.NewRequest(http.MethodGet, fullURL, nil)
+		if err != nil {
+			return false
+		}
+		if resolved.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+resolved.APIKey)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return false
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return false
+		}
+		return json.Unmarshal(body, out) == nil
+	}
+
+	var health struct {
+		AllModelsLoaded []struct {
+			ModelName        string         `json:"model_name"`
+			Checkpoint       string         `json:"checkpoint"`
+			Recipe           string         `json:"recipe"`
+			Device           string         `json:"device"`
+			MaxContextWindow int            `json:"max_context_window"`
+			LaunchCommand    []string       `json:"launch_command"`
+			RecipeOptions    map[string]any `json:"recipe_options"`
+		} `json:"all_models_loaded"`
+	}
+	if getJSON(apiBase+"/health", &health) {
+		env.LemonadeLive = true
+		activeModel := ""
+		if cfg != nil {
+			activeModel = cfg.Model.Name
+		}
+		for _, m := range health.AllModelsLoaded {
+			if activeModel != "" && m.ModelName != activeModel && len(health.AllModelsLoaded) > 1 {
+				continue
+			}
+			env.Recipe = m.Recipe
+			env.Device = m.Device
+			if m.Recipe != "" {
+				if m.Device != "" {
+					env.Backend = m.Recipe + ":" + m.Device
+				} else {
+					env.Backend = m.Recipe
+				}
+			}
+			if env.Quantization == "" {
+				env.Quantization = detectQuantizationFromString(m.Checkpoint)
+			}
+			env.ParallelSlots = parseBenchNP(m.LaunchCommand, m.RecipeOptions)
+			if env.ContextSize == 0 {
+				env.ContextSize = parseBenchCtxSize(m.RecipeOptions)
+			}
+			if env.ContextSize == 0 && m.MaxContextWindow > 0 {
+				env.ContextSize = m.MaxContextWindow
+			}
+			break
+		}
+	}
+	if env.ContextSize == 0 && cfg != nil && cfg.Model.Name != "" {
+		var opts struct {
+			ResolvedCtxSize int `json:"resolved_ctx_size"`
+		}
+		if getJSON(apiBase+"/models/"+url.PathEscape(cfg.Model.Name)+"/options", &opts) && opts.ResolvedCtxSize > 0 {
+			env.ContextSize = opts.ResolvedCtxSize
+		}
+	}
+	var sysInfo struct {
+		CPU     string         `json:"cpu"`
+		Devices map[string]any `json:"devices"`
+	}
+	if getJSON(apiBase+"/system-info", &sysInfo) {
+		env.LemonadeLive = true
+		if sysInfo.CPU != "" {
+			env.CPU = sysInfo.CPU
+		}
+	}
+	var sysStats struct {
+		MemoryGB float64 `json:"memory_gb"`
+		GPUs     []struct {
+			Name          string   `json:"name"`
+			MemoryTotalGB *float64 `json:"memory_total_gb"`
+		} `json:"gpus"`
+	}
+	if getJSON(apiBase+"/system-stats", &sysStats) {
+		if sysStats.MemoryGB > 0 {
+			env.RAMGB = sysStats.MemoryGB
+		}
+		for _, g := range sysStats.GPUs {
+			if g.Name == "" {
+				continue
+			}
+			if g.MemoryTotalGB != nil && *g.MemoryTotalGB > 0 {
+				env.GPUs = append(env.GPUs, fmt.Sprintf("%s (%.1f GB)", g.Name, *g.MemoryTotalGB))
+			} else {
+				env.GPUs = append(env.GPUs, g.Name)
+			}
+		}
+	}
+	return env
+}
+
+func parseBenchNP(launchCmd []string, recipeOpts map[string]any) int {
+	for i := 0; i < len(launchCmd); i++ {
+		if (launchCmd[i] == "-np" || launchCmd[i] == "--parallel") && i+1 < len(launchCmd) {
+			if n, err := strconv.Atoi(launchCmd[i+1]); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	if raw, ok := recipeOpts["llamacpp_args"].(string); ok && raw != "" {
+		fields := strings.Fields(raw)
+		for i := 0; i < len(fields); i++ {
+			if (fields[i] == "-np" || fields[i] == "--parallel") && i+1 < len(fields) {
+				if n, err := strconv.Atoi(fields[i+1]); err == nil && n > 0 {
+					return n
+				}
+			}
+		}
+	}
+	return 1
+}
+
+func parseBenchCtxSize(recipeOpts map[string]any) int {
+	for _, key := range []string{"ctx_size", "context_size", "n_ctx"} {
+		v, ok := recipeOpts[key]
+		if !ok || v == nil {
+			continue
+		}
+		switch n := v.(type) {
+		case float64:
+			if int(n) > 0 {
+				return int(n)
+			}
+		case int:
+			if n > 0 {
+				return n
+			}
+		case string:
+			if parsed, err := strconv.Atoi(strings.TrimSpace(n)); err == nil && parsed > 0 {
+				return parsed
+			}
+		}
+	}
+	return 0
+}
+
+func detectQuantization(cfg *config.Config) string {
+	if q := strings.TrimSpace(os.Getenv("FF_BENCH_QUANTIZATION")); q != "" {
+		return q
+	}
+	if cfg == nil {
+		return ""
+	}
+	return detectQuantizationFromString(cfg.Model.Name)
+}
+
+func detectQuantizationFromString(raw string) string {
+	upper := strings.ToUpper(raw)
+	for _, tag := range []string{"Q4_K_M", "Q4_K_S", "Q4_0", "Q5_K_M", "Q5_K_S", "Q6_K", "Q8_0", "IQ4_XS", "FP16", "BF16"} {
+		if strings.Contains(upper, tag) {
+			return tag
+		}
+	}
+	return ""
 }
 
 func resolveGitCommit() string {

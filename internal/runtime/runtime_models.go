@@ -326,18 +326,29 @@ func reasoningKey(provider, model string) string {
 }
 
 // CurrentReasoningCapabilities returns the capabilities for the active model.
+func reasoningCapabilitiesFor(cfg *config.Config, providerID, modelID string) providers.ReasoningCapabilities {
+	caps := providers.ModelReasoningCapabilities(providerID, modelID)
+	if !caps.SupportsEffort() && !caps.SupportsThinking() && cfg != nil {
+		if resolved, err := cfg.ResolveProvider(providerID, modelID); err == nil && strings.EqualFold(resolved.Type, "lemonade") {
+			return providers.ModelReasoningCapabilities("lemonade", modelID)
+		}
+	}
+	return caps
+}
+
 func (r *Runtime) CurrentReasoningCapabilities() providers.ReasoningCapabilities {
 	if r == nil {
 		return providers.ReasoningCapabilities{}
 	}
 	r.mu.RLock()
-	if r.cfg == nil {
+	cfg := r.cfg
+	if cfg == nil {
 		r.mu.RUnlock()
 		return providers.ReasoningCapabilities{}
 	}
-	provider, model := r.cfg.Model.Provider, r.cfg.Model.Name
+	provider, model := cfg.Model.Provider, cfg.Model.Name
 	r.mu.RUnlock()
-	return providers.ModelReasoningCapabilities(provider, model)
+	return reasoningCapabilitiesFor(cfg, provider, model)
 }
 
 // currentModelKey copies the active provider/model key under RLock.
@@ -522,7 +533,10 @@ func (r *Runtime) applyReasoningTo(provider providers.ModelProvider, provName, m
 	if r == nil || provider == nil {
 		return
 	}
-	caps := providers.ModelReasoningCapabilities(provName, modelName)
+	r.mu.RLock()
+	cfg := r.cfg
+	r.mu.RUnlock()
+	caps := reasoningCapabilitiesFor(cfg, provName, modelName)
 	key := reasoningKey(provName, modelName)
 	r.reasoningMu.RLock()
 	stored, ok := r.reasoningSelections[key]

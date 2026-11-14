@@ -70,6 +70,17 @@ providers: {
 		models: []
 	}
 
+	lemonade: #ProviderInfo & {
+		name:        "AMD Lemonade"
+		id:          "lemonade"
+		type:        "lemonade"
+		description: "Local models served by AMD Lemonade Server."
+		endpoint:    "http://localhost:13305/api/v1"
+		scope:       "local"
+		requires_api_key: false
+		models: []
+	}
+
 	nvidia: #ProviderInfo & {
 		name:        "NVIDIA NIM"
 		id:          "nvidia"

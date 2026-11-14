@@ -88,6 +88,9 @@ type ProviderConfig struct {
 	// (type azure only, e.g. "2024-06-01"). Empty keeps the adapter's
 	// documented default.
 	APIVersion string `yaml:"api_version,omitempty"`
+	// DisableSlotGuard disables Lemonade's SlotGuard concurrency/residency
+	// coordinator for this provider entry (default false).
+	DisableSlotGuard bool `yaml:"disable_slot_guard,omitempty"`
 	// AllowMetadataEndpoint explicitly opts in to using a cloud
 	// instance-metadata URL as this provider's endpoint. Default false.
 	// Only enable if you intentionally run a model server on such an

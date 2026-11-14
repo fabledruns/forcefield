@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -273,5 +274,110 @@ func TestIsValidEnvName(t *testing.T) {
 		if IsValidEnvName(key) {
 			t.Errorf("IsValidEnvName(%q) = true, want false", key)
 		}
+	}
+}
+
+func TestNativeExecutor_WindowsRejectsLinuxCwdPermissiveAndStrict(t *testing.T) {
+	old := runtimeCaseInsensitive
+	runtimeCaseInsensitive = func() bool { return true }
+	defer func() { runtimeCaseInsensitive = old }()
+
+	ws := t.TempDir()
+	canonicalWS, err := filepath.EvalSymlinks(ws)
+	if err != nil {
+		canonicalWS = ws
+	}
+
+	// Permissive native rejects Linux-style absolute paths with ErrInvalidDir + workspace hint.
+	permExec, err := NewExecutor(Policy{Mode: ModeNative, Workspace: ws, Strict: false})
+	if err != nil {
+		t.Fatalf("NewExecutor(permissive): %v", err)
+	}
+	_, err = permExec.Prepare(context.Background(), Request{
+		Command: "echo hi",
+		Dir:     "/home/agent/repo",
+	})
+	if !errors.Is(err, ErrInvalidDir) {
+		t.Fatalf("permissive Prepare(/home/agent/repo) err = %v, want ErrInvalidDir", err)
+	}
+	for _, want := range []string{"Linux-style", ws, "omit cwd"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("permissive error %q missing %q", err.Error(), want)
+		}
+	}
+
+	// Permissive default cwd (empty Dir or ".") preserves process cwd semantics even when workspace differs.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	for _, relDir := range []string{"", "."} {
+		gotPerm, err := resolveExistingDirWithWorkspace(relDir, ws)
+		if err != nil {
+			t.Fatalf("resolveExistingDirWithWorkspace(%q): %v", relDir, err)
+		}
+		if !samePath(gotPerm, filepath.Clean(cwd)) {
+			t.Errorf("permissive Dir=%q resolved to %q, want process cwd %q", relDir, gotPerm, cwd)
+		}
+	}
+
+	// Confined mode (strict native) resolves empty Dir and "." to canonical workspace root.
+	for _, relDir := range []string{"", "."} {
+		gotStrict, err := resolveWithinWorkspace(ws, relDir)
+		if err != nil {
+			t.Fatalf("resolveWithinWorkspace(%q): %v", relDir, err)
+		}
+		if !samePath(gotStrict, canonicalWS) {
+			t.Errorf("confined Dir=%q resolved to %q, want workspace %q", relDir, gotStrict, canonicalWS)
+		}
+	}
+
+	// Strict native continues to reject Linux-style paths as ErrWorkspaceEscape with hint.
+	strictExec, err := NewExecutor(Policy{Mode: ModeNative, Workspace: ws, Strict: true})
+	if err != nil {
+		t.Fatalf("NewExecutor(strict): %v", err)
+	}
+	_, err = strictExec.Prepare(context.Background(), Request{
+		Command: "echo hi",
+		Dir:     "/home/agent/repo",
+	})
+	if !errors.Is(err, ErrWorkspaceEscape) {
+		t.Fatalf("strict Prepare(/home/agent/repo) err = %v, want ErrWorkspaceEscape", err)
+	}
+	for _, want := range []string{"Linux filesystem path", canonicalWS, `"."`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("strict error %q missing %q", err.Error(), want)
+		}
+	}
+
+	// Existing permissive vs strict outside-directory enforcement stays intact
+	// under real host path semantics.
+	runtimeCaseInsensitive = old
+	outside := t.TempDir()
+	gotOutside, err := resolveExistingDirWithWorkspace(outside, ws)
+	if err != nil {
+		t.Fatalf("permissive outside dir failed: %v", err)
+	}
+	wantOutside, err := filepath.EvalSymlinks(outside)
+	if err != nil {
+		wantOutside = outside
+	}
+	if !samePath(gotOutside, wantOutside) {
+		t.Errorf("permissive outside resolved to %q, want %q", gotOutside, wantOutside)
+	}
+	if _, err := strictExec.Prepare(context.Background(), Request{Command: "echo hi", Dir: outside}); !errors.Is(err, ErrWorkspaceEscape) {
+		t.Fatalf("strict outside dir err = %v, want ErrWorkspaceEscape", err)
+	}
+
+	// Missing directory in permissive native mode includes accurate recovery hint without claiming omit cwd targets workspace.
+	_, err = permExec.Prepare(context.Background(), Request{
+		Command: "echo hi",
+		Dir:     filepath.Join(ws, "does-not-exist"),
+	})
+	if !errors.Is(err, ErrInvalidDir) {
+		t.Fatalf("permissive missing dir err = %v, want ErrInvalidDir", err)
+	}
+	if !strings.Contains(err.Error(), "process working directory") || !strings.Contains(err.Error(), ws) {
+		t.Errorf("permissive missing dir hint unexpected: %q", err.Error())
 	}
 }

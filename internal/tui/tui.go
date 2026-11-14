@@ -89,6 +89,10 @@ func Start(sess *session.Session) error {
 			m.orchSink.Close()
 		}
 	}()
+	// Cancel prog's internal context on every exit path (including stubbed
+	// runProgram in tests or panics before Run enters) so Bubble Tea's
+	// Program.Send cannot block teardown callers (input pump, orchSink, notify).
+	defer prog.Kill()
 
 	_, err = runProgram(prog)
 	return err

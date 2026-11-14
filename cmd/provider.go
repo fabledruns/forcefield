@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -425,6 +428,9 @@ func runProviderTest(cfg *config.Config, id string, withChat bool, timeoutOverri
 		return fmt.Errorf("probe failed: %s", redact.Scrub(err.Error()))
 	}
 	fmt.Printf("  models visible: %d (%s)\n", len(models), redact.Scrub(orNoneTest(models)))
+	if resolved.Type == "lemonade" {
+		printLemonadeProbeDetails(ctx, client, resolved, cfg.Model.Name)
+	}
 	if cfg.Model.Provider == id && cfg.Model.Name != "" {
 		found := false
 		for _, m := range models {
@@ -448,7 +454,17 @@ func runProviderTest(cfg *config.Config, id string, withChat bool, timeoutOverri
 
 	if withChat {
 		fmt.Printf("  note: --chat sends one billable completion (max_tokens=1); skipping by default would avoid cost\n")
-		if err := probeChat(ctx, client, resolved); err != nil {
+		chatResolved := resolved
+		if chatResolved.Model == "" {
+			if cfg.Model.Provider == id && cfg.Model.Name != "" {
+				chatResolved.Model = cfg.Model.Name
+			} else if cfg.Model.Name != "" {
+				chatResolved.Model = cfg.Model.Name
+			} else if len(models) > 0 {
+				chatResolved.Model = models[0]
+			}
+		}
+		if err := probeChat(ctx, client, chatResolved); err != nil {
 			return fmt.Errorf("chat probe failed: %s", redact.Scrub(err.Error()))
 		}
 		fmt.Printf("  chat probe: ok\n")
@@ -515,6 +531,9 @@ func probeModels(ctx context.Context, client *http.Client, resolved config.Resol
 	base := strings.TrimRight(resolved.BaseURL, "/")
 	var path string
 	switch resolved.Type {
+	case "lemonade":
+		base, _ = providers.NormalizeLemonadeEndpoints(resolved.BaseURL)
+		path = "/models?show_all=true"
 	case "ollama":
 		path = "/api/tags"
 	case "anthropic":
@@ -549,7 +568,8 @@ func probeModels(ctx context.Context, client *http.Client, resolved config.Resol
 	// with zero enumerated models rather than a failure.
 	var openaiShape struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID         string `json:"id"`
+			Downloaded *bool  `json:"downloaded"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&openaiShape); err != nil {
@@ -557,29 +577,52 @@ func probeModels(ctx context.Context, client *http.Client, resolved config.Resol
 	}
 	out := make([]string, 0, len(openaiShape.Data))
 	for _, m := range openaiShape.Data {
-		if m.ID != "" {
-			out = append(out, m.ID)
+		if m.ID == "" {
+			continue
 		}
+		if resolved.Type == "lemonade" && m.Downloaded != nil && !*m.Downloaded {
+			continue
+		}
+		out = append(out, m.ID)
 	}
 	return out, nil
 }
 
 func probeChat(ctx context.Context, client *http.Client, resolved config.ResolvedProvider) error {
-	if resolved.Type != "openai-compatible" {
-		return fmt.Errorf("chat probe is only supported for openai-compatible providers")
+	if resolved.Type != "openai-compatible" && resolved.Type != "lemonade" {
+		return fmt.Errorf("chat probe is only supported for openai-compatible and lemonade providers")
 	}
-	base := strings.TrimRight(resolved.BaseURL, "/")
-	chatPath := resolved.ChatPath
-	if chatPath == "" {
-		chatPath = providers.DefaultChatPath
-	}
-	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}`, resolved.Model)
-	if body == "" {
+	model := strings.TrimSpace(resolved.Model)
+	if model == "" {
 		return fmt.Errorf("no model configured")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+chatPath, strings.NewReader(body))
+
+	var chatURL string
+	if resolved.Type == "lemonade" {
+		chatURL = providers.LemonadeChatEndpoint(resolved.BaseURL)
+	} else {
+		base := strings.TrimRight(resolved.BaseURL, "/")
+		chatPath := resolved.ChatPath
+		if chatPath == "" {
+			chatPath = providers.DefaultChatPath
+		}
+		chatURL = base + chatPath
+	}
+
+	payload := map[string]any{
+		"model":      model,
+		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"max_tokens": 1,
+		"stream":     false,
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return fmt.Errorf("encode chat probe request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("bad endpoint URL: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if err := probeAuthHeader(resolved, req); err != nil {
@@ -590,10 +633,51 @@ func probeChat(ctx context.Context, client *http.Client, resolved config.Resolve
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("chat endpoint answered HTTP %d", resp.StatusCode)
+
+	if resp.StatusCode == http.StatusOK {
+		return nil
 	}
-	return nil
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	var serverMsg string
+	if len(respBody) > 0 {
+		var errShape struct {
+			Error any    `json:"error"`
+			Msg   string `json:"message"`
+		}
+		if json.Unmarshal(respBody, &errShape) == nil {
+			switch v := errShape.Error.(type) {
+			case string:
+				serverMsg = v
+			case map[string]any:
+				if m, ok := v["message"].(string); ok && m != "" {
+					serverMsg = m
+				}
+			}
+			if serverMsg == "" && errShape.Msg != "" {
+				serverMsg = errShape.Msg
+			}
+		}
+		if serverMsg == "" {
+			serverMsg = strings.TrimSpace(string(respBody))
+		}
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("authentication failed (HTTP %d) - check your API key", resp.StatusCode)
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		if serverMsg != "" {
+			return fmt.Errorf("chat endpoint answered HTTP 404: %s", serverMsg)
+		}
+		return fmt.Errorf("chat endpoint answered HTTP 404 (model %q was not found or chat completions route does not exist)", model)
+	}
+
+	if serverMsg != "" {
+		return fmt.Errorf("chat endpoint answered HTTP %d: %s", resp.StatusCode, serverMsg)
+	}
+	return fmt.Errorf("chat endpoint answered HTTP %d", resp.StatusCode)
 }
 
 func orNoneTest(items []string) string {
@@ -632,4 +716,47 @@ func init() {
 	providerCmd.AddCommand(providerTestCmd)
 	providerCmd.AddCommand(providerRemoveCmd)
 	rootCmd.AddCommand(providerCmd)
+}
+
+func printLemonadeProbeDetails(ctx context.Context, client *http.Client, resolved config.ResolvedProvider, activeModel string) {
+	apiBase, _ := providers.NormalizeLemonadeEndpoints(resolved.BaseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/health", nil)
+	if err == nil {
+		if probeAuthHeader(resolved, req) == nil {
+			if resp, err := client.Do(req); err == nil {
+				defer resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					var h lemonadeHealthPayload
+					if json.NewDecoder(io.LimitReader(resp.Body, maxLemonadeProbeBytes)).Decode(&h) == nil {
+						fmt.Printf("  lemonade health: %s (%d loaded)\n", redact.Scrub(h.Status), len(h.AllModelsLoaded))
+						for _, m := range h.AllModelsLoaded {
+							np := extractLemonadeParallel(m.LaunchCommand, m.RecipeOptions)
+							fmt.Printf("  loaded model: %s (recipe=%s, device=%s, np=%d, pinned=%v)\n",
+								redact.Scrub(m.ModelName), redact.Scrub(m.Recipe), redact.Scrub(m.Device), np, m.Pinned)
+						}
+					}
+				}
+			}
+		}
+	}
+	model := activeModel
+	if model == "" {
+		model = resolved.Model
+	}
+	if model != "" {
+		optReq, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/models/"+url.PathEscape(model)+"/options", nil)
+		if err == nil && probeAuthHeader(resolved, optReq) == nil {
+			if resp, err := client.Do(optReq); err == nil {
+				defer resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					var opts struct {
+						ResolvedCtxSize int `json:"resolved_ctx_size"`
+					}
+					if json.NewDecoder(io.LimitReader(resp.Body, maxLemonadeProbeBytes)).Decode(&opts) == nil && opts.ResolvedCtxSize > 0 {
+						fmt.Printf("  resolved_ctx_size (%s): %d\n", redact.Scrub(model), opts.ResolvedCtxSize)
+					}
+				}
+			}
+		}
+	}
 }

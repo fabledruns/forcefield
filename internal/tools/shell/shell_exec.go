@@ -132,7 +132,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		return tools.Result{
 			IsError:          true,
 			ExecutionFailure: true,
-			Content:          fmt.Sprintf("working directory does not exist: %s", cwd),
+			Content:          formatInvalidDirError(err, cwd),
 			Tool:             "shell",
 			Command:          command,
 		}, nil
@@ -140,7 +140,7 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		return tools.Result{
 			IsError:          true,
 			ExecutionFailure: true,
-			Content:          fmt.Sprintf("working directory %q is outside the allowed workspace; Forcefield will not widen its scope", cwd),
+			Content:          formatWorkspaceEscapeError(err, cwd),
 			Tool:             "shell",
 			Command:          command,
 		}, nil
@@ -364,4 +364,22 @@ func (s *Shell) ExecuteStream(ctx context.Context, args map[string]any, onChunk 
 		Command:          command,
 		Metadata:         truncMeta,
 	}, nil
+}
+
+func formatInvalidDirError(err error, cwd string) string {
+	msg := err.Error()
+	if cwd != "" && !strings.Contains(msg, cwd) {
+		msg = fmt.Sprintf("%s (%s)", msg, cwd)
+	}
+	if !strings.Contains(msg, "omit cwd") {
+		msg += "; omit cwd to use the default directory (process working directory in permissive native mode, or workspace root in confined mode) or pass a valid host directory"
+	}
+	return msg
+}
+
+func formatWorkspaceEscapeError(err error, cwd string) string {
+	return fmt.Sprintf(
+		"working directory %q is outside the allowed workspace (%v); Forcefield will not widen its scope — omit cwd or pass \".\" for the workspace root",
+		cwd, err,
+	)
 }

@@ -38,6 +38,7 @@ type runSnapshot struct {
 	authEnvVar   string
 	providerName string
 	modelName    string
+	activeAgent  string
 	cfg          *config.Config
 	// mode selects the tool and prompt policy for this run (see
 	// planmode.go). It is fixed at StreamChat entry, like the rest of
@@ -68,6 +69,7 @@ func (r *Runtime) snapshotRunState() runSnapshot {
 	}
 	snap.baseLimits = snap.limits
 	snap.cfg = r.cfg
+	snap.activeAgent = r.activeAgent
 	snap.authRequired = r.authRequired
 	snap.authEnvVar = r.authEnvVar
 	// Capabilities negotiate independently of configuration: even a
@@ -119,6 +121,16 @@ func (r *Runtime) StreamChatWithMode(ctx context.Context, messages []providers.M
 
 	snap := r.snapshotRunState()
 	snap.mode = mode
+	if refresher, ok := snap.provider.(interface{ RefreshContextWindow(context.Context) int }); ok && snap.modelName != "" {
+		if ctxWindow := refresher.RefreshContextWindow(ctx); ctxWindow > 0 && ctxWindow != snap.caps.ContextWindow {
+			snap.caps.ContextWindow = ctxWindow
+			if snap.cfg != nil {
+				snap.contextBudget = contextBudgetFromConfig(snap.cfg, snap.modelName, snap.activeAgent, snap.caps)
+			} else if snap.contextBudget.Limit <= 0 {
+				snap.contextBudget.Limit = ctxWindow
+			}
+		}
+	}
 	if mode == ModePlan {
 		pm, err := planManager(snap.manager)
 		if err != nil {

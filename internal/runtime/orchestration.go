@@ -396,11 +396,9 @@ func (o *Orchestrator) childAgentManager(def agent.Definition, allowDelegate boo
 	if allowDelegate && len(def.Tools) > 0 {
 		childTools = append(childTools, "delegate")
 	}
-	keep := childTools
-	// Same tool-resolution rule as the parent path: requested MCP names
-	// absent from the universe are omitted (warned at the parent layer);
-	// unknown native names would fail strictly in Filtered.
-	resolved, _ := o.parentResolveTools(keep)
+	childDef := def.Clone()
+	childDef.Tools = childTools
+	resolved, _ := resolveAgentDefinitionTools(o.full, childDef)
 	mgr, err := o.full.Filtered(resolved)
 	if err != nil {
 		return nil, fmt.Errorf("build child tool set for agent %q: %w", def.Name, err)

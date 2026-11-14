@@ -24,8 +24,9 @@ import (
 //	  → existing full tool manager (filtered per agent as usual)
 //
 // Invariants owned here:
-//   - MCP tools are explicitly opt-in per agent (agents.<name>.tools).
-//     Nothing is auto-exposed.
+//   - Discovered MCP tools are exposed to eligible agent types (general,
+//     coding, devops) by default, while pure-text agents and restricted
+//     agents stay unexposed unless explicitly configured.
 //   - MCP discovery is startup-only and frozen. The Host starts once in
 //     newRuntime; per-agent managers derive from that snapshot and the
 //     universe never mutates afterwards.
@@ -144,10 +145,49 @@ func resolveAgentTools(full *tools.Manager, want []string) (keep []string, missi
 	return keep, missing
 }
 
+// isEligibleMCPAgent reports whether def represents an agent eligible to
+// receive discovered MCP tools by default. Agents with an explicitly empty
+// tool list (pure-text agents) are never eligible. Relevant agent types
+// (general, coding, devops) that have execution tools gain discovered MCP
+// tools; other agents keep their explicit tool set.
+func isEligibleMCPAgent(def agent.Definition) bool {
+	if len(def.Tools) == 0 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(def.Name)) {
+	case "general", "coding", "devops", "default", "":
+		return true
+	default:
+		return false
+	}
+}
+
 // resolveAgentDefinitionTools is resolveAgentTools over a Definition,
 // kept as a separate helper so SetAgent and newRuntime share one path.
+// For eligible agents (e.g. general, coding, devops), any discovered MCP tools
+// present in the full manager are automatically included alongside the
+// agent's configured tools. Agents that explicitly have no tools (pure-text)
+// or are non-eligible keep their explicit tool set.
 func resolveAgentDefinitionTools(full *tools.Manager, def agent.Definition) ([]string, []string) {
-	return resolveAgentTools(full, def.Tools)
+	keep, missing := resolveAgentTools(full, def.Tools)
+	if full == nil || !isEligibleMCPAgent(def) {
+		return keep, missing
+	}
+	existing := make(map[string]struct{}, len(keep))
+	for _, name := range keep {
+		existing[name] = struct{}{}
+	}
+	for _, t := range full.List() {
+		name := t.Name()
+		if !mcp.IsQualifiedToolName(name) {
+			continue
+		}
+		if _, ok := existing[name]; !ok {
+			keep = append(keep, name)
+			existing[name] = struct{}{}
+		}
+	}
+	return keep, missing
 }
 
 // MCPWarnings reports MCP integration warnings, pull-based like

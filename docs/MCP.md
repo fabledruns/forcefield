@@ -69,17 +69,25 @@ e.g. server `docs` exposing `search` becomes `mcp__docs__search`. If two servers
 
 ## Agent selection
 
-MCP tools are explicitly opt-in per agent through the existing mechanism:
+Discovered MCP tools are automatically exposed to eligible execution agents (`general`, `coding`, `devops`, and their delegated child agents). Pure-text agents (`tools: []`) and restricted domain agents (`legal`, `cyber`, `docs`, `research`, etc.) do not receive MCP tools automatically, but can still explicitly opt in via `agents.<name>.tools`:
 
 ```yaml
 agents:
-  coding:
+  custom_agent:
     tools: [read_file, write_file, mcp__docs__search]
 ```
 
-Configuring a server alone exposes nothing to any agent. A requested name with no healthy provider is omitted with a warning (see `MCPWarnings`); unknown native names still fail strictly. Plan/read-only mode never includes `mcp__*` tools.
+Configuring a server alone exposes nothing to pure-text or restricted agents without explicit configuration. A requested name with no healthy provider is omitted with a warning (see `MCPWarnings`); unknown native names still fail strictly. Plan/read-only mode never includes `mcp__*` tools.
 
 Permissions apply per qualified name through the standard system. Unlisted `mcp__*` tools default to `Ask`; headless runs without a prompt fail closed. See [Tools](Tools.md) for the permission model.
+
+## Context window & performance guidance
+
+MCP tools register their full parameter schemas with the active model provider. Enabling servers with large tool sets (such as GitHub MCP, which provides 26 tools with detailed schemas) introduces schema token overhead into every model turn:
+
+- **Schema overhead:** Detailed tool schemas can consume 10,000–14,000 tokens when combined with native tools, system prompts, skills catalogs, and project memory.
+- **Context recommendations:** A model context window of **32K tokens or higher** is recommended when configuring servers with many detailed tool schemas (e.g. GitHub or cloud APIs), to ensure comfortable headroom for multi-turn history and large tool results. This is operational guidance rather than an enforced requirement; smaller context windows (such as 16K) will function, but large tool output payloads (like raw repository search lists) can saturate the remaining token budget.
+- **Mitigation for constrained models:** When running smaller local models with limited context budgets (4K–16K), restrict tool exposure to only the specific tools required by using explicit `agents.<name>.tools` lists rather than exposing full server catalogs.
 
 ## Lifecycle
 

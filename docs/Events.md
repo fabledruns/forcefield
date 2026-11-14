@@ -81,6 +81,23 @@ All four tool terminal events share one shape — `tool_completed` with `IsError
 promotion to `tool_failed` included — and a shell-shaped exit code rides
 `meta.exit_code` (`cmd/run.go:mapToolTerminal`).
 
+### Optional numeric provider & SlotGuard telemetry (`meta`)
+
+When running with a provider that exposes SlotGuard coordination (`lemonade`) or
+cached-token / timing telemetry, `child_completed` and terminal run events
+(`run_completed`, `run_failed`, `run_cancelled`, `run_blocked`) optionally attach
+numeric-only fields in `meta` (omitted when zero/unavailable):
+
+- `slot_guard_admitted` — admitted inference leases during the run or child run
+- `slot_guard_waits` — requests that waited for a free slot or model drain
+- `slot_wait_ms` — cumulative client-side SlotGuard queue/wait time (ms)
+- `slot_guard_degraded` — degraded fail-open admissions when `/health` was unavailable (terminal run events)
+- `cached_tokens` / `cache_n` — KV-cache hit tokens reported by the provider
+- `prompt_tps` / `predicted_tps` — prompt evaluation and token generation throughput (`tok/s`)
+
+These fields obey the same privacy contract: strictly numeric, zero prompt/response
+content, zero paths, and zero secrets.
+
 ### Child events and native batch delegation
 
 A **native batch delegation** is one `delegate` call that carries a `tasks`

@@ -15,15 +15,16 @@ const SchemaVersion = "1.0"
 
 // JSONReport is the top-level structured report written to disk.
 type JSONReport struct {
-	SchemaVersion     string        `json:"schema_version"`
-	RunID             string        `json:"run_id"`
-	Timestamp         string        `json:"timestamp"`
-	ForcefieldVersion string        `json:"forcefield_version"`
-	GitCommit         string        `json:"git_commit,omitempty"`
-	Provider          string        `json:"provider,omitempty"`
-	Model             string        `json:"model,omitempty"`
-	Summary           Summary       `json:"summary"`
-	Tasks             []TaskMetrics `json:"tasks"`
+	SchemaVersion     string            `json:"schema_version"`
+	RunID             string            `json:"run_id"`
+	Timestamp         string            `json:"timestamp"`
+	ForcefieldVersion string            `json:"forcefield_version"`
+	GitCommit         string            `json:"git_commit,omitempty"`
+	Provider          string            `json:"provider,omitempty"`
+	Model             string            `json:"model,omitempty"`
+	Environment       *BenchEnvironment `json:"environment,omitempty"`
+	Summary           Summary           `json:"summary"`
+	Tasks             []TaskMetrics     `json:"tasks"`
 }
 
 // scrubMetrics ensures no credentials leak into structured reports.
@@ -65,6 +66,7 @@ func SaveJSONReport(res *RunResult, path string) error {
 		GitCommit:         res.GitCommit,
 		Provider:          res.Provider,
 		Model:             res.Model,
+		Environment:       res.Environment,
 		Summary:           res.Summary,
 		Tasks:             tasks,
 	}
@@ -98,6 +100,35 @@ func GenerateMarkdownReport(res *RunResult) string {
 	if res.Model != "" {
 		b.WriteString(fmt.Sprintf("| **Model** | `%s` |\n", res.Model))
 	}
+	if env := res.Environment; env != nil {
+		if env.OS != "" || env.Arch != "" {
+			b.WriteString(fmt.Sprintf("| **Platform** | `%s/%s` |\n", env.OS, env.Arch))
+		}
+		if env.CPU != "" {
+			b.WriteString(fmt.Sprintf("| **CPU** | %s |\n", redact.Scrub(env.CPU)))
+		}
+		if env.RAMGB > 0 {
+			b.WriteString(fmt.Sprintf("| **RAM** | %.1f GB |\n", env.RAMGB))
+		}
+		if len(env.GPUs) > 0 {
+			b.WriteString(fmt.Sprintf("| **GPUs** | %s |\n", redact.Scrub(strings.Join(env.GPUs, "; "))))
+		}
+		if env.Backend != "" {
+			b.WriteString(fmt.Sprintf("| **Backend** | `%s` |\n", redact.Scrub(env.Backend)))
+		}
+		if env.Quantization != "" {
+			b.WriteString(fmt.Sprintf("| **Quantization** | `%s` |\n", redact.Scrub(env.Quantization)))
+		}
+		if env.ContextSize > 0 {
+			b.WriteString(fmt.Sprintf("| **Context Size** | %d tokens |\n", env.ContextSize))
+		}
+		if env.ParallelSlots > 0 {
+			b.WriteString(fmt.Sprintf("| **Parallel Slots (`-np`)** | %d |\n", env.ParallelSlots))
+		}
+		if env.SlotGuardMode != "" {
+			b.WriteString(fmt.Sprintf("| **SlotGuard** | `%s` |\n", env.SlotGuardMode))
+		}
+	}
 	b.WriteString("\n---\n\n")
 
 	// Summary
@@ -115,11 +146,26 @@ func GenerateMarkdownReport(res *RunResult) string {
 	b.WriteString(fmt.Sprintf("| **Command Failures (Non-Zero Exit)** | %d |\n", res.Summary.TotalCommandFailures))
 	b.WriteString(fmt.Sprintf("| **Delegations** | %d |\n", res.Summary.TotalDelegations))
 
+	if res.Summary.LatencyP50MS > 0 || res.Summary.LatencyP95MS > 0 {
+		b.WriteString(fmt.Sprintf("| **Latency (p50 / p95)** | %.2fs / %.2fs |\n",
+			float64(res.Summary.LatencyP50MS)/1000.0, float64(res.Summary.LatencyP95MS)/1000.0))
+	}
 	if res.Summary.Tokens.Available {
 		b.WriteString(fmt.Sprintf("| **Tokens (Prompt / Completion / Total)** | %d / %d / %d |\n",
 			res.Summary.Tokens.PromptTokens, res.Summary.Tokens.CompletionTokens, res.Summary.Tokens.TotalTokens))
+		if res.Summary.Tokens.CachedTokens > 0 {
+			b.WriteString(fmt.Sprintf("| **Cached Prompt Tokens** | %d |\n", res.Summary.Tokens.CachedTokens))
+		}
 	} else {
 		b.WriteString("| **Token Accounting** | *Unavailable* |\n")
+	}
+	if res.Summary.AvgPromptPerSecond > 0 || res.Summary.AvgPredictedPerSecond > 0 {
+		b.WriteString(fmt.Sprintf("| **Avg Throughput (Prompt / Gen)** | %.1f / %.1f tok/s |\n",
+			res.Summary.AvgPromptPerSecond, res.Summary.AvgPredictedPerSecond))
+	}
+	if res.Summary.SlotGuardAdmitted > 0 || res.Summary.SlotGuardWaits > 0 {
+		b.WriteString(fmt.Sprintf("| **SlotGuard (Admitted / Waits / Wait Time)** | %d / %d / %d ms |\n",
+			res.Summary.SlotGuardAdmitted, res.Summary.SlotGuardWaits, res.Summary.SlotGuardWaitMS))
 	}
 	b.WriteString("\n---\n\n")
 

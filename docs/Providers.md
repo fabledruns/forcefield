@@ -199,6 +199,14 @@ It normalizes messy real-world behavior: reasoning deltas arrive as either `delt
 
 Service-specific request fields (such as NIM's `chat_template_kwargs`) ride an adapter-level extra-body map, not new code paths.
 
+### AMD Lemonade
+
+First-class local inference adapter (`type: lemonade`) targeting AMD Lemonade (`lemonade-server`, default `http://localhost:13305/api/v1`):
+
+- **Context & capacity discovery:** Reads `/api/v1/health` (`all_models_loaded[].recipe_options.ctx_size`) for automatic model context window resolution (`EffectiveContextWindow`) and backend/parallelism metadata (`-np`).
+- **Telemetry:** Parses OpenAI-compatible SSE `usage.prompt_tokens_details.cached_tokens` and llama.cpp/Lemonade `timings` (`cache_n`, `prompt_per_second`, `predicted_per_second`, `prompt_ms`, `predicted_ms`).
+- **SlotGuard concurrency & residency coordinator:** Enabled by default (`disable_slot_guard: false`), serializing active HTTP/SSE leases across parent and `CloneForRun()` child runs against Lemonade's live `-np` slots, honoring cancellation, preventing self-deadlock on model switches, never issuing automatic `POST /load`, and failing open if `/health` diagnostics are unreachable. See [Lemonade](Lemonade.md) for setup, diagnostics, and benchmarks.
+
 ### Vertex AI
 
 Native Google Cloud Vertex AI support (`type: vertex`) serves Gemini models inside your own project. It speaks the same GenerateContent protocol as Gemini (contents, typed parts, `functionCall`/`functionResponse`, usage metadata, finish reasons), but against regional endpoints with OAuth credentials:
@@ -328,6 +336,7 @@ Every built-in production adapter implements `RunScopedProvider`:
 - `VertexProvider`
 - `BedrockProvider`
 - `OllamaProvider`
+- `LemonadeProvider`
 - `OpenAIResponses`
 - `AzureProvider` (clones its inner `OpenAICompatible` transport)
 - `OpenCodeRouter` (clones the resolved wire-protocol adapter)
@@ -343,6 +352,7 @@ When delegation launches a child agent in `internal/runtime/delegation_tool.go`,
 Run-scoped cloning cleanly separates thread-safe infrastructure from per-run mutable state:
 
 1. **Shared Thread-Safe Objects:**
+   - **`*lemonadeSlotGuard` Coordinator:** On `LemonadeProvider`, all clones share a single concurrency/residency coordinator so parallel child agents respect Lemonade's backend `-np` slot limit while still keeping each clone's `requestGate`, per-run SlotGuard counters (`RunSlotStats()`), and reasoning parameters isolated.
    - **`*http.Client` and TCP Connection Pools:** HTTP transports, TLS sessions, and persistent keep-alive connection pools are shared across all clones. This avoids socket churn, redundant handshakes, and resource exhaustion during fan-out delegation.
    - **Immutable Configuration:** `Spec` fields, base URLs, model identifiers, API keys, and custom headers are reused directly without re-parsing or memory duplication.
 

@@ -46,6 +46,8 @@ func specOf(p ModelProvider) Spec {
 		return t.spec
 	case *OpenCodeRouter:
 		return t.spec
+	case *LemonadeProvider:
+		return t.spec
 	default:
 		return Spec{}
 	}
@@ -74,6 +76,8 @@ func privateGate(p ModelProvider) *requestGate {
 		return privateGate(t.inner)
 	case *OpenCodeRouter:
 		return privateGate(t.inner)
+	case *LemonadeProvider:
+		return t.gate
 	default:
 		return nil
 	}
@@ -100,6 +104,8 @@ func privateClient(p ModelProvider) *http.Client {
 		return privateClient(t.inner)
 	case *OpenCodeRouter:
 		return privateClient(t.inner)
+	case *LemonadeProvider:
+		return t.client
 	default:
 		return nil
 	}
@@ -165,6 +171,14 @@ func runScopedAdapters() []runScopeCase {
 			hasClient:    true,
 			mk: func(t *testing.T) ModelProvider {
 				return NewOllamaProvider("http://127.0.0.1:11434", "ornith:9b")
+			},
+		},
+		{
+			name:         "lemonade",
+			hasReasoning: true,
+			hasClient:    true,
+			mk: func(t *testing.T) ModelProvider {
+				return NewLemonade(runScopeSpec("lemonade", "http://localhost:13305/api/v1", "Qwen2.5-Coder-3B-Instruct-GGUF"))
 			},
 		},
 		{

@@ -38,7 +38,7 @@ func (n *nativeExecutor) Prepare(ctx context.Context, req Request) (*Prepared, e
 	if n.policy.Confines() {
 		dir, err = resolveWithinWorkspace(n.policy.Workspace, req.Dir)
 	} else {
-		dir, err = resolveExistingDir(req.Dir)
+		dir, err = resolveExistingDirWithWorkspace(req.Dir, n.policy.Workspace)
 	}
 	if err != nil {
 		return nil, err

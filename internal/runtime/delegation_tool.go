@@ -976,7 +976,14 @@ func (o *Orchestrator) runChild(
 		rec.mu.Unlock()
 	}
 
-	o.emitChildCompleted(childCtx, childScope, childRunID, def.Name, rec, childStart)
+	var childSlotStats *providers.SlotGuardStats
+	if rsp, ok := childSnap.provider.(providers.RunSlotStatsProvider); ok {
+		s := rsp.RunSlotStats()
+		if s.Admitted > 0 || s.Waits > 0 || s.TotalWaitMS > 0 {
+			childSlotStats = &s
+		}
+	}
+	o.emitChildCompleted(childCtx, childScope, childRunID, def.Name, rec, childStart, childSlotStats)
 
 	return composeDelegateResult(def.Name, rec), nil
 }
@@ -1059,7 +1066,7 @@ func boolToInt(b bool) int {
 // structured event. Terminal state is whatever the recorder first
 // observed (or the defensive cancellation record) — never recomposed
 // from the report body.
-func (o *Orchestrator) emitChildCompleted(childCtx context.Context, childScope *orchestrationScope, childRunID, agentName string, rec *childRunRecorder, started time.Time) {
+func (o *Orchestrator) emitChildCompleted(childCtx context.Context, childScope *orchestrationScope, childRunID, agentName string, rec *childRunRecorder, started time.Time, slotStats *providers.SlotGuardStats) {
 	out, seen, turns, toolCalls, failed, denied := rec.outcomeSnapshot()
 	ev := orchevents.Event{
 		Type:       orchevents.ChildCompleted,
@@ -1070,6 +1077,26 @@ func (o *Orchestrator) emitChildCompleted(childCtx context.Context, childScope *
 		Failed:     failed,
 		Denied:     denied,
 		DurationMS: time.Since(started).Milliseconds(),
+	}
+	meta := map[string]any{}
+	if slotStats != nil {
+		meta["slot_guard_admitted"] = slotStats.Admitted
+		meta["slot_guard_waits"] = slotStats.Waits
+		meta["slot_wait_ms"] = slotStats.TotalWaitMS
+	}
+	if out.response != nil {
+		if out.response.Usage.CachedTokens > 0 {
+			meta["cached_tokens"] = out.response.Usage.CachedTokens
+		}
+		if out.response.Usage.Timings.CacheN > 0 {
+			meta["cache_n"] = out.response.Usage.Timings.CacheN
+		}
+		if out.response.Usage.Timings.PredictedPerSecond > 0 {
+			meta["predicted_tps"] = out.response.Usage.Timings.PredictedPerSecond
+		}
+	}
+	if len(meta) > 0 {
+		ev.Meta = meta
 	}
 	switch {
 	case seen == 0:

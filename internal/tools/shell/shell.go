@@ -114,7 +114,7 @@ func (*Shell) Name() string { return "shell" }
 func (*Shell) Description() string {
 	return "Execute a shell command and return its stdout, stderr, and exit code. " +
 		"Commands are executed using GNU Bash. " +
-		"Runs in the current project directory unless a working directory is given. " +
+		"In permissive native mode, omitting cwd runs in the process working directory; in confined mode, omitting cwd runs in the workspace root. " +
 		"Commands that require an interactive terminal (editors, pagers, ssh, REPLs, etc.) are not supported."
 }
 
@@ -128,7 +128,7 @@ func (*Shell) InputSchema() map[string]any {
 			},
 			"cwd": map[string]any{
 				"type":        "string",
-				"description": "Working directory to run the command in. Defaults to the current directory.",
+				"description": "Working directory to run the command in. In permissive native mode, omitting cwd uses the process working directory and relative paths such as \".\" resolve relative to the process working directory (pass the actual Workspace root host path explicitly if you need the workspace root). In confined mode (workspace.mode: strict, sandbox.mode: wsl, or sandbox.mode: isolated), omitting cwd or passing \".\" targets the workspace root. When an explicit path is needed, it must be a real host directory (on Windows, a valid Windows host path — never invent placeholder paths such as \"/home/agent/repo\" or \"root\").",
 			},
 			"env": map[string]any{
 				"type":        "object",

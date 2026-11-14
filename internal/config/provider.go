@@ -68,6 +68,8 @@ type ResolvedProvider struct {
 	// APIVersion pins the Azure data-plane api-version query parameter
 	// (empty keeps the adapter's default).
 	APIVersion string
+	// DisableSlotGuard disables Lemonade SlotGuard coordination when true.
+	DisableSlotGuard bool
 	// AllowMetadataEndpoint explicitly opts in to a metadata-service URL.
 	AllowMetadataEndpoint bool
 	// CapabilitiesOverride optionally forces capability flags.
@@ -105,6 +107,7 @@ func (r ResolvedProvider) Spec(activeModel string) providers.Spec {
 		Profile:               r.Profile,
 		APIVersion:            r.APIVersion,
 		CapabilitiesOverride:  r.CapabilitiesOverride,
+		DisableSlotGuard:      r.DisableSlotGuard,
 		AllowMetadataEndpoint: r.AllowMetadataEndpoint,
 	}
 }
@@ -280,6 +283,7 @@ func (c *Config) ResolveProvider(id, activeModel string) (ResolvedProvider, erro
 		Profile:               profile,
 		APIVersion:            strings.TrimSpace(entry.APIVersion),
 		CapabilitiesOverride:  entry.Capabilities,
+		DisableSlotGuard:      entry.DisableSlotGuard,
 		AllowMetadataEndpoint: entry.AllowMetadataEndpoint,
 	}, nil
 }
